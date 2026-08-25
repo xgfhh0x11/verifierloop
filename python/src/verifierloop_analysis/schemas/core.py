@@ -1,0 +1,74 @@
+"""CORE metrics (mirror of crates/metrics/src/core.rs) — FROZEN schema.
+
+Fixed, raw operational observation. Always on. INDEPENDENT of the counterfactual
+layer. `reg_type` and reject `reason` are verbatim strings.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass
+class Tnum:
+    """tnum: known bit values + unknown-bit mask (kernel struct tnum)."""
+
+    value: int = 0
+    mask: int = 0
+
+
+@dataclass
+class RegState:
+    reg: int
+    reg_type: str  # verbatim verifier reg_type
+    tnum: Tnum
+    umin: int
+    umax: int
+    smin: int
+    smax: int
+
+
+@dataclass
+class RegSnapshot:
+    insn_idx: int
+    regs: "list[RegState]"
+
+
+@dataclass
+class Processed:
+    insn_processed: int = 0
+    states_processed: int = 0
+
+
+@dataclass
+class JitInterpDiff:
+    retval_jit: int
+    retval_interp: int
+    data_out_equal: bool
+
+
+@dataclass
+class CoverageDelta:
+    new_bb: int = 0
+    exec_n: int = 0  # exec counter N (provenance)
+
+
+@dataclass
+class HelperArgViolation:
+    helper: str
+    arg_index: int
+    expected: str
+    observed: str
+
+
+# NOTE: `verifier_decision` is a serde-tagged enum in JSON:
+#   {"decision": "accept"}
+#   {"decision": "reject", "reason": "<verbatim verifier text>"}
+@dataclass
+class CoreMetrics:
+    verifier_decision: dict
+    register_evolution: "list[RegSnapshot]"
+    processed: Processed
+    jit_interp_diff: Optional[JitInterpDiff]
+    coverage_delta: CoverageDelta
+    helper_arg_violations: "list[HelperArgViolation]"
