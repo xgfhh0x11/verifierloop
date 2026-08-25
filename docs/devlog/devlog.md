@@ -34,6 +34,7 @@ Her entry'nin sabit bir formatı vardır:
 | 0007 | `report` stage — triyajlı PERIOD_REPORT (score ⋈ diff) | Tamamlandı (pipeline uçtan uca) |
 | 0008 | Gerçek bpf-next kernel/VM ortamı (build + rootfs + boot) | Tamamlandı (TCG çalışır; KVM host-side bloklu) |
 | 0009 | syzkaller entegrasyonu (fuzzing stack) + VM ağ düzeltmesi | Tamamlandı (TCG'de fuzzing çalışır) |
+| 0010 | Golden fixture (parser-katmanı guardrail) + git init + veri-kaynağı netleştirmesi | Tamamlandı (normalize anchor'lı; gerçek parser'lar hâlâ TODO) |
 
 ### Pipeline durumu (özet)
 
@@ -769,3 +770,101 @@ exit 144, hedef process hiç çalışmadı). Çözüm: `pkill -x qemu-system-x86
   **`RecordParser`** yazmak (syzkaller verifier log / KCOV → CORE şeması).
 - Gerçek **`FuzzDriver`** (vmctl → syz-manager'ı yönetir; exec sayacını N period'a bağlar).
 - Throughput'u artırmak: count/procs ayarı, KASAN'sız "hızlı" kernel (hacim fazı).
+
+
+## 0010 — Golden fixture (parser-katmanı guardrail) + git init + veri-kaynağı netleştirmesi
+
+- **Tarih:** 2026-08-26
+- **Durum:** Tamamlandı — normalize artık committed bir golden anchor'a sahip; repo git altında.
+- **Alan:** `crates/pipeline` (normalize + tests), `examples/report_demo.rs`,
+  mimari doc, repo kökü (git).
+- **İlgili:** 0004 (normalize/CORE şeması), 0009 (syzkaller).
+
+### Ne yapıldı
+1. **Repo git'e alındı.** `git init` (branch `main`), ilk commit `bf506f1`:
+   kaynak + `config/` + `scripts/` + `docs/` + devlog + `REVIEW-HANDOFF.md` (72 dosya).
+   `.lab/`, `target/`, `*.img`, `bzImage`, ssh anahtarları `.gitignore` ile dışarıda —
+   commit öncesi guard'larla teyit (1MB üstü / ağır artifact sızıntısı yok).
+   "Kalıcı hafıza devlog'dur" cümlesi artık gerçek bir güvence.
+2. **`ReferenceParser` kütüphaneye taşındı** (`normalize.rs`). Daha önce
+   `report_demo` içinde yaşayan `DemoParser` mantığı tek bir **known-good**
+   tanıma indirgendi: sentinel `clean`/`buggy` satırları → **tam CORE kaydı**
+   (tnum, register-state, JIT/interp diff, helper ihlali). `buggy` her downstream
+   sinyalini bilerek tetikler (malformed tnum `value&mask!=0`, retval sapması,
+   helper `arg_type` ihlali). Gerçek tool parser'ı DEĞİL — golden fixture'ın
+   deterministik kaynağı.
+3. **Committed golden fixture** (`crates/pipeline/tests/fixtures/golden/`):
+   `verifier.log` (ham girdi) + `normalized.expected.json` (bilinen-doğru
+   `NormalizedMetrics`, kodun **gerçek** çıktısından üretildi, elle değil).
+4. **Regresyon testi** `crates/pipeline/tests/golden_normalize.rs`:
+   `ingest(golden raw) → normalize(ReferenceParser)` çıktısının committed golden'a
+   **birebir** eşit olduğunu doğrular. `serde_json` dev-dependency eklendi.
+5. **`report_demo` inceltildi** — yerel `DemoParser` silindi, `normalize::ReferenceParser`
+   kullanılıyor (tek kaynak; pipeline davranışı değişmedi).
+6. **Örnek syzkaller kampanyası** (200 sn) koşuldu → syzkaller'ın DEFAULT native
+   çıktısının ne olduğu somut olarak keşfedildi (aşağıda).
+7. **Mimari doc netleştirildi** — §4'e "hangi araç hangi CORE alanını üretir"
+   veri-kaynağı haritası eklendi.
+
+### Neden (reviewer notu — parser-katmanı confirmation-bias guardrail)
+Anomali sinyalleri (diff invariant'ları, scoring) normalize'ın **downstream'inde**.
+Bu yüzden hatalı bir parser, verifier bug'ı gibi görünen **sahte divergence** üretir.
+İlk gerçek period'da yüzeye çıkan ilk "bug"lar büyük ihtimalle **parser'ın kendi
+hataları** olur. Golden anchor bu ikisini ayırır: golden test'teki her drift =
+**parser/şema regresyonu**; test geçerken çıkan her sapma = **gerçek verifier
+anomalisi** adayı. Bu, döngünün confirmation-bias guardrail'inin parser
+seviyesindeki karşılığıdır. (Hafızaya `parser-golden-fixture-guardrail` olarak yazıldı.)
+
+### Keşif — syzkaller DEFAULT çıktısı ve veri-kaynağı ayrımı (önemli)
+200 sn'lik kampanyanın diskteki tüm çıktısı: `manager log + workdir/corpus.db
+(+ crashes/)`. **syzkaller tek başına verifier'ın accept/reject + register-state
+evrimini ÜRETMEZ** — o veri kernel'in verifier **log buffer**'ında
+(`BPF_PROG_LOAD .log_level=2`) ve dmesg'de. Sonuç: verifier-semantik CORE
+alanlarının birincil üreticisi **differential harness**'tir; syzkaller'ın işi
+coverage-güdümlü input üretimi + crash yüzeye çıkarmadır. Dolayısıyla "gerçek
+per-tool parser" tek değil **iki** parser'a bölünür (syz coverage/crash + harness
+verifier-log). Detaylı tablo mimari doc §4'te.
+
+### Tasarım kararları (bu adımda verilen)
+1. **Golden'ı elle yazma, koddan üret** — `report_demo` çıktısının `.payload`'ı
+   golden olarak kaydedildi; drift'e karşı otoritesi kodun kendisidir.
+2. **`ReferenceParser` library'de** (demo + test tek kaynaktan; duplikasyon yok).
+3. **`exec_count=4200` golden'a gömülü**; test sabiti (`GOLDEN_EXEC_N`) eşleştirir —
+   provenance damgası (exec_n) golden'ın parçası.
+4. **Karşılaştırma struct düzeyinde** (`assert_eq` on `NormalizedMetrics`), JSON
+   string düzeyinde değil — formatlama/anahtar-sırası kırılganlığı yok.
+
+### Kapsam dışı / hâlâ stub
+- Gerçek **syzkaller coverage/crash parser'ı** ve **differential-harness verifier-log
+  parser'ı** (golden bunların hedef çıktısını değil, normalize montajını sabitler).
+- Differential harness'in kendisi (kod olarak henüz yok; §4'te tasarım olarak var).
+- Gerçek `FuzzDriver`, dış ground-truth loader'ları — değişmedi.
+
+### Doğrulama (kanıt)
+- `cargo test` → **23 passed, 0 failed** (golden testi dahil; önce 22'ydi).
+  `test reference_parser_reproduces_golden_normalized ... ok`.
+- `report_demo` → `top_score=0.95 divergences=3` (davranış **değişmedi** —
+  ReferenceParser'a geçiş regresyon getirmedi).
+- Kampanya (200 sn, TCG, count=4): `machine check` geçti, `Coverage: enabled`,
+  `ExtraCoverage: enabled`, `syscalls: 44/8300`, `corpus: 54`. **Dürüst not:**
+  bu koşuda machine check ~100 sn sürdü, kalan ~65 sn candidate triage'de geçti →
+  `coverage=0 exec total=26`'da kaldı; 0009'un 5 dk'lık koşusundaki 0→5177 BB
+  büyümesine **ulaşılmadı** (pencere kısaydı). Stack canlı; coverage büyümesi için
+  daha uzun pencere gerekir. Crash yok (beklenen).
+- `git log -1` → `bf506f1`, working tree temiz.
+
+### Dokunulan dosyalar
+- `crates/pipeline/src/normalize.rs` (+ `ReferenceParser`)
+- `crates/pipeline/tests/golden_normalize.rs` (yeni), `tests/fixtures/golden/*` (yeni)
+- `crates/pipeline/Cargo.toml` (`serde_json` dev-dep)
+- `crates/pipeline/examples/report_demo.rs` (DemoParser → ReferenceParser)
+- `docs/eBPF Verifier ... Mimari ...md` (§4 veri-kaynağı haritası; §5 normalize satırı)
+- repo: `.git/` (init), commit `bf506f1`
+
+### Sonraki adımlar
+- **Differential harness** (verifier-semantik CORE'un üreticisi): accepted programı
+  `log_level=2` ile yükle → log buffer'dan register-state + decision; `BPF_PROG_TEST_RUN`
+  ile JIT vs interp retval/data_out. Bunun native çıktısından **gerçek verifier-log
+  parser'ı** (golden pattern'iyle: gerçek ham örnek → beklenen normalized).
+- **syzkaller coverage/crash parser'ı** (KCOV delta + crash raporu → CORE coverage_delta).
+- Gerçek **`FuzzDriver`** (vmctl → syz-manager; exec sayacı → period N).

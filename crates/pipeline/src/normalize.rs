@@ -15,7 +15,10 @@
 
 use crate::ingest::RawObservation;
 use contract::{Artifact, PeriodPaths, Producer};
-use metrics::core::CoreMetrics;
+use metrics::core::{
+    CoreMetrics, CoverageDelta, HelperArgViolation, JitInterpDiff, Processed, RegSnapshot,
+    RegState, Tnum, VerifierDecision,
+};
 use metrics::counterfactual::CounterfactualLayer;
 use metrics::derived::DerivedMetrics;
 use metrics::expectation::ExpectationFlag;
@@ -63,6 +66,72 @@ pub struct UnimplementedParser;
 impl RecordParser for UnimplementedParser {
     fn parse(&self, _tool: &str, _bytes: &[u8]) -> Vec<CoreMetrics> {
         Vec::new()
+    }
+}
+
+/// Synthetic **reference** parser — the known-good transform behind the golden
+/// regression fixture (`crates/pipeline/tests/fixtures/golden/`). This is NOT a
+/// real tool parser; it interprets a tiny sentinel format so the fixture is
+/// deterministic.
+///
+/// Each non-empty line is one record. The sentinel `buggy` yields a record that
+/// deliberately trips every downstream signal — a malformed tnum
+/// (`value & mask != 0`), a JIT/interpreter retval divergence, and a helper
+/// `arg_type` violation; any other line yields a clean, well-formed accepted
+/// record. Every CORE field is populated, so the fixture exercises the full
+/// frozen schema.
+///
+/// Purpose (parser-layer guardrail): the real per-tool parser, once written, must
+/// reproduce this exact raw -> `NormalizedMetrics` mapping. The golden test then
+/// tells a *parser regression* apart from a *genuine verifier anomaly* — without
+/// it, the first real period's "bugs" would most likely be the parser's own.
+pub struct ReferenceParser;
+
+impl RecordParser for ReferenceParser {
+    fn parse(&self, _tool: &str, bytes: &[u8]) -> Vec<CoreMetrics> {
+        String::from_utf8_lossy(bytes)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let buggy = l.trim() == "buggy";
+                CoreMetrics {
+                    verifier_decision: VerifierDecision::Accept,
+                    register_evolution: vec![RegSnapshot {
+                        insn_idx: 0,
+                        regs: vec![RegState {
+                            reg: 0,
+                            reg_type: "scalar".to_string(),
+                            tnum: if buggy {
+                                Tnum { value: 1, mask: 0xff }
+                            } else {
+                                Tnum { value: 0, mask: 0xff }
+                            },
+                            umin: 0,
+                            umax: 255,
+                            smin: 0,
+                            smax: 255,
+                        }],
+                    }],
+                    processed: Processed { insn_processed: 12, states_processed: 3 },
+                    jit_interp_diff: Some(JitInterpDiff {
+                        retval_jit: if buggy { 1 } else { 0 },
+                        retval_interp: 0,
+                        data_out_equal: true,
+                    }),
+                    coverage_delta: CoverageDelta::default(),
+                    helper_arg_violations: if buggy {
+                        vec![HelperArgViolation {
+                            helper: "bpf_map_lookup_elem".to_string(),
+                            arg_index: 1,
+                            expected: "PTR_TO_MAP_KEY".to_string(),
+                            observed: "SCALAR_VALUE".to_string(),
+                        }]
+                    } else {
+                        Vec::new()
+                    },
+                }
+            })
+            .collect()
     }
 }
 

@@ -117,6 +117,27 @@ flowchart TB
   `BPF_JIT_ALWAYS_ON`, `DEBUG_INFO_BTF` (+ BTF/pahole ön-koşulları).
   → `config/kernel/bpf-verifier-lab.config`.
 
+> [!note] Hangi araç hangi CORE alanını üretir (veri-kaynağı haritası)
+> Bu ayrım kritik: **syzkaller tek başına verifier'ın accept/reject + register-state
+> çıktısını ÜRETMEZ** — o veri kernel'in verifier **log buffer**'ında
+> (`BPF_PROG_LOAD .log_level=2`) ve dmesg'de yaşar. Doğrulandı: 200 sn'lik bir
+> kampanyanın default çıktısı yalnız `manager log + corpus.db (+ crashes/)`.
+>
+> | CORE alanı | Gerçek kaynak | Üreten |
+> | --- | --- | --- |
+> | verifier decision + reason | `BPF_PROG_LOAD` retval + log_buf | **differential harness** (dmesg fallback) |
+> | register-state evrimi (tnum/bounds/reg type) | verifier log buffer @ `log_level=2` | **differential harness** |
+> | `insn_processed` / processed states | verifier log/stats | **differential harness** |
+> | JIT↔interp retval + `data_out` | `BPF_PROG_TEST_RUN` (JIT vs interp) | **differential harness** |
+> | coverage delta (yeni BB) + exec N | KCOV | **syzkaller** |
+> | helper `arg_type` ihlali | call-site reg tipleri (log buffer) ⋈ proto | **diff** stage (kaynak: harness log) |
+>
+> Sonuç: syzkaller'ın işi **coverage-güdümlü input üretimi + crash yüzeye çıkarma**;
+> verifier-semantik CORE alanlarının birincil üreticisi **differential harness**'tir.
+> Bu yüzden §5'teki "gerçek per-tool parser" tek değil **iki** parser'a bölünür:
+> (a) syzkaller coverage/crash parser'ı, (b) differential-harness verifier-log parser'ı
+> — verifier mantık hataları asıl (b)'de yüzeye çıkar.
+
 ---
 
 ## 5. Döngü (pipeline)
@@ -136,7 +157,7 @@ Her stage `pipeline` crate'inde ayrı bir modül; typed input/output. Şu anki d
 | Stage | Durum | Not |
 | --- | --- | --- |
 | `ingest` | ✅ | byte-for-byte topla, `RAW_INDEX` yaz |
-| `normalize` | ✅ | frozen şemaya yorumla; gerçek per-tool parser'lar TODO |
+| `normalize` | ✅ | frozen şemaya yorumla; **golden fixture + `ReferenceParser`** anchor'ı var (parser-katmanı guardrail); gerçek per-tool parser'lar (syz + harness) TODO |
 | `score` | ✅ | Rust→Python subprocess; `baseline-hard-signals-v0`; istatistik TODO |
 | `diff` | ✅ | intrinsik mantıksal invariant + enjekte `GroundTruth` oracle; dış-kaynak loader TODO |
 | `report` | ✅ | `ANOMALY_SCORES` ⋈ `DIFF_FINDINGS` → triyajlı `PERIOD_REPORT`; score'a göre sıralı, yeni severity yok |

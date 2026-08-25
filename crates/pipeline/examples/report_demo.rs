@@ -7,69 +7,14 @@
 //!   cargo run -p pipeline --example report_demo -- <base_dir>
 
 use contract::{Artifact, PeriodPaths};
-use metrics::core::{
-    CoreMetrics, CoverageDelta, HelperArgViolation, JitInterpDiff, Processed, RegSnapshot,
-    RegState, Tnum, VerifierDecision,
-};
 use pipeline::groundtruth::helper_proto::HelperProtoModel;
 use pipeline::groundtruth::StaticGroundTruth;
 use pipeline::ingest::{self, Source};
-use pipeline::normalize::{self, RecordParser};
+use pipeline::normalize;
 use pipeline::report::{self, PeriodReport};
 use pipeline::{diff, score};
 use std::fs;
 use std::path::PathBuf;
-
-/// `clean` -> well-formed accepted record; `buggy` -> malformed tnum + JIT/interp
-/// divergence + a helper arg_type violation (trips diff and lifts the score).
-struct DemoParser;
-impl RecordParser for DemoParser {
-    fn parse(&self, _tool: &str, bytes: &[u8]) -> Vec<CoreMetrics> {
-        String::from_utf8_lossy(bytes)
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| {
-                let buggy = l.trim() == "buggy";
-                CoreMetrics {
-                    verifier_decision: VerifierDecision::Accept,
-                    register_evolution: vec![RegSnapshot {
-                        insn_idx: 0,
-                        regs: vec![RegState {
-                            reg: 0,
-                            reg_type: "scalar".to_string(),
-                            tnum: if buggy {
-                                Tnum { value: 1, mask: 0xff }
-                            } else {
-                                Tnum { value: 0, mask: 0xff }
-                            },
-                            umin: 0,
-                            umax: 255,
-                            smin: 0,
-                            smax: 255,
-                        }],
-                    }],
-                    processed: Processed { insn_processed: 12, states_processed: 3 },
-                    jit_interp_diff: Some(JitInterpDiff {
-                        retval_jit: if buggy { 1 } else { 0 },
-                        retval_interp: 0,
-                        data_out_equal: true,
-                    }),
-                    coverage_delta: CoverageDelta::default(),
-                    helper_arg_violations: if buggy {
-                        vec![HelperArgViolation {
-                            helper: "bpf_map_lookup_elem".to_string(),
-                            arg_index: 1,
-                            expected: "PTR_TO_MAP_KEY".to_string(),
-                            observed: "SCALAR_VALUE".to_string(),
-                        }]
-                    } else {
-                        Vec::new()
-                    },
-                }
-            })
-            .collect()
-    }
-}
 
 fn main() {
     let base = PathBuf::from(std::env::args().nth(1).expect("usage: report_demo <base_dir>"));
@@ -81,7 +26,7 @@ fn main() {
 
     // 1-2. ingest + normalize.
     let raw = ingest::run(&period, &[Source::new("syzkaller", &out)], 4200).expect("ingest");
-    normalize::run(&period, &raw, &DemoParser).expect("normalize");
+    normalize::run(&period, &raw, &normalize::ReferenceParser).expect("normalize");
 
     // 3. score (real Python analyzer over the contract).
     let mut analyzer = score::PythonAnalyzer::new();
