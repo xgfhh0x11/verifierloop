@@ -36,6 +36,7 @@ Her entry'nin sabit bir formatı vardır:
 | 0009 | syzkaller entegrasyonu (fuzzing stack) + VM ağ düzeltmesi | Tamamlandı (TCG'de fuzzing çalışır) |
 | 0010 | Golden fixture (parser-katmanı guardrail) + git init + veri-kaynağı netleştirmesi | Tamamlandı (normalize anchor'lı; gerçek parser'lar hâlâ TODO) |
 | 0011 | Differential/verifier-log harness v0 (guest-side C) + gerçek log örneği | Tamamlandı (decision+reg-state; JIT↔interp ertelendi; parser sonraki) |
+| 0012 | Verifier-log parser (`VerifierLogParser`) + gerçek veri uçtan uca | Tamamlandı (harness→CoreMetrics; pipeline gerçek veriyle koşuyor) |
 
 ### Pipeline durumu (özet)
 
@@ -938,3 +939,64 @@ tahminle değil **gerçek formata** göre yazabilmek için önce gerçek örnek 
   + insn_processed. Golden guardrail buraya da uygulanır.
 - **In-VM authoritative capture** + harness'i `RawObservation` akışına bağlamak.
 - Gerçek **`FuzzDriver`** (vmctl → VM'de harness + syz-manager; exec sayacı → period N).
+
+
+## 0012 — Verifier-log parser (`VerifierLogParser`) + gerçek veri uçtan uca
+
+- **Tarih:** 2026-08-26
+- **Durum:** Tamamlandı — harness'in gerçek çıktısı artık `CoreMetrics`'e parse
+  ediliyor ve pipeline'dan uçtan uca akıyor.
+- **Alan:** `crates/pipeline/src/verifier_log.rs` (yeni), `examples/harness_demo.rs`
+  (yeni), `lib.rs`.
+- **İlgili:** 0011 (harness), 0010 (golden guardrail), 0004 (CORE şeması).
+
+### Ne yapıldı
+**`pipeline::verifier_log::VerifierLogParser`** yazıldı — 0011 harness'inin native
+formatını (`===PROG / RESULT / ---LOG--- <verbatim> / ---END---`) `Vec<CoreMetrics>`'e
+çevirir. Çıkarılanlar: **decision** (accept/reject), **reject reason** (verbatim
+String), **register-state evrimi** (per-insn snapshot; `; Rk=...` ve tam-durum
+satırları), **processed** (`insn_processed`, `total_states`). Ayrıca
+**`harness_demo`** example'ı: committed harness sample → `ingest → normalize(VerifierLogParser)
+→ score → diff → report` (root/VM gerektirmez).
+
+### Neden
+Bu, 0011 harness'ini fiilen pipeline'a bağlayan parça (§2b parser). Artık gerçek
+verifier gözlemi CORE şemasına giriyor — sentetik `ReferenceParser` değil.
+
+### Tasarım kararları (bu adımda verilen)
+1. **Sağlam reg-token tokenizer** — token sınırı yalnız ` R<digit>=` boundary'sinde;
+   `var_off=(0x0; 0xff)` gibi parantez-içi boşluk/`;` bozmuyor (regex'siz, sıfır dep).
+2. **tnum asla malformed üretilmez** — const → `tnum{v,0}` + exact bounds; bilinmeyen
+   scalar → `value=0` (yani `value&mask==0` hep tutar). Böylece parser, `diff`'in
+   tnum invariant'ında **false-positive tetiklemez** — parser-katmanı guardrail'in
+   somut hâli.
+3. **Non-scalar** (ctx/fp/map_value) → `reg_type` **verbatim** prefix; tnum/bounds default.
+4. **`jit_interp_diff = None`** — ALWAYS_ON kernel (0011); helper ihlalleri **diff**'te
+   karar verilir, burada değil; `states_processed = total_states`.
+
+### Doğrulama (kanıt)
+- **5 unit test** (`verifier_log`): 3 programın parse'ı + `R0` evrimi `[1,8,8,13]` +
+  reject reason `"R0 !read_ok"` + `var_off` tokenizer'ı. Full suite **23 → 28 passed, 0 failed**.
+- **`harness_demo`** (gerçek sample, uçtan uca): 3 gerçek kayıt —
+  `rec0 accept insn=2`, `rec1 accept insn=5`, `rec2 reject "R0 !read_ok" insn=1` —
+  ve **0 anomali / 0 divergence**. Bu **doğru** sonuç: temiz + meşru-reddedilmiş
+  programlar false finding üretmemeli → parser sahte sinyal uydurmuyor.
+
+### Kapsam dışı / hâlâ stub
+- Tam `scalar(umin=...,umax=...,var_off=...)` formu **best-effort** (host sample'da
+  yok; unit test'te sentetik olarak var). In-VM authoritative capture ile doğrulanacak.
+- **In-VM authoritative capture** (bpf-next log formatı), **JIT↔interp** cross-kernel,
+  **syzkaller coverage/crash parser'ı**, gerçek **`FuzzDriver`**.
+
+### Dokunulan dosyalar
+- `crates/pipeline/src/verifier_log.rs` (yeni, parser + testler)
+- `crates/pipeline/examples/harness_demo.rs` (yeni)
+- `crates/pipeline/src/lib.rs` (`pub mod verifier_log;`)
+
+### Sonraki adımlar
+- Gerçek **`FuzzDriver`** — `vmctl` ile VM'de harness (ve syz-manager) sürüp
+  çıktıyı `RawObservation` akışına bağla; exec sayacını period N'e bağla.
+  Bu, `MockDriver`'ı gerçekle değiştirir ve **ilk gerçek period**'u koşturur.
+- **In-VM authoritative capture**: aynı harness'i bpf-next VM'inde koşup
+  log formatını doğrula (register-state verbosity host'tan farklı olabilir).
+- **syzkaller coverage/crash parser'ı** (KCOV delta + crash → CORE coverage/crash).

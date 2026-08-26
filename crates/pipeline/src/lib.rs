@@ -10,6 +10,7 @@
 
 pub mod ingest;
 pub mod normalize;
+pub mod verifier_log;
 pub mod score;
 pub mod diff;
 pub mod report;
