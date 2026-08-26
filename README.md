@@ -243,6 +243,13 @@ Two self-checks actually run against the skeleton:
 - `just build-rust` — compile the Rust workspace.
 - `just check-python` — confirm the Python package imports.
 
+## Operator manual
+
+Step-by-step "what to run, from where, in what order" lives in
+[`docs/RUNBOOK.md`](docs/RUNBOOK.md) — health checks, the end-to-end demo, the
+fuzzer, lab bring-up, and the KVM-vs-TCG situation. (`just` is optional and not
+required; the runbook gives the direct `./scripts/...` commands.)
+
 ## Development log
 
 Implementation steps taken *after* the initial scaffold — what was built, why,
