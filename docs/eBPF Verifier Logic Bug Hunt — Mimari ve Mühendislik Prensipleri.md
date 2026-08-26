@@ -128,7 +128,7 @@ flowchart TB
 > | verifier decision + reason | `BPF_PROG_LOAD` retval + log_buf | **differential harness** (dmesg fallback) |
 > | register-state evrimi (tnum/bounds/reg type) | verifier log buffer @ `log_level=2` | **differential harness** |
 > | `insn_processed` / processed states | verifier log/stats | **differential harness** |
-> | JIT↔interp retval + `data_out` | `BPF_PROG_TEST_RUN` (JIT vs interp) | **differential harness** |
+> | JIT↔interp retval + `data_out` | `BPF_PROG_TEST_RUN`, **iki kernel** (JIT vs interpreter) | differential harness — **ertelendi**, bkz ⚠️ |
 > | coverage delta (yeni BB) + exec N | KCOV | **syzkaller** |
 > | helper `arg_type` ihlali | call-site reg tipleri (log buffer) ⋈ proto | **diff** stage (kaynak: harness log) |
 >
@@ -137,6 +137,12 @@ flowchart TB
 > Bu yüzden §5'teki "gerçek per-tool parser" tek değil **iki** parser'a bölünür:
 > (a) syzkaller coverage/crash parser'ı, (b) differential-harness verifier-log parser'ı
 > — verifier mantık hataları asıl (b)'de yüzeye çıkar.
+>
+> ⚠️ **JIT↔interp differential tek kernel'de YAPILAMAZ.** Primary kernel
+> `CONFIG_BPF_JIT_ALWAYS_ON=y` ile derli → interpreter derleme-dışı, `bpf_jit_enable`
+> 1'e sabit. Bu sinyal **ayrı bir interpreter-only kernel** (`ALWAYS_ON` kapalı,
+> `bpf_jit_enable=0`) + cross-kernel koşu ister; sonraki bir harness moduna ertelendi.
+> Harness v0 **decision + register-state** üretir (bkz `harness/`, devlog 0011).
 
 ---
 

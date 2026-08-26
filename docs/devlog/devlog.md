@@ -35,6 +35,7 @@ Her entry'nin sabit bir formatı vardır:
 | 0008 | Gerçek bpf-next kernel/VM ortamı (build + rootfs + boot) | Tamamlandı (TCG çalışır; KVM host-side bloklu) |
 | 0009 | syzkaller entegrasyonu (fuzzing stack) + VM ağ düzeltmesi | Tamamlandı (TCG'de fuzzing çalışır) |
 | 0010 | Golden fixture (parser-katmanı guardrail) + git init + veri-kaynağı netleştirmesi | Tamamlandı (normalize anchor'lı; gerçek parser'lar hâlâ TODO) |
+| 0011 | Differential/verifier-log harness v0 (guest-side C) + gerçek log örneği | Tamamlandı (decision+reg-state; JIT↔interp ertelendi; parser sonraki) |
 
 ### Pipeline durumu (özet)
 
@@ -868,3 +869,72 @@ verifier-log). Detaylı tablo mimari doc §4'te.
   parser'ı** (golden pattern'iyle: gerçek ham örnek → beklenen normalized).
 - **syzkaller coverage/crash parser'ı** (KCOV delta + crash raporu → CORE coverage_delta).
 - Gerçek **`FuzzDriver`** (vmctl → syz-manager; exec sayacı → period N).
+
+
+## 0011 — Differential/verifier-log harness v0 (guest-side C) + gerçek log örneği
+
+- **Tarih:** 2026-08-26
+- **Durum:** Tamamlandı (v0) — harness gerçek verifier-log üretiyor; decision +
+  register-state. JIT↔interp ertelendi; in-VM authoritative capture + parser sonraki.
+- **Alan:** `harness/` (yeni), `scripts/build-harness.sh` (yeni), mimari doc, `.gitignore`.
+- **İlgili:** 0010 (veri-kaynağı haritası), 0009 (kernel/syzkaller).
+
+### Ne yapıldı
+syzkaller'ın üretmediği (0010) **verifier-semantik CORE sinyalini** üreten guest-side
+harness yazıldı: **`harness/diffharness.c`** — raw `bpf()` syscall ile küçük BPF
+programlarını `log_level=2` ile yükler, kernel verifier log buffer'ını **verbatim**
+basar (minimal frame içinde). 3 program: `return0` (accept), `alu_state` (accept,
+zengin register-state), `uninit_r0` (reject). **Host WSL kernel'de koşturulup
+gerçek log formatı yakalandı** → `harness/samples/host-6.18-sample.txt`. Ayrıca
+`scripts/build-harness.sh` (static tercih), `harness/README.md`, binary `.gitignore`'a.
+
+### Neden
+Verifier **logic bug** sinyalinin gerçek kaynağı budur: accept/reject + register-state
+evrimi (tnum/bounds), syzkaller'ın crash/coverage'ından farklı bir eksen. Parser'ı
+tahminle değil **gerçek formata** göre yazabilmek için önce gerçek örnek gerekti.
+
+### Tasarım kararları (bu adımda verilen)
+1. **C** — raw `bpf()`, sıfır bağımlılık, **static** derlenir → disposable VM'de
+   değişmeden koşar. "Native output UNCHANGED" ilkesinin en temiz hâli.
+2. **`SOCKET_FILTER`** prog type — root ile attach gerektirmeden yüklenir (v0 için ideal).
+3. **`log_level=2`** — tam register-state evrimi.
+4. **Native format** — `===PROG / RESULT / ---LOG--- <verbatim> / ---END---`.
+   Harness'in kendi çerçevesi minimal; verifier log byte-for-byte içeride.
+5. **JIT↔interp ertelendi** — aşağıdaki kısıt nedeniyle (iki kernel gerekir).
+
+### Bulgular (önemli)
+- **`CONFIG_BPF_JIT_ALWAYS_ON=y`** (hem fragment hem built `.config`) → interpreter
+  derleme-dışı, `bpf_jit_enable` 1'e sabit → **tek kernel'de JIT↔interp differential
+  İMKÂNSIZ**. Ayrı bir interpreter-only kernel + cross-kernel koşu ister; ertelendi.
+  (Mimari doc §4 haritası buna göre düzeltildi — önceki hâli fazla iyimserdi.)
+- **Gerçek log formatı** (parser'ın hedefi):
+  - karar: `RESULT decision=accept|reject`;
+  - reject reason: log içinde `R0 !read_ok` gibi satır (verbatim String);
+  - register-state: `N: (op) ... ; Rk=13` satırları (const → compact değer);
+  - sayaçlar: `processed N insns ... total_states T peak_states P`.
+- Host sample **representative**; **authoritative** capture = aynı binary'yi
+  bpf-next VM'inde (rev `.lab/kernel.rev`) koşmak — FuzzDriver wiring'in parçası.
+
+### Doğrulama (kanıt)
+- `cc -O2 -static` → 16 KB, `statically linked` (VM-uyumlu).
+- `./harness/diffharness` (host): `return0` → accept, `processed 2 insns`;
+  `alu_state` → accept, `R0` 1→8→8→13, `processed 5 insns`; `uninit_r0` → reject,
+  `R0 !read_ok`, `errno=13`, `processed 1 insns`. Tümü `samples/host-6.18-sample.txt`'de.
+
+### Kapsam dışı / hâlâ stub
+- **Gerçek verifier-log parser'ı** (bu harness çıktısı → `CoreMetrics`) — sonraki adım.
+- **In-VM authoritative capture** (bpf-next kernel) — FuzzDriver ile.
+- **JIT↔interp** cross-kernel modu; **syzkaller coverage/crash parser'ı**.
+
+### Dokunulan dosyalar
+- `harness/diffharness.c`, `harness/README.md`, `harness/samples/host-6.18-sample.txt` (yeni)
+- `scripts/build-harness.sh` (yeni)
+- `.gitignore` (harness binary)
+- `docs/eBPF Verifier ... Mimari ...md` (§4 JIT↔interp kısıtı düzeltmesi)
+
+### Sonraki adımlar
+- **Verifier-log parser'ı** (`normalize.rs`): bu sample'a karşı, **golden pattern'iyle**
+  (gerçek raw → beklenen normalized CORE) — decision + reject reason + register-state
+  + insn_processed. Golden guardrail buraya da uygulanır.
+- **In-VM authoritative capture** + harness'i `RawObservation` akışına bağlamak.
+- Gerçek **`FuzzDriver`** (vmctl → VM'de harness + syz-manager; exec sayacı → period N).

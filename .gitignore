@@ -28,3 +28,7 @@ id_rsa*
 
 # real kernel/VM lab artifacts (heavy)
 .lab/
+
+# Compiled guest-side harness (build artifact; reproducible from source)
+/harness/diffharness
+harness/*.o
