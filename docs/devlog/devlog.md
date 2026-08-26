@@ -37,6 +37,7 @@ Her entry'nin sabit bir formatı vardır:
 | 0010 | Golden fixture (parser-katmanı guardrail) + git init + veri-kaynağı netleştirmesi | Tamamlandı (normalize anchor'lı; gerçek parser'lar hâlâ TODO) |
 | 0011 | Differential/verifier-log harness v0 (guest-side C) + gerçek log örneği | Tamamlandı (decision+reg-state; JIT↔interp ertelendi; parser sonraki) |
 | 0012 | Verifier-log parser (`VerifierLogParser`) + gerçek veri uçtan uca | Tamamlandı (harness→CoreMetrics; pipeline gerçek veriyle koşuyor) |
+| 0013 | Gerçek `FuzzDriver` (VmHarnessDriver) + in-VM capture + **ilk gerçek period canlı** | Tamamlandı (loop gerçek bpf-next VM'de koşuyor; MockDriver değişti) |
 
 ### Pipeline durumu (özet)
 
@@ -1000,3 +1001,82 @@ verifier gözlemi CORE şemasına giriyor — sentetik `ReferenceParser` değil.
 - **In-VM authoritative capture**: aynı harness'i bpf-next VM'inde koşup
   log formatını doğrula (register-state verbosity host'tan farklı olabilir).
 - **syzkaller coverage/crash parser'ı** (KCOV delta + crash → CORE coverage/crash).
+
+
+## 0013 — Gerçek `FuzzDriver` (VmHarnessDriver) + in-VM capture + ilk gerçek period canlı
+
+- **Tarih:** 2026-08-26
+- **Durum:** Tamamlandı — döngü gerçek bpf-next VM'inde canlı koşuyor; `MockDriver`
+  yerini gerçek VM-destekli sürücüye bıraktı; **ilk gerçek period** uçtan uca çalıştı.
+- **Alan:** `scripts/run-harness-vm.sh` (yeni), `orchestrator::driver` (VmHarnessDriver),
+  `examples/real_period.rs` (yeni), `verifier_log.rs` (reject-reason fix), `loop_runtime` (mesaj),
+  `harness/samples/bpf-next-sample.txt` (yeni, authoritative).
+- **İlgili:** 0011/0012 (harness + parser), 0003 (loop spine), 0008 (VM).
+
+### Ne yapıldı
+1. **`scripts/run-harness-vm.sh`** — harness'i disposable bpf-next VM'inde koşup
+   DEFAULT native çıktısını host'ta yakalar. verify-vm deseni: `init=/root/run-harness.sh`
+   + **seri konsol** (ssh yok, ağ/timing derdi yok). Binary loop-mount ile rootfs'e
+   enjekte edilir; boot `-snapshot` olduğu için VM yazımları ephemeral. Bu aynı
+   zamanda **in-VM authoritative capture**.
+2. **Rust gerçek sürücü** (`orchestrator::driver`):
+   - `HarnessRunner` trait — VM ağır işini soyutlar (VM'siz test için enjekte edilebilir).
+   - `VmHarnessDriver<R>` — `FuzzDriver` impl; her `pump` harness batch'ini koşar,
+     `ingest`'i yakalanan çıktıya yöneltir; **exec = kümülatif program sayısı** (period sınırı).
+   - `ScriptRunner` — `run-harness-vm.sh`'i çağırır; `FakeRunner` — VM'siz unit test.
+3. **`real_period` example** — `run_period` ile **canlı harvest** + downstream
+   pipeline (normalize→score→diff→report). `loop_runtime::run()` mesajı buna yönlendirir.
+4. **Parser düzeltmesi** — aşağıdaki authoritative-capture bulgusu.
+
+### Bulgu (önemli) — bpf-next host'tan zengin log üretiyor
+In-VM capture, host formatından farkları ortaya çıkardı: **ön-analiz blokları**
+(`topo_order`, `subprog#0: analyzing`, `stack use/def`) ve **çok satırlı reject
+diagnostic** (`Verification failed: ... / Reason: ... / Suggestion: ...`).
+Parser'ın eski reject-reason heuristic'i ("son anlamlı satır") yeni formatta
+yanlışlıkla **"Suggestion:" satırını** yakalıyordu. → **forward-scan**'e çevrildi:
+state section'dan sonraki **ilk** arıza satırı (`R0 !read_ok`), hem host hem
+bpf-next'te stabil. Register-state kısmı zaten sağlamdı (girintili preamble
+atlanıyor). **In-VM authoritative capture bu parser açığını yakaladı — golden/guardrail
+felsefesinin işlemesi.** Authoritative sample commit'lendi + parser testi `include_str!`
+ile ona pinlendi.
+
+### Tasarım kararları (bu adımda verilen)
+1. **`init=` + seri konsol** (ssh değil) — verify-vm deseni; ağ/ssh timing yok, sağlam.
+2. **Loop-mount enjeksiyon + `-snapshot`** — taze binary base image'e yazılır, VM
+   yazımları ephemeral kalır (disposability korunur).
+3. **`HarnessRunner` injection** — RecordParser/GroundTruth deseninin aynısı; sürücü
+   VM'siz unit-test edilebilir (`FakeRunner`).
+4. **exec = `===PROG` blok sayısı**; `exec_threshold=1` → tek harness batch tek VM
+   boot'ta period'u kapatır (v0 için doğru granülarite).
+
+### Doğrulama (kanıt)
+- Full suite **28 → 31 passed, 0 failed** (parser bpf-next testi + 2 vm_driver testi).
+- `run-harness-vm.sh` **canlı**: bpf-next VM boot → harness → **3 blok** yakalandı.
+- `real_period` **canlı (exit 0)**:
+  `HARVEST period=1 exec_count=3 collected_files=1`;
+  `PERIOD REPORT records=3 flagged=0 divergences=0`;
+  `rec0 accept insn=2`, `rec1 accept insn=5`, `rec2 reject "R0 !read_ok" insn=1`;
+  **0 anomali** (temiz + meşru-reddedilmiş programlar için doğru).
+
+### Kapsam dışı / hâlâ stub
+- **syzkaller-driven execs** — harness şu an sabit 3-program corpus'u koşuyor;
+  syzkaller'ın ürettiği programları harness'e beslemek + coverage/crash parser'ı ayrı.
+- **JIT↔interp** cross-kernel modu (ALWAYS_ON, 0011).
+- **`vmctl`** hâlâ script'i sarmıyor (Rust wrapper sonraki); çok-batch accumulation
+  (v0 son batch'i harvest eder; `exec_threshold=1` ile tek batch).
+
+### Dokunulan dosyalar
+- `scripts/run-harness-vm.sh` (yeni)
+- `crates/orchestrator/src/driver.rs` (HarnessRunner/VmHarnessDriver/ScriptRunner + testler)
+- `crates/orchestrator/examples/real_period.rs` (yeni)
+- `crates/orchestrator/src/loop_runtime.rs` (`run()` mesajı)
+- `crates/pipeline/src/verifier_log.rs` (reject-reason forward-scan + bpf-next testi)
+- `harness/samples/bpf-next-sample.txt` (yeni, authoritative in-VM capture)
+
+### Sonraki adımlar
+- **syzkaller → harness besleme**: syzkaller'ın ürettiği programları/corpus'u harness'e
+  verip verifier'ı gerçek fuzz yüzeyinde koştur; **syzkaller coverage/crash parser'ı**
+  (KCOV delta + crash → CORE) ekle. Bu, ilk gerçek bug avı yüzeyi.
+- **Daha zengin harness corpus'u** (pointer aritmetiği, helper çağrıları, map erişimi)
+  → daha çok register-state + gerçek helper `arg_type` sinyali.
+- **`vmctl`** Rust wrapper (script yerine); **interpreter kernel** modu (JIT↔interp).

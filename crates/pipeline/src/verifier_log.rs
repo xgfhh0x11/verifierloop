@@ -106,15 +106,29 @@ fn has_digit_head(t: &str) -> bool {
     }
 }
 
-/// The verifier's failure line: the last non-empty log line that is neither the
-/// `processed ...` summary nor an instruction/state/liveness line. Kept verbatim.
+/// The verifier's failure line. Scans forward for the FIRST un-indented, non-empty
+/// line that appears AFTER the per-insn state section and is not a state/summary
+/// line. On both the host and bpf-next logs this is the concise verifier token
+/// (e.g. `R0 !read_ok`) — stable across bpf-next's richer multi-line diagnostic
+/// (`Verification failed: ...`, `Reason:`, `Suggestion:`) that follows it, and
+/// past its pre-analysis preamble (`func#`, `topo_order`, `subprog#`,
+/// `stack use/def`). Indented lines are preamble/detail and are skipped. Verbatim.
 fn parse_reject_reason(log: &[&str]) -> String {
-    for line in log.iter().rev() {
+    let mut seen_state = false;
+    for line in log {
+        if line.starts_with(' ') {
+            continue; // indented: disasm / liveness / diagnostic detail
+        }
         let t = line.trim();
-        if t.is_empty() || t.starts_with("processed ") || t.starts_with("func#")
-            || t.starts_with("Live regs") || has_digit_head(t)
-        {
+        if t.is_empty() {
             continue;
+        }
+        if has_digit_head(t) {
+            seen_state = true; // an un-indented "N: ..." state/insn line
+            continue;
+        }
+        if !seen_state || t.starts_with("processed ") {
+            continue; // still in the analysis preamble, or the summary line
         }
         return t.to_string();
     }
@@ -476,5 +490,39 @@ processed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
         assert_eq!(r0.tnum, Tnum { value: 0, mask: 0xff });
         assert_eq!((r0.umin, r0.umax), (0, 255));
         assert_eq!(r0.tnum.value & r0.tnum.mask, 0);
+    }
+
+    // Authoritative in-VM capture from the self-built bpf-next kernel: a richer log
+    // (topo_order/subprog/stack use-def preamble + multi-line reject diagnostic).
+    const BPF_NEXT_SAMPLE: &str = include_str!("../../../harness/samples/bpf-next-sample.txt");
+
+    #[test]
+    fn parses_bpf_next_richer_format() {
+        let recs = VerifierLogParser.parse("diffharness", BPF_NEXT_SAMPLE.as_bytes());
+        assert_eq!(recs.len(), 3, "three program blocks");
+
+        // Accept + counters survive the extra preamble.
+        assert_eq!(recs[0].verifier_decision, VerifierDecision::Accept);
+        assert_eq!(recs[0].processed.insn_processed, 2);
+
+        // The pre-analysis disasm (indented) must NOT create bogus snapshots — the
+        // R0 evolution is still exactly the real state line values.
+        let r0_vals: Vec<u64> = recs[1]
+            .register_evolution
+            .iter()
+            .flat_map(|s| s.regs.iter())
+            .filter(|r| r.reg == 0)
+            .map(|r| r.tnum.value)
+            .collect();
+        assert_eq!(r0_vals, vec![1, 8, 8, 13]);
+
+        // Reject reason is the concise token, NOT the trailing "Suggestion:" line
+        // that the richer diagnostic adds after it.
+        assert_eq!(
+            recs[2].verifier_decision,
+            VerifierDecision::Reject {
+                reason: "R0 !read_ok".to_string()
+            }
+        );
     }
 }

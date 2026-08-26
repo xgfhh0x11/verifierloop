@@ -164,13 +164,14 @@ fn now_unix() -> Option<u64> {
 /// but the real VM-backed `FuzzDriver` is not wired yet (see `driver` TODO), so
 /// there is no production driver to construct here.
 pub fn run() {
-    // TODO(loop): construct the real VM-backed FuzzDriver (vmctl + syzkaller +
-    // differential harness) and call `run_periods`. Until then, exercise the spine
-    // via `MockDriver` in the tests and the `period_spine` example.
+    // A real VM-backed driver now exists: `driver::VmHarnessDriver` +
+    // `ScriptRunner` (boots the disposable bpf-next VM, runs the differential/
+    // verifier-log harness, ingests its native output). Run one real period with
+    // the `real_period` example; syzkaller-driven execs are still to be wired in.
     eprintln!(
-        "verifierloop: loop spine ready (period = exec-count N; ingest wired). \
-Real fuzz driver not implemented yet — see orchestrator::driver TODO, the unit \
-tests, and `cargo run -p orchestrator --example period_spine -- <dir>`."
+        "verifierloop: loop ready (period = exec-count N). Real VM-backed driver: \
+`cargo run -p orchestrator --example real_period -- <dir>` (boots the VM + runs \
+the harness). Spine-only (mock) demo: `--example period_spine -- <dir>`."
     );
 }
 

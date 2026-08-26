@@ -6,10 +6,16 @@ verifier** on the `bpf-next` kernel tree. It hunts for verifier **logic bugs**,
 running self-built kernels under disposable VMs, observing verifier behavior, and
 diffing what it observes against documented/expected behavior.
 
-> **Status: SCAFFOLDING.** This repository is a compilable/importable skeleton.
-> Pipeline stages, ground-truth loaders, VM control, scoring, and the loop
-> runtime are **stubs** — each stops at a clearly-marked `TODO` at its boundary.
-> No hunt logic is implemented yet.
+> **Status: FIRST REAL PERIOD RUNS LIVE.** The five-stage pipeline and the loop
+> run **end to end on real verifier data** from a self-built `bpf-next` kernel: a
+> guest-side differential/verifier-log harness loads BPF programs with
+> `log_level=2` in a disposable VM, a real parser shapes that into the CORE
+> schema, and the loop harvests one real period (see devlog 0013,
+> `cargo run -p orchestrator --example real_period`).
+> **Still `TODO` (marked in-code):** syzkaller-driven execs + coverage/crash
+> parser, external ground-truth loaders (verifier.c/rst/patch), statistical
+> scoring, JIT↔interpreter cross-kernel diff, and a Rust `vmctl` wrapper. KVM is
+> blocked host-side (WSL2 nested virt); everything runs on TCG.
 
 ---
 
