@@ -39,6 +39,7 @@ Her entry'nin sabit bir formatı vardır:
 | 0012 | Verifier-log parser (`VerifierLogParser`) + gerçek veri uçtan uca | Tamamlandı (harness→CoreMetrics; pipeline gerçek veriyle koşuyor) |
 | 0013 | Gerçek `FuzzDriver` (VmHarnessDriver) + in-VM capture + **ilk gerçek period canlı** | Tamamlandı (loop gerçek bpf-next VM'de koşuyor; MockDriver değişti) |
 | 0014 | Harness zenginleştirme: ranged-scalar programlar → full-scalar path + diff gerçek veride | Tamamlandı (parser chained-value fix; diff invariant'ları gerçek ranged-state'te koşuyor) |
+| 0015 | Detektör kalibrasyonu: diff true-positive'i GERÇEK parser yolunda kanıtlandı | Tamamlandı (temizde susar, enjekte tutarsızlıkta bağırır) |
 
 ### Pipeline durumu (özet)
 
@@ -1140,3 +1141,60 @@ umin yokken default 0 (verifier bastırınca implied 0).
   gerçek helper `arg_type` ihlali sinyali + PTR_TO_* register tipleri.
 - **syzkaller coverage/crash → DERIVED** (fuzzer sinyalini periyoda bağla).
 - diff için **kasıtlı-tutarsız-state** birim testi (true-positive kanıtı).
+
+
+## 0015 — Detektör kalibrasyonu: diff'in true-positive'i GERÇEK parser yolunda kanıtlandı
+
+- **Tarih:** 2026-08-27
+- **Durum:** Tamamlandı — diff'in intrinsic invariant'ları artık gerçek
+  `VerifierLogParser` yolunda hem **susma** (temiz) hem **doğru bağırma** (enjekte
+  tutarsızlık) yönünden kanıtlı.
+- **Alan:** `crates/pipeline/tests/diff_detector_calibration.rs` (yeni).
+- **İlgili:** 0014 (diff gerçek ranged-state'te koşuyor), 0006 (diff invariant'ları).
+  Reviewer'ın §7-şüphe-2'sini kapatır.
+
+### Ne yapıldı
+Bir **detektör-kalibrasyon** integration testi eklendi. Gerçek harness native
+formatındaki bir bloğu (bpf-next `ranged_and`) tam gerçek yoldan geçirir:
+`ingest → normalize(VerifierLogParser) → diff`. Üç test:
+1. **`silent_on_clean_real_state`** — temiz, kendi-içinde-tutarlı gerçek state → **0 bulgu**.
+2. **`shouts_on_injected_inconsistency_via_real_parser`** — maskeli scalar'ın tnum'ına
+   tek-karakter fault enjekte edilir (`var_off=(0x0; 0xff)` → `(0x1; 0xff)`, yani
+   `value & mask != 0`, malformed tnum) → diff **`tnum_malformed`** yakalar.
+3. **`control_and_mutant_differ_only_by_the_injection`** — kontrol ile mutant tam
+   **tek karakter** farklı; dolayısıyla sonuç farkının tek sebebi dedektörün o
+   faulta tepkisi.
+
+### Neden (reviewer'ın önceliklendirmesi — hacimden ÖNCE)
+Bir dedektörün **susması** ile **doğru bağırması** ayrı ispatlardır. diff'in
+true-positive'i o ana dek yalnız sentetik `report_demo`'da (ReferenceParser)
+kanıtlıydı; gerçek parser yolunda dedektörün gerçek bir tutarsızlığı yakaladığı
+gösterilmemişti. Bu, **syzkaller-hacmini açmadan önce** gelmeli: aksi halde sistem
+binlerce program koşup "0 anomali" derse, bunun *temiz corpus* mu yoksa *sağır
+dedektör* mü olduğu ayırt edilemez. Önce dedektörün gerçek yolda bir kez doğru
+bağırdığını gör, sonra hacmi aç — periyodik-hasat çıktısına güvenmenin ön koşulu.
+
+### Tasarım kararı (bu adımda verilen)
+- **Fault-injection gerçek native formatta** yapıldı (gerçek verifier talep üzerine
+  bug üretemez), tek-karakter mutasyonla — böylece kontrol/mutant yalnız enjeksiyonla
+  ayrışır. **malformed tnum** seçildi çünkü invariant'a birebir eşleşir
+  (`value & mask == 0` ihlali) ve hedef substring maskeli satıra özgü (geniş scalar
+  `0xffffffff))` ile bitiyor, dokunulmuyor).
+
+### Doğrulama (kanıt)
+- `diff_detector_calibration` → **3 passed**. Full suite **31 → 34 passed, 0 failed**.
+- `silent_on_clean_real_state`: temiz gerçek blok → `findings` boş.
+- `shouts_...`: enjekte malformed tnum → `tnum_malformed` bulgusu (gerçek parser yolunda).
+
+### Kapsam dışı / hâlâ stub
+- Diğer invariant'lar (bound inversion, tnum/bounds inconsistency) gerçek-path'te
+  ayrıca değil sentetik unit testte kanıtlı — tek true-positive kalibrasyon için
+  yeterli; istenirse genişletilir. `jit_interp` bacağı ALWAYS_ON nedeniyle zaten ölü.
+- Gerçek bir verifier bug'ı hâlâ yüzeye çıkmadı (beklenen — corpus temiz + kernel doğru).
+
+### Dokunulan dosyalar
+- `crates/pipeline/tests/diff_detector_calibration.rs` (yeni)
+
+### Sonraki adımlar
+- Dedektör artık kalibre → **güvenle** ya syzkaller-hacmi (fuzz volume) ya da daha
+  zengin corpus (helper çağrıları → helper `arg_type` oracle kolunu gerçek veride tetikle).

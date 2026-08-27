@@ -11,7 +11,7 @@
 > - **Repo kökü:** `/home/tylersec/verifierloop` — **git deposu** (branch `main`,
 >   8 commit: `bf506f1`…HEAD)
 > - **Kernel rev (hedef):** `5e289c5a4a526e870efac0ca658635c47138593a` (`.lab/kernel.rev`)
-> - **Son devlog entry'si:** `0014` — `docs/devlog/devlog.md`
+> - **Son devlog entry'si:** `0015` — `docs/devlog/devlog.md`
 
 ---
 
@@ -53,7 +53,7 @@ ground-truth ile diffle → insana triyajlı batch → tekrar. Period = **exec s
 - Belirtilmeyen her şey ad-hoc yerine **TODO**.
 
 **Kaynak belgeler:** `README.md`, `docs/RUNBOOK.md` (operatör manueli),
-`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0014).
+`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0015).
 
 ---
 
@@ -105,7 +105,7 @@ ingest ✅ → normalize ✅ → score ✅ → diff ✅ → report ✅ → (huma
 **(V1) Derleme + testler**
 ```
 $ cargo build   → Finished
-$ cargo test    → 31 passed, 0 failed
+$ cargo test    → 34 passed, 0 failed
 ```
 (dağılım: contract 5, orchestrator 6 [loop 4 + vm_driver 2], pipeline lib 18
 [+5 verifier_log], golden_normalize 1, diğerleri şema/iskelet 0.)
@@ -138,6 +138,14 @@ Gerçek bpf-next VM → loop harvest → downstream pipeline. **exit 0.**
 > bir bulgu üretilmedi** (corpus temiz + verifier tutarlı). 0014 ile diff'in intrinsic
 > invariant'ları artık gerçek ranged register-state'lerde koşuyor. Gerçek bug-avı hacmi
 > için syzkaller-güdümlü execs sıradaki iş.
+
+**(V5) Detektör kalibre — diff GERÇEK parser yolunda doğru bağırıyor**
+```
+$ cargo test -p pipeline --test diff_detector_calibration   → 3 passed
+```
+Gerçek harness bloğu → ingest→normalize(VerifierLogParser)→diff: temiz state → 0 bulgu
+(susma); tek-karakter fault (`var_off=(0x0;0xff)`→`(0x1;0xff)`, malformed tnum) →
+`tnum_malformed` yakalanır (doğru bağırma). "0 anomali" artık *kalibre dedektör* demek.
 
 ---
 
@@ -175,7 +183,7 @@ etkilenmez, sadece duvar-saati.
 
 Hafif (VM/root gerekmez):
 - **R1** `cargo build` → Finished. ✔ V1
-- **R2** `cargo test` → **31 passed, 0 failed**. ✔ V1
+- **R2** `cargo test` → **34 passed, 0 failed**. ✔ V1
 - **R3** `just check-python` (ya da elle import) → `python import OK`.
 - **R4** `cargo run -q -p pipeline --example report_demo -- /tmp/vl1` → `top_score=0.95`. ✔ V2
 - **R5** `cargo run -q -p pipeline --example harness_demo -- /tmp/vl2` → 6 gerçek kayıt (3 ranged-scalar dahil), 0 anomali. ✔ V3
@@ -188,14 +196,17 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
   (in-VM authoritative capture; `harness/samples/bpf-next-sample.txt` ile karşılaştır).
 - **R10** `TIMEOUT=220 cargo run -q -p orchestrator --example real_period -- /tmp/vlp` →
   `HARVEST ... PERIOD REPORT records=6 divergences=0`. ✔ V4
+- **R11** `cargo test -p pipeline --test diff_detector_calibration` → 3 passed
+  (dedektör kalibre: temizde susar, enjekte tutarsızlıkta `tnum_malformed`). ✔ V5
 
 **Reviewer'ın özellikle sorgulaması istenen iddialar (şüphe listesi):**
 1. "İlk gerçek period çalışıyor" → evet ama **sabit corpus**, syzkaller-fuzzing değil
    (§4 notu). Abartı mı, dürüst mü?
-2. "0 anomali doğru" → parser sahte üretmiyor. **Güncelleme (0014):** diff'in intrinsic
-   invariant'ları artık GERÇEK ranged/unknown-bit register-state'lerde koşuyor (6-program
-   enriched sample) → 0 divergence (doğru). Kalan: diff'in **true-positive**'ini kanıtlayan
-   kasıtlı-tutarsız-state testi (henüz yalnız sentetik `report_demo`).
+2. "0 anomali doğru" → **KAPANDI (0014→0015).** diff'in intrinsic invariant'ları GERÇEK
+   ranged register-state'lerde koşuyor, VE dedektör gerçek parser yolunda **kalibre**:
+   temizde susar, enjekte malformed-tnum'da `tnum_malformed` diye bağırır
+   (`diff_detector_calibration`, ✔ V5). Yani "0 anomali" artık *sağır dedektör* değil.
+   (Gerçek bir verifier bug'ı hâlâ yüzeye çıkmadı — beklenen: corpus temiz + kernel doğru.)
 3. **Parser** bpf-next authoritative capture'a karşı doğrulandı. **Güncelleme (0014):**
    full `scalar(...)` formu (chained-value `smax=umax=255` + var_off) artık GERÇEK bpf-next
    verisinde parse edilip test ediliyor. Kalan: pointer/helper register tipleri henüz görülmedi.
