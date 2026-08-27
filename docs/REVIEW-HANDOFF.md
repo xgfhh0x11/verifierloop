@@ -32,7 +32,7 @@ gerçek bpf-next VM → diffharness (log_level=2) → VmHarnessDriver → run_pe
 ```
 
 **Reviewer'ın en çok şüpheyle bakması gereken nokta:** "ilk gerçek period çalışıyor"
-iddiası **doğru ama dar**. Harness şu an **sabit 3-program corpus'u** koşuyor —
+iddiası **doğru ama dar**. Harness şu an **sabit 6-program corpus'u** koşuyor (3 basic + 3 ranged-scalar) —
 syzkaller-güdümlü gerçek fuzzing DEĞİL. Yani kanıtlanan şey **mekanizma + gerçek
 verifier verisi akışı**, henüz **bug avı hacmi değil**. Ayrıca şu ana kadar gerçek
 veriden **hiç true-positive anomali yüzeye çıkmadı** (bilinçli: corpus temiz). Bu
@@ -90,7 +90,7 @@ ingest ✅ → normalize ✅ → score ✅ → diff ✅ → report ✅ → (huma
 | **score** | Rust→Python anomaly scoring | `baseline-hard-signals-v0` | istatistiksel |
 | **diff** | documented-vs-observed | intrinsic invariant'lar (tnum/bounds/JIT-interp) + helper oracle | dış loader'lar (verifier.c/rst/patch) |
 | **report** | score ⋈ diff → triyaj | join + sıralama | — |
-| **`VerifierLogParser`** | harness çıktısı → CoreMetrics | decision, reject reason (verbatim), register-state, processed | richer scalar formu best-effort |
+| **`VerifierLogParser`** | harness çıktısı → CoreMetrics | decision, reject reason (verbatim), register-state, processed | full `scalar(...)` gerçek veride test edildi (0014); pointer/helper reg tipleri henüz yok |
 | **`VmHarnessDriver`** | VM'de harness koş, exec→N | `FuzzDriver` impl, `ScriptRunner`, `FakeRunner` test | syzkaller-driven execs |
 | **`run-harness-vm.sh`** | harness'i bpf-next VM'inde koş, çıktı yakala | init=+seri, loop-mount, -snapshot | — |
 
@@ -100,7 +100,7 @@ ingest ✅ → normalize ✅ → score ✅ → diff ✅ → report ✅ → (huma
 
 ---
 
-## 4. Bizzat KOŞULMUŞ doğrulamalar (2026-08-26, ilk elden)
+## 4. Bizzat KOŞULMUŞ doğrulamalar (2026-08-27, ilk elden)
 
 **(V1) Derleme + testler**
 ```
@@ -119,16 +119,16 @@ PERIOD REPORT  ... top_score=0.95 divergences=3   (kurgusal buggy kayıt: diff+s
 **(V3) Pipeline — GERÇEK harness verisi (VM/root gerektirmez, committed sample)**
 ```
 $ cargo run -q -p pipeline --example harness_demo -- <dir>
-rec0 accept insn=2 | rec1 accept insn=5 (R0:1→8→8→13) | rec2 reject "R0 !read_ok"
-→ 0 anomali / 0 divergence   (temiz+meşru-red için DOĞRU; parser sahte sinyal uydurmuyor)
+rec0/1 accept | rec2 reject "R0 !read_ok" | rec3-5 ranged-scalar (r0&=0xff, r0<<=8, cmp)
+→ 6 kayıt, 0 anomali / 0 divergence  (full-scalar diff invariant'ları GERÇEK veride koşar)
 ```
 
 **(V4) İLK GERÇEK PERIOD — CANLI (bpf-next VM boot eder; root+TCG, dakikalar)**
 ```
 $ cargo run -q -p orchestrator --example real_period -- <dir>
-HARVEST  period=1 exec_count=3 collected_files=1
-PERIOD REPORT  records=3 flagged=0 divergences=0
-  rec0 accept insn=2 | rec1 accept insn=5 | rec2 reject "R0 !read_ok" insn=1
+HARVEST  period=1 exec_count=6 collected_files=1
+PERIOD REPORT  records=6 flagged=0 divergences=0
+  rec0/1 accept | rec2 reject "R0 !read_ok" | rec3-5 ranged-scalar accept   (6-program corpus, 0014)
 ```
 Gerçek bpf-next VM → loop harvest → downstream pipeline. **exit 0.**
 
@@ -178,16 +178,16 @@ Hafif (VM/root gerekmez):
 - **R2** `cargo test` → **31 passed, 0 failed**. ✔ V1
 - **R3** `just check-python` (ya da elle import) → `python import OK`.
 - **R4** `cargo run -q -p pipeline --example report_demo -- /tmp/vl1` → `top_score=0.95`. ✔ V2
-- **R5** `cargo run -q -p pipeline --example harness_demo -- /tmp/vl2` → 3 gerçek kayıt, 0 anomali. ✔ V3
+- **R5** `cargo run -q -p pipeline --example harness_demo -- /tmp/vl2` → 6 gerçek kayıt (3 ranged-scalar dahil), 0 anomali. ✔ V3
 - **R6** `cargo test -p pipeline --test golden_normalize` → yeşil (parser-katmanı guardrail).
 - **R7** Guardrail invaryantı: `crates/pipeline/src/diff.rs` içinde `anomaly_scores` okuması OLMADIĞINI teyit et.
 
 Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
 - **R8** `sudo ./harness/... ` yerine host'ta `./harness/diffharness` (root) → 3 blok verifier log.
-- **R9** `TIMEOUT=220 ./scripts/run-harness-vm.sh /tmp/out.log` → "captured 3 program block(s)"
+- **R9** `TIMEOUT=220 ./scripts/run-harness-vm.sh /tmp/out.log` → "captured 6 program block(s)"
   (in-VM authoritative capture; `harness/samples/bpf-next-sample.txt` ile karşılaştır).
 - **R10** `TIMEOUT=220 cargo run -q -p orchestrator --example real_period -- /tmp/vlp` →
-  `HARVEST ... PERIOD REPORT records=3 divergences=0`. ✔ V4
+  `HARVEST ... PERIOD REPORT records=6 divergences=0`. ✔ V4
 
 **Reviewer'ın özellikle sorgulaması istenen iddialar (şüphe listesi):**
 1. "İlk gerçek period çalışıyor" → evet ama **sabit corpus**, syzkaller-fuzzing değil
@@ -228,5 +228,5 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
 > (`real_period` örneği: gerçek VM → harvest → report, 31 test geçer); harness'i
 > pipeline'a bağlayan **gerçek parser + VM-destekli FuzzDriver** yazıldı ve
 > `MockDriver`'ı değiştirdi; **eksik olan**, harness'i **syzkaller-güdümlü gerçek
-> fuzz hacmine** bağlamak (henüz sabit 3-program corpus'u), dış ground-truth
+> fuzz hacmine** bağlamak (henüz sabit 6-program corpus'u), dış ground-truth
 > loader'ları ve JIT↔interp cross-kernel modu; **KVM host-side bloklu, TCG çalışır.**"
