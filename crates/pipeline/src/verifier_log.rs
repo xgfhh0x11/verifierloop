@@ -337,28 +337,45 @@ fn parse_uint(s: &str) -> Option<u64> {
     }
 }
 
-fn take_number_token(rest: &str) -> String {
-    let mut out = String::new();
-    for (i, c) in rest.char_indices() {
-        if i == 0 && c == '-' {
-            out.push(c);
-        } else if c.is_ascii_hexdigit() || c == 'x' || c == 'X' {
-            out.push(c);
-        } else {
-            break;
+/// Return the numeric token a `key` equals, skipping any chained `word=`
+/// assignments the verifier prints for shared values (e.g. `smax=umax=255` or
+/// `smax=umax=smax32=umax32=255` — all equal the trailing number).
+fn value_after_key<'a>(s: &'a str, key: &str) -> Option<&'a str> {
+    let b = s.as_bytes();
+    let mut pos = s.find(key)? + key.len();
+    loop {
+        if pos < b.len() && (b[pos].is_ascii_digit() || b[pos] == b'-') {
+            let start = pos;
+            let mut end = pos;
+            if b[end] == b'-' {
+                end += 1;
+            }
+            while end < b.len()
+                && (b[end].is_ascii_hexdigit() || b[end] == b'x' || b[end] == b'X')
+            {
+                end += 1;
+            }
+            return Some(&s[start..end]);
         }
+        // Skip an intervening `word=` chain (`umax=` in `smax=umax=255`).
+        let start = pos;
+        while pos < b.len() && (b[pos].is_ascii_alphanumeric() || b[pos] == b'_') {
+            pos += 1;
+        }
+        if pos > start && pos < b.len() && b[pos] == b'=' {
+            pos += 1;
+            continue;
+        }
+        return None;
     }
-    out
 }
 
 fn field_u64(s: &str, key: &str) -> Option<u64> {
-    let idx = s.find(key)? + key.len();
-    parse_uint(&take_number_token(&s[idx..]))
+    parse_uint(value_after_key(s, key)?)
 }
 
 fn field_i64(s: &str, key: &str) -> Option<i64> {
-    let idx = s.find(key)? + key.len();
-    let (_, i) = parse_const_int(&take_number_token(&s[idx..]))?;
+    let (_, i) = parse_const_int(value_after_key(s, key)?)?;
     Some(i)
 }
 
@@ -499,7 +516,7 @@ processed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
     #[test]
     fn parses_bpf_next_richer_format() {
         let recs = VerifierLogParser.parse("diffharness", BPF_NEXT_SAMPLE.as_bytes());
-        assert_eq!(recs.len(), 3, "three program blocks");
+        assert_eq!(recs.len(), 6, "six program blocks (3 basic + 3 ranged-scalar)");
 
         // Accept + counters survive the extra preamble.
         assert_eq!(recs[0].verifier_decision, VerifierDecision::Accept);
@@ -516,13 +533,45 @@ processed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
             .collect();
         assert_eq!(r0_vals, vec![1, 8, 8, 13]);
 
-        // Reject reason is the concise token, NOT the trailing "Suggestion:" line
-        // that the richer diagnostic adds after it.
+        // Reject reason is the concise token, NOT the trailing "Suggestion:" line.
         assert_eq!(
             recs[2].verifier_decision,
             VerifierDecision::Reject {
                 reason: "R0 !read_ok".to_string()
             }
         );
+
+        // FULL scalar(...) form on REAL data — the chained-value fields
+        // (`smax=umax=smax32=umax32=255`) and var_off must parse correctly.
+        // ranged_and (rec 3): `r0 &= 255` -> var_off=(0x0; 0xff), bounds 0..255.
+        let masked = recs[3]
+            .register_evolution
+            .iter()
+            .flat_map(|s| s.regs.iter())
+            .find(|r| r.reg == 0 && r.tnum.mask == 0xff)
+            .expect("masked R0 scalar present");
+        assert_eq!(masked.reg_type, "scalar");
+        assert_eq!(masked.tnum, Tnum { value: 0, mask: 0xff });
+        assert_eq!((masked.umin, masked.umax), (0, 255));
+        assert_eq!((masked.smin, masked.smax), (0, 255));
+
+        // shift_unknown (rec 4): `r0 <<= 8` -> var_off=(0x0; 0xffffffff00).
+        let shifted = recs[4]
+            .register_evolution
+            .iter()
+            .flat_map(|s| s.regs.iter())
+            .find(|r| r.reg == 0 && r.tnum.mask == 0xffffffff00)
+            .expect("shifted R0 scalar present");
+        assert_eq!(shifted.tnum.value, 0);
+
+        // Every parsed tnum stays well-formed (value & mask == 0) across all recs —
+        // the parser must never manufacture an inconsistency that diff would flag.
+        for rec in &recs {
+            for snap in &rec.register_evolution {
+                for r in &snap.regs {
+                    assert_eq!(r.tnum.value & r.tnum.mask, 0, "malformed tnum from parser");
+                }
+            }
+        }
     }
 }

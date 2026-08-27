@@ -7,11 +7,11 @@
 > Reviewer'ın görevi: bu iddiaları kendi eliyle koşup teyit etmek ve
 > **abartılmış/yanlış** olanları işaretlemek.
 >
-> - **Rapor tarihi:** 2026-08-26
+> - **Rapor tarihi:** 2026-08-27
 > - **Repo kökü:** `/home/tylersec/verifierloop` — **git deposu** (branch `main`,
->   6 commit: `bf506f1`…`6d36f80`)
+>   8 commit: `bf506f1`…HEAD)
 > - **Kernel rev (hedef):** `5e289c5a4a526e870efac0ca658635c47138593a` (`.lab/kernel.rev`)
-> - **Son devlog entry'si:** `0013` — `docs/devlog/devlog.md`
+> - **Son devlog entry'si:** `0014` — `docs/devlog/devlog.md`
 
 ---
 
@@ -53,7 +53,7 @@ ground-truth ile diffle → insana triyajlı batch → tekrar. Period = **exec s
 - Belirtilmeyen her şey ad-hoc yerine **TODO**.
 
 **Kaynak belgeler:** `README.md`, `docs/RUNBOOK.md` (operatör manueli),
-`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0013).
+`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0014).
 
 ---
 
@@ -133,9 +133,11 @@ PERIOD REPORT  records=3 flagged=0 divergences=0
 Gerçek bpf-next VM → loop harvest → downstream pipeline. **exit 0.**
 
 > **⚠️ Reviewer dikkat:** V4 gerçek veri + gerçek VM + gerçek loop'tur, AMA harness
-> **sabit 3-program corpus'u** koşar (syzkaller-güdümlü fuzzing değil). "0 anomali"
-> doğru sonuçtur ama **henüz true-positive bir bulgu üretilmedi** (corpus temiz).
-> Gerçek bug-avı yüzeyi bir sonraki iş (§6 #1).
+> **sabit corpus** koşar (0014'te 6 programa çıktı: 3 basic + 3 ranged-scalar),
+> syzkaller-güdümlü fuzzing değil. "0 anomali" doğru sonuçtur ama **henüz true-positive
+> bir bulgu üretilmedi** (corpus temiz + verifier tutarlı). 0014 ile diff'in intrinsic
+> invariant'ları artık gerçek ranged register-state'lerde koşuyor. Gerçek bug-avı hacmi
+> için syzkaller-güdümlü execs sıradaki iş.
 
 ---
 
@@ -190,11 +192,13 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
 **Reviewer'ın özellikle sorgulaması istenen iddialar (şüphe listesi):**
 1. "İlk gerçek period çalışıyor" → evet ama **sabit corpus**, syzkaller-fuzzing değil
    (§4 notu). Abartı mı, dürüst mü?
-2. "0 anomali doğru" → parser sahte üretmiyor (iyi), AMA **henüz gerçek bir true-positive
-   üretilmedi** — diff'in gerçek-veri tespiti yalnız sentetik `report_demo`'da denendi.
-   Diff motorunun gerçek-veri hassasiyeti kanıtlanmamış.
-3. **Parser** bpf-next authoritative capture'a karşı doğrulandı, ama yalnız **3 program
-   şekli**; `scalar(umin=...,var_off=...)` tam formu best-effort (gerçek veride görülmedi).
+2. "0 anomali doğru" → parser sahte üretmiyor. **Güncelleme (0014):** diff'in intrinsic
+   invariant'ları artık GERÇEK ranged/unknown-bit register-state'lerde koşuyor (6-program
+   enriched sample) → 0 divergence (doğru). Kalan: diff'in **true-positive**'ini kanıtlayan
+   kasıtlı-tutarsız-state testi (henüz yalnız sentetik `report_demo`).
+3. **Parser** bpf-next authoritative capture'a karşı doğrulandı. **Güncelleme (0014):**
+   full `scalar(...)` formu (chained-value `smax=umax=255` + var_off) artık GERÇEK bpf-next
+   verisinde parse edilip test ediliyor. Kalan: pointer/helper register tipleri henüz görülmedi.
 4. **JIT↔interp ertelendi** (`CONFIG_BPF_JIT_ALWAYS_ON=y` → tek kernel'de imkânsız).
    Bu kısıt doğru teşhis mi?
 5. **`run-harness-vm.sh`** loop-mount + `-snapshot` + seri-parse: sağlam mı, kırılgan mı?

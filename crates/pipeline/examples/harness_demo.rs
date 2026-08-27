@@ -2,10 +2,10 @@
 //!   diffharness native output
 //!     -> ingest -> normalize(VerifierLogParser) -> score -> diff -> report
 //!
-//! Uses the committed harness sample (harness/samples/host-6.18-sample.txt), so it
-//! runs without root or a VM. It demonstrates that real verifier observations flow
-//! end to end AND — importantly — produce NO false anomalies: the sample's clean
-//! and legitimately-rejected programs yield zero divergences, which is the correct
+//! Uses the committed authoritative bpf-next sample (harness/samples/bpf-next-sample.txt),
+//! captured in-VM. It runs without root or a VM and demonstrates that real verifier
+//! observations — including ranged/unknown-bit scalars — flow end to end AND produce
+//! NO false anomalies (the real verifier's states are self-consistent), which is the
 //! result. (Requires python3 for the score stage.)
 //!
 //!   cargo run -p pipeline --example harness_demo -- <base_dir>
@@ -20,7 +20,7 @@ use std::fs;
 use std::path::PathBuf;
 
 // The real diffharness output, embedded at build time (skips leading `#` header).
-const HARNESS_SAMPLE: &str = include_str!("../../../harness/samples/host-6.18-sample.txt");
+const HARNESS_SAMPLE: &str = include_str!("../../../harness/samples/bpf-next-sample.txt");
 
 fn main() {
     let base = PathBuf::from(std::env::args().nth(1).expect("usage: harness_demo <base_dir>"));

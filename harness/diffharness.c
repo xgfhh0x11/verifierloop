@@ -50,6 +50,9 @@
 #define BPF_JMP_IMM(OP, DST, IMM, OFF)                                         \
     ((struct bpf_insn){.code = BPF_JMP | BPF_OP(OP) | BPF_K,                   \
                        .dst_reg = DST, .src_reg = 0, .off = OFF, .imm = IMM})
+#define BPF_LDX_MEM(SIZE, DST, SRC, OFF)                                       \
+    ((struct bpf_insn){.code = BPF_LDX | BPF_SIZE(SIZE) | BPF_MEM,             \
+                       .dst_reg = DST, .src_reg = SRC, .off = OFF, .imm = 0})
 #define BPF_EXIT_INSN()                                                        \
     ((struct bpf_insn){.code = BPF_JMP | BPF_EXIT,                             \
                        .dst_reg = 0, .src_reg = 0, .off = 0, .imm = 0})
@@ -115,11 +118,42 @@ int main(void) {
         BPF_EXIT_INSN(),
     };
 
+    // Program D: bounded unknown scalar — read a ctx u32 (skb->len, unknown),
+    // mask to 0..255. Produces the FULL scalar form: var_off=(0x0; 0xff).
+    struct bpf_insn prog_ranged_and[] = {
+        BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1, 0),
+        BPF_ALU64_IMM(BPF_AND, BPF_REG_0, 0xff),
+        BPF_EXIT_INSN(),
+    };
+
+    // Program E: unknown high bits — read a ctx u32, shift left 8 (low 8 bits
+    // known-zero, the rest unknown). Exercises var_off mask with known-zero bits.
+    struct bpf_insn prog_shift[] = {
+        BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1, 0),
+        BPF_ALU64_IMM(BPF_LSH, BPF_REG_0, 8),
+        BPF_EXIT_INSN(),
+    };
+
+    // Program F: comparison-narrowed bound — read a ctx u32, cap it at 10 via a
+    // conditional. Exercises verifier bound narrowing (umax) on one path.
+    struct bpf_insn prog_bounded[] = {
+        BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1, 0),
+        BPF_JMP_IMM(BPF_JLE, BPF_REG_0, 10, 1),
+        BPF_MOV64_IMM(BPF_REG_0, 10),
+        BPF_EXIT_INSN(),
+    };
+
     run_one("return0", prog_return0,
             (int)(sizeof(prog_return0) / sizeof(prog_return0[0])));
     run_one("alu_state", prog_alu,
             (int)(sizeof(prog_alu) / sizeof(prog_alu[0])));
     run_one("uninit_r0", prog_uninit,
             (int)(sizeof(prog_uninit) / sizeof(prog_uninit[0])));
+    run_one("ranged_and", prog_ranged_and,
+            (int)(sizeof(prog_ranged_and) / sizeof(prog_ranged_and[0])));
+    run_one("shift_unknown", prog_shift,
+            (int)(sizeof(prog_shift) / sizeof(prog_shift[0])));
+    run_one("bounded_cmp", prog_bounded,
+            (int)(sizeof(prog_bounded) / sizeof(prog_bounded[0])));
     return 0;
 }

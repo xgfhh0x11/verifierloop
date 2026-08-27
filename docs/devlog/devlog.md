@@ -38,6 +38,7 @@ Her entry'nin sabit bir formatı vardır:
 | 0011 | Differential/verifier-log harness v0 (guest-side C) + gerçek log örneği | Tamamlandı (decision+reg-state; JIT↔interp ertelendi; parser sonraki) |
 | 0012 | Verifier-log parser (`VerifierLogParser`) + gerçek veri uçtan uca | Tamamlandı (harness→CoreMetrics; pipeline gerçek veriyle koşuyor) |
 | 0013 | Gerçek `FuzzDriver` (VmHarnessDriver) + in-VM capture + **ilk gerçek period canlı** | Tamamlandı (loop gerçek bpf-next VM'de koşuyor; MockDriver değişti) |
+| 0014 | Harness zenginleştirme: ranged-scalar programlar → full-scalar path + diff gerçek veride | Tamamlandı (parser chained-value fix; diff invariant'ları gerçek ranged-state'te koşuyor) |
 
 ### Pipeline durumu (özet)
 
@@ -1080,3 +1081,62 @@ ile ona pinlendi.
 - **Daha zengin harness corpus'u** (pointer aritmetiği, helper çağrıları, map erişimi)
   → daha çok register-state + gerçek helper `arg_type` sinyali.
 - **`vmctl`** Rust wrapper (script yerine); **interpreter kernel** modu (JIT↔interp).
+
+
+## 0014 — Harness zenginleştirme: ranged-scalar programlar → full-scalar path + diff gerçek veride
+
+- **Tarih:** 2026-08-27
+- **Durum:** Tamamlandı — harness artık ranged/unknown-bit scalar üreten programlar
+  koşuyor; parser bunların **full `scalar(...)`** formunu gerçek bpf-next verisinde
+  doğru çözüyor; diff'in intrinsic invariant'ları gerçek varyasyonlu register-state'te koşuyor.
+- **Alan:** `harness/diffharness.c` (+3 program), `verifier_log.rs` (chained-value fix + test),
+  `harness/samples/bpf-next-sample.txt` (6 program), `examples/harness_demo.rs`.
+- **İlgili:** 0011/0012 (harness+parser), 0013 (ilk gerçek period). Reviewer'ın
+  "diff gerçek-veride denenmedi / full-scalar denenmedi" açığını kapatır.
+
+### Ne yapıldı
+Harness'e ctx okuyup **ranged/unknown-bit scalar** üreten 3 program eklendi:
+`ranged_and` (`r0 = *(u32*)(r1+0); r0 &= 0xff` → `var_off=(0x0; 0xff)`),
+`shift_unknown` (`r0 <<= 8` → known-zero düşük bitler), `bounded_cmp` (karşılaştırmayla
+umax daralması). Bunlar verifier'ın **full `scalar(...)`** formunu tetikler — const
+compact form değil. Authoritative bpf-next sample 6 programa güncellendi; parser testi
+full-scalar assertion'larıyla genişletildi; `harness_demo` enriched sample'a çevrildi.
+
+### Bulgu (önemli) — gerçek scalar formu "chained-value" içeriyor
+Gerçek çıktı (host + bpf-next aynı): `R0=scalar(smin=smin32=0,smax=umax=smax32=umax32=255,
+var_off=(0x0; 0xff))`. Yani **tek sayı birden çok alan adı tarafından paylaşılıyor**
+(`smax=umax=...=255`). Parser'ın eski field okuması "smax="den sonra sayı bekliyordu,
+ama "umax=" görüyordu → smax'ı **kaçırıyordu**. → **`value_after_key`** ile düzeltildi:
+key'den sonra `word=` zincirlerini atlayıp sondaki sayıya ulaşır. tnum var_off'tan;
+umin yokken default 0 (verifier bastırınca implied 0).
+
+### Doğrulama (kanıt)
+- `verifier_log` **6 test** (full-scalar assertion'ları gerçek veride):
+  `ranged_and` → `tnum{0, 0xff}`, `(umin,umax)=(0,255)`, `(smin,smax)=(0,255)`;
+  `shift_unknown` → `tnum.mask=0xffffffff00`; her rec'te `value & mask == 0`
+  (parser tutarsızlık üretmiyor). Full suite **31 passed**.
+- `harness_demo` (enriched, uçtan uca): **6 gerçek kayıt** (rec3/4/5 ranged-scalar),
+  `PERIOD REPORT records=6 flagged=0 divergences=0`. **diff'in intrinsic invariant'ları
+  (tnum iyi-biçimlilik, bound sırası, tnum/bounds tutarlılık) artık GERÇEK ranged
+  register-state'lerde koşuyor** ve 0 divergence buluyor — gerçek verifier tutarlı
+  olduğu için doğru (false positive yok). Logic-bug tespit yolu artık gerçek varyasyonlu
+  veride denenmiş durumda.
+
+### Kapsam dışı / hâlâ stub
+- Hâlâ **sabit corpus** (6 program, generator değil) — pointer aritmetiği, helper
+  çağrıları, map erişimi sonraki zenginleştirme (gerçek helper `arg_type` sinyali için).
+- **syzkaller coverage/crash** entegrasyonu (aggregate → DERIVED) ayrı iş.
+- diff'in **true-positive**'ini kanıtlayan kasıtlı-tutarsız-state testi (şimdilik yalnız
+  sentetik `report_demo` malformed tnum üretiyor).
+
+### Dokunulan dosyalar
+- `harness/diffharness.c` (+`BPF_LDX_MEM` makrosu, +3 program)
+- `crates/pipeline/src/verifier_log.rs` (`value_after_key` chained-value fix + test)
+- `harness/samples/bpf-next-sample.txt` (6 program, authoritative in-VM)
+- `crates/pipeline/examples/harness_demo.rs` (enriched sample)
+
+### Sonraki adımlar
+- Daha zengin corpus: **pointer aritmetiği + helper çağrıları + map erişimi** →
+  gerçek helper `arg_type` ihlali sinyali + PTR_TO_* register tipleri.
+- **syzkaller coverage/crash → DERIVED** (fuzzer sinyalini periyoda bağla).
+- diff için **kasıtlı-tutarsız-state** birim testi (true-positive kanıtı).
