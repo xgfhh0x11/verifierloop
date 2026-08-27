@@ -1,0 +1,9 @@
+# Minimal bpf_func_proto slice — REAL kernel contracts, hand-extracted from the
+# bpf-next tree (.lab/bpf-next). This is source 3 of the ground truth; the full
+# auto-extraction from the tree is still TODO — this curated slice feeds the
+# diff helper-arg check now. Columns (TAB-separated):
+#   helper <TAB> arg_index(0-based) <TAB> arg_type(ARG_*) <TAB> expected_regtype
+#
+# bpf_map_lookup_elem: kernel/bpf/helpers.c:55  .arg1_type = ARG_CONST_MAP_PTR
+#   -> arg0 must be a const map pointer; verifier reg-type family: map_ptr
+bpf_map_lookup_elem	0	ARG_CONST_MAP_PTR	map_ptr

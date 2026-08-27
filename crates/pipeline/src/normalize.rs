@@ -119,6 +119,7 @@ impl RecordParser for ReferenceParser {
                         data_out_equal: true,
                     }),
                     coverage_delta: CoverageDelta::default(),
+                    helper_arg_observations: Vec::new(),
                     helper_arg_violations: if buggy {
                         vec![HelperArgViolation {
                             helper: "bpf_map_lookup_elem".to_string(),
@@ -259,6 +260,7 @@ mod tests {
                         processed: Processed::default(),
                         jit_interp_diff: None,
                         coverage_delta: CoverageDelta::default(),
+                        helper_arg_observations: Vec::new(),
                         helper_arg_violations: Vec::new(),
                     }
                 })

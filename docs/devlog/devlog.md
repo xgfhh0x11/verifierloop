@@ -40,6 +40,7 @@ Her entry'nin sabit bir formatı vardır:
 | 0013 | Gerçek `FuzzDriver` (VmHarnessDriver) + in-VM capture + **ilk gerçek period canlı** | Tamamlandı (loop gerçek bpf-next VM'de koşuyor; MockDriver değişti) |
 | 0014 | Harness zenginleştirme: ranged-scalar programlar → full-scalar path + diff gerçek veride | Tamamlandı (parser chained-value fix; diff invariant'ları gerçek ranged-state'te koşuyor) |
 | 0015 | Detektör kalibrasyonu: diff true-positive'i GERÇEK parser yolunda kanıtlandı | Tamamlandı (temizde susar, enjekte tutarsızlıkta bağırır) |
+| 0016 | Helper kolu: parser-kapsaması + bpf_func_proto dilimi/loader + helper true-positive | Tamamlandı (expected LOADER'dan; provenance çıktıda gösterildi) |
 
 ### Pipeline durumu (özet)
 
@@ -1198,3 +1199,87 @@ bağırdığını gör, sonra hacmi aç — periyodik-hasat çıktısına güven
 ### Sonraki adımlar
 - Dedektör artık kalibre → **güvenle** ya syzkaller-hacmi (fuzz volume) ya da daha
   zengin corpus (helper çağrıları → helper `arg_type` oracle kolunu gerçek veride tetikle).
+
+
+## 0016 — Helper kolu: parser-kapsaması + `bpf_func_proto` dilimi/loader + helper true-positive kalibrasyonu
+
+- **Tarih:** 2026-08-27
+- **Durum:** Tamamlandı — helper arg-type mismatch'i artık gerçek yolda kalibre:
+  observed gerçek verifier log'dan, expected bir **dosyadan yüklenen** `bpf_func_proto`
+  diliminden; karar diff'te. Provenance çıktıda gösteriliyor.
+- **Alan:** `harness/diffharness.c` (+map_lookup), `metrics/core.rs`
+  (`helper_arg_observations`), `verifier_log.rs` (parse_helper_calls), `groundtruth/`
+  (loader + `helper_arg_regtype`), `diff.rs` (check_helper_observations),
+  `data/groundtruth/helper_protos.tsv` (yeni), testler + demo.
+- **İlgili:** 0015 (intrinsic kalibrasyon), 0006 (diff), 0014 (harness). Reviewer'ın
+  helper-kolu bar'ını karşılar.
+
+### Neden (reviewer'ın kritik ayrımı)
+`tnum` iyi-biçimliliği **intrinsic** (CORE'dan hesaplanır, dış kaynak yok). Ama helper
+arg-type mismatch **intrinsic DEĞİL** — beklenen tip `bpf_func_proto`'dan gelir. Bu
+yüzden helper kolunu "gerçek veride kalibre" etmek, beklenen arg tipinin bir **dosyadan
+loader ile** gelmesini gerektirir; teste gömülürse dış-ground-truth değil sentetik
+kalır. Ve karar nereden geliyor **çıktıda gösterilmeli**.
+
+### Ne yapıldı
+1. **Harness helper-kapsaması:** `map_lookup` programı — `BPF_MAP_CREATE` + `LD_MAP_FD`
+   + `call bpf_map_lookup_elem(&map, &key)`. 7-program authoritative in-VM sample.
+2. **CORE (observation-only):** `helper_arg_observations: Vec<HelperArgObservation>`
+   (helper, arg_index, observed reg-tipi ailesi). **`expected` YOK** — mimari olarak
+   beklenti CORE'a giremez; o ground-truth'a ait. `#[serde(default, skip_serializing_if)]`
+   → golden/demolar byte-identical (bozulmadı). Legacy `helper_arg_violations` korundu.
+3. **Parser:** `parse_helper_calls` — un-indented state trace'i biriktirir, `(85) call
+   <helper>#<id>` satırında arg register'larının (R1..R5) reg-tipi ailesini gözlemler.
+   Gerçek veride: arg0=`map_ptr`, arg1=`fp`.
+4. **Ground truth (dosyadan):** `data/groundtruth/helper_protos.tsv` — GERÇEK kernel
+   kontratı (`kernel/bpf/helpers.c:55  .arg1_type = ARG_CONST_MAP_PTR` → arg0 reg-tipi
+   `map_ptr`). `HelperProtoModel::load_from_file` + `arg_regtype` +
+   `GroundTruth::helper_arg_regtype`.
+5. **diff:** `check_helper_observations` — observed reg-tipi vs **loaded** expected;
+   uymuyorsa `helper_arg_type_mismatch`. Expected YALNIZCA ground-truth'tan.
+6. **Testler + demo** (aşağıda).
+
+### Tasarım kararları (bu adımda verilen)
+- **reg-tipi FAMILY** karşılaştırması (`fp-4`→`fp`, `map_ptr(ks=4,vs=8)`→`map_ptr`).
+- **arg0 seçildi** (ARG_CONST_MAP_PTR → tek crisp reg-tipi `map_ptr`); arg1 (birçok
+  geçerli tip: fp/map_value/pkt) bilinçli olarak dilime KONMADI → `None` → sessiz
+  (yanlış tek-tip dayatıp false-positive üretmemek için).
+- **Fault-injection gerçek log'da** (verifier gerçek mismatch'i zaten reddeder), +
+  **NoGroundTruth negatif kontrolü** (dosyasız → karar yok).
+- **Additive + skip-if-empty** (düşük yıkım): CORE şeması genişledi ama eski artifact/
+  golden/demolar değişmedi.
+
+### Doğrulama (kanıt)
+- **Parser (gerçek veri):** `verifier_log` testi 7 blok; `map_lookup` → arg0=`map_ptr`,
+  arg1=`fp` gözlemleniyor; scalar programlar 0 gözlem.
+- **`helper_calibration` (3 test):**
+  (a) eşleşen observed → **susar** (0 bulgu);
+  (b) mismatch **loader'ı GEREKTİRİR** — `NoGroundTruth` → 0 bulgu, dosya-yüklü dilim → 1 bulgu;
+  (c) `finding.expected == oracle.helper_arg_regtype(...)` yani **dosyadan-yüklenen değer**
+  (teste gömülü değil), `observed == "scalar"` (enjekte).
+- **`helper_provenance` demo çıktısı** (çıktıda gösterim):
+  `expected="map_ptr" (FROM FILE)  observed="scalar" (FROM LOG)`; NoGT → 0, file → 1;
+  "dosyayı kaldır, bulgu kaybolur → karar dış ground-truth".
+- Full suite **34 → 37 passed, 0 failed**. Python mirror güncellendi (`helper_arg_observations`), import OK.
+
+### Kapsam dışı / hâlâ stub
+- `bpf_func_proto` **auto-extraction** (kernel kaynağını parse etme) hâlâ TODO — bu,
+  kaynak satırına atıflı **curated** bir dilim. arg1/diğer helper'lar dilimde yok.
+- Legacy `helper_arg_violations` (sentetik `report_demo`/score yolu) kaldırılacak —
+  `report_demo` bu observation-only modele migrate edilince.
+
+### Dokunulan dosyalar
+- `harness/diffharness.c` (map_lookup + BPF_ST_MEM/BPF_EMIT_CALL makroları)
+- `harness/samples/bpf-next-sample.txt` (7 program, authoritative)
+- `crates/metrics/src/core.rs` (`HelperArgObservation` + alan)
+- `crates/pipeline/src/verifier_log.rs` (parse_helper_calls + test)
+- `crates/pipeline/src/groundtruth/{helper_proto.rs,mod.rs}` (loader + `helper_arg_regtype`)
+- `crates/pipeline/src/diff.rs` (check_helper_observations)
+- `data/groundtruth/helper_protos.tsv` (yeni; gerçek kontrat dilimi)
+- `crates/pipeline/tests/helper_calibration.rs`, `examples/helper_provenance.rs` (yeni)
+- CORE literalleri (+`helper_arg_observations: Vec::new()`), `python/.../schemas/core.py`
+
+### Sonraki adımlar
+- **syzkaller hacmi** — dedektörün her iki kolu (intrinsic + helper) gerçek yolda
+  kalibre; artık hacmi güvenle açabiliriz.
+- `bpf_func_proto` dilimini genişlet / auto-extract; legacy violations alanını kaldır.

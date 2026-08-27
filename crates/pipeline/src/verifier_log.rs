@@ -24,7 +24,8 @@
 
 use crate::normalize::RecordParser;
 use metrics::core::{
-    CoreMetrics, CoverageDelta, Processed, RegSnapshot, RegState, Tnum, VerifierDecision,
+    CoreMetrics, CoverageDelta, HelperArgObservation, Processed, RegSnapshot, RegState, Tnum,
+    VerifierDecision,
 };
 
 /// Parser for the differential/verifier-log harness native output.
@@ -91,7 +92,8 @@ fn parse_block(block: &str) -> CoreMetrics {
         processed: parse_processed(&log),
         jit_interp_diff: None,                     // v0: ALWAYS_ON kernel, no interp
         coverage_delta: CoverageDelta::default(),  // exec_n stamped by normalize
-        helper_arg_violations: Vec::new(),         // decided at the diff stage
+        helper_arg_observations: parse_helper_calls(&log),
+        helper_arg_violations: Vec::new(),         // legacy synthetic path
     }
 }
 
@@ -386,6 +388,81 @@ fn num_after(s: &str, key: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
+/// Normalize a verifier reg-type to a coarse FAMILY for helper-arg comparison:
+/// stack pointers (`fp-4`, `fp0`) collapse to `fp`; everything else (already
+/// stripped of its `(...)` detail by `build_regstate`) passes through.
+fn reg_family(reg_type: &str) -> String {
+    if reg_type.starts_with("fp") {
+        "fp".to_string()
+    } else {
+        reg_type.to_string()
+    }
+}
+
+/// Extract helper-call argument OBSERVATIONS from the verifier log: accumulate
+/// each register's reg-type family across the (un-indented) state trace, and at a
+/// `(85) call <helper>#<id>` site record the observed family of arg registers
+/// R1..R5 that have a tracked state (arg N = R(N+1)). The EXPECTED arg_type is not
+/// decided here — that is ground truth's job at the `diff` stage.
+fn parse_helper_calls(log: &[&str]) -> Vec<HelperArgObservation> {
+    use std::collections::BTreeMap;
+    let mut current: BTreeMap<u8, String> = BTreeMap::new();
+    let mut obs = Vec::new();
+
+    for line in log {
+        if line.starts_with(' ') {
+            continue; // indented preamble / liveness / precision annotations
+        }
+        let t = line.trim();
+        let colon = match t.find(':') {
+            Some(c) => c,
+            None => continue,
+        };
+        let head = &t[..colon];
+        if head.is_empty() || !head.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let rest = t[colon + 1..].trim_start();
+
+        // Full-state line ("R1=ctx() R10=fp0"): refresh every listed reg.
+        if looks_like_reg_token_start(rest) {
+            for r in parse_reg_tokens(rest) {
+                current.insert(r.reg, reg_family(&r.reg_type));
+            }
+            continue;
+        }
+
+        // Instruction line: "(op) disasm [; <state deltas>]".
+        let (disasm, state) = match rest.find(';') {
+            Some(i) => (rest[..i].trim(), rest[i + 1..].trim()),
+            None => (rest, ""),
+        };
+
+        // A call site: record args from the state accumulated BEFORE this insn.
+        if let Some(helper) = disasm.strip_prefix("(85) call ").map(|h| {
+            h.split(['#', ' ']).next().unwrap_or(h).to_string()
+        }) {
+            for reg in 1u8..=5 {
+                if let Some(fam) = current.get(&reg) {
+                    obs.push(HelperArgObservation {
+                        helper: helper.clone(),
+                        arg_index: reg - 1,
+                        observed: fam.clone(),
+                    });
+                }
+            }
+        }
+
+        // Apply this line's state deltas (e.g. the call's `; R0=map_value`).
+        if !state.is_empty() {
+            for r in parse_reg_tokens(state) {
+                current.insert(r.reg, reg_family(&r.reg_type));
+            }
+        }
+    }
+    obs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,7 +593,7 @@ processed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
     #[test]
     fn parses_bpf_next_richer_format() {
         let recs = VerifierLogParser.parse("diffharness", BPF_NEXT_SAMPLE.as_bytes());
-        assert_eq!(recs.len(), 6, "six program blocks (3 basic + 3 ranged-scalar)");
+        assert_eq!(recs.len(), 7, "seven blocks (3 basic + 3 ranged + 1 helper call)");
 
         // Accept + counters survive the extra preamble.
         assert_eq!(recs[0].verifier_decision, VerifierDecision::Accept);
@@ -563,6 +640,20 @@ processed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
             .find(|r| r.reg == 0 && r.tnum.mask == 0xffffffff00)
             .expect("shifted R0 scalar present");
         assert_eq!(shifted.tnum.value, 0);
+
+        // map_lookup (rec 6): the helper-call parser OBSERVES the arg reg-type
+        // families from the real call site — no expected/decision here.
+        let mlk = &recs[6].helper_arg_observations;
+        assert!(
+            mlk.iter().any(|o| o.helper == "bpf_map_lookup_elem" && o.arg_index == 0 && o.observed == "map_ptr"),
+            "arg0 observed as map_ptr; got {mlk:?}"
+        );
+        assert!(
+            mlk.iter().any(|o| o.helper == "bpf_map_lookup_elem" && o.arg_index == 1 && o.observed == "fp"),
+            "arg1 observed as fp (PTR_TO_STACK); got {mlk:?}"
+        );
+        // The scalar-only programs record NO helper observations.
+        assert!(recs[3].helper_arg_observations.is_empty());
 
         // Every parsed tnum stays well-formed (value & mask == 0) across all recs —
         // the parser must never manufacture an inconsistency that diff would flag.

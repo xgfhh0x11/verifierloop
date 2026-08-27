@@ -1,11 +1,10 @@
 # Authoritative verifier-log sample captured IN-VM from the self-built bpf-next
 # kernel (rev 5e289c5a4a526e870efac0ca658635c47138593a) via scripts/run-harness-vm.sh.
-# 6 programs: 3 basic (return0/alu_state/uninit_r0) + 3 ranged-scalar
-# (ranged_and/shift_unknown/bounded_cmp) exercising the FULL scalar(...) form.
+# 7 programs: 3 basic + 3 ranged-scalar + 1 helper call (map_lookup).
 # Captured: 2026-08-27
 # ----------------------------------------------------------------------
 ===PROG return0 type=socket_filter ===
-RESULT decision=accept fd=3 errno=0 load_ns=24851730
+RESULT decision=accept fd=3 errno=0 load_ns=26059934
 ---LOG---
 func#0 @0
 topo_order[0] = 
@@ -26,7 +25,7 @@ processed 2 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
 
 ---END---
 ===PROG alu_state type=socket_filter ===
-RESULT decision=accept fd=3 errno=0 load_ns=12623920
+RESULT decision=accept fd=3 errno=0 load_ns=8952526
 ---LOG---
 func#0 @0
 topo_order[0] = 
@@ -59,7 +58,7 @@ processed 5 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
 
 ---END---
 ===PROG uninit_r0 type=socket_filter ===
-RESULT decision=reject fd=-1 errno=13 load_ns=5370020
+RESULT decision=reject fd=-1 errno=13 load_ns=5061510
 ---LOG---
 func#0 @0
 topo_order[0] = 
@@ -95,7 +94,7 @@ processed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
 
 ---END---
 ===PROG ranged_and type=socket_filter ===
-RESULT decision=accept fd=3 errno=0 load_ns=6289850
+RESULT decision=accept fd=3 errno=0 load_ns=7354383
 ---LOG---
 func#0 @0
 topo_order[0] = 
@@ -120,7 +119,7 @@ processed 3 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
 
 ---END---
 ===PROG shift_unknown type=socket_filter ===
-RESULT decision=accept fd=3 errno=0 load_ns=3445350
+RESULT decision=accept fd=3 errno=0 load_ns=3594872
 ---LOG---
 func#0 @0
 topo_order[0] = 
@@ -145,7 +144,7 @@ processed 3 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
 
 ---END---
 ===PROG bounded_cmp type=socket_filter ===
-RESULT decision=accept fd=3 errno=0 load_ns=8687970
+RESULT decision=accept fd=3 errno=0 load_ns=8692326
 ---LOG---
 func#0 @0
 topo_order[0] = 
@@ -175,5 +174,52 @@ from 1 to 3: R0=scalar(smin=smin32=0,smax=umax=smax32=umax32=10,var_off=(0x0; 0x
 3: R0=scalar(smin=smin32=0,smax=umax=smax32=umax32=10,var_off=(0x0; 0xf)) R10=fp0
 3: (95) exit
 processed 5 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_states 0 mark_read 0
+
+---END---
+===PROG map_lookup type=socket_filter ===
+RESULT decision=accept fd=4 errno=0 load_ns=19409909
+---LOG---
+func#0 @0
+topo_order[0] = 
+subprog#0: analyzing (depth 0)...
+  1: (bf) r2 = r10	r2: _ -> fp0+0
+  2: (07) r2 += -4	r2: fp0+0 -> fp0-4
+  5: (85) call bpf_map_lookup_elem#1	r2: fp0-4 -> _
+  1: (bf) r2 = r10	r2: _ -> fp0+0
+  2: (07) r2 += -4	r2: fp0+0 -> fp0-4
+  5: (85) call bpf_map_lookup_elem#1	r2: fp0-4 -> _
+subprog#0:
+  0: (62) *(u32 *)(r10 -4) = 0
+  1: (bf) r2 = r10
+  2: (07) r2 += -4
+  3: (18) r1 = 0xffff8880052c6c00
+  5: (85) call bpf_map_lookup_elem#1 // r2=fp0-4
+  6: (b7) r0 = 0
+  7: (95) exit
+stack use/def subprog#0 (d0,cs0):
+  0: (62) *(u32 *)(r10 -4) = 0         ; def: fp0-4h
+  1: (bf) r2 = r10
+  2: (07) r2 += -4
+  3: (18) r1 = 0xffff8880052c6c00
+  5: (85) call bpf_map_lookup_elem#1   ; use: fp0-4h
+  6: (b7) r0 = 0
+  7: (95) exit
+Live regs before insn:
+      0: .......... (62) *(u32 *)(r10 -4) = 0
+      1: .......... (bf) r2 = r10
+      2: ..2....... (07) r2 += -4
+      3: ..2....... (18) r1 = 0xffff8880052c6c00
+      5: .12....... (85) call bpf_map_lookup_elem#1
+      6: .......... (b7) r0 = 0
+      7: 0......... (95) exit
+0: R1=ctx() R10=fp0
+0: (62) *(u32 *)(r10 -4) = 0          ; R10=fp0 fp-8=0000????
+1: (bf) r2 = r10                      ; R2=fp0 R10=fp0
+2: (07) r2 += -4                      ; R2=fp-4
+3: (18) r1 = 0xffff8880052c6c00       ; R1=map_ptr(ks=4,vs=8)
+5: (85) call bpf_map_lookup_elem#1    ;
+6: (b7) r0 = 0                        ; R0=0
+7: (95) exit
+processed 7 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_states 0 mark_read 0
 
 ---END---

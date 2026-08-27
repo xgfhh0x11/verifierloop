@@ -39,6 +39,13 @@ pub trait GroundTruth {
     /// Documented `arg_type` for helper argument `(helper, arg_index)`, or `None`
     /// if this oracle has no contract loaded for it (real proto loader TODO).
     fn helper_arg_type(&self, helper: &str, arg_index: u8) -> Option<String>;
+
+    /// Expected verifier reg-type FAMILY for a helper arg (source 3, real path) —
+    /// what the diff stage compares an OBSERVED arg reg-type against. Default
+    /// `None`; impls carrying a `bpf_func_proto` slice override it.
+    fn helper_arg_regtype(&self, _helper: &str, _arg_index: u8) -> Option<String> {
+        None
+    }
 }
 
 /// The empty oracle: knows nothing, corroborates nothing. Used when only the
@@ -76,6 +83,12 @@ impl GroundTruth for StaticGroundTruth {
     fn helper_arg_type(&self, helper: &str, arg_index: u8) -> Option<String> {
         self.helper_proto
             .arg_type(helper, arg_index)
+            .map(str::to_string)
+    }
+
+    fn helper_arg_regtype(&self, helper: &str, arg_index: u8) -> Option<String> {
+        self.helper_proto
+            .arg_regtype(helper, arg_index)
             .map(str::to_string)
     }
 }

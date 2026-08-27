@@ -88,6 +88,22 @@ pub struct CoverageDelta {
     pub exec_n: u64,
 }
 
+/// One helper-call argument OBSERVATION: which helper, which argument, and the
+/// verifier reg-type family observed for it at the call site (e.g. "map_ptr",
+/// "fp", "scalar"). PURE observation — the EXPECTED `arg_type` is deliberately
+/// NOT stored here; it lives in ground truth (`bpf_func_proto`), so a mismatch is
+/// DECIDED at `diff`, never pre-baked into CORE. This is the real-path counterpart
+/// of the (legacy, synthetic) [`HelperArgViolation`] which carried its own expected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HelperArgObservation {
+    /// Helper name, verbatim (e.g. "bpf_map_lookup_elem").
+    pub helper: String,
+    /// Argument index (0-based; arg N is register R(N+1)).
+    pub arg_index: u8,
+    /// Observed verifier reg-type family for this argument.
+    pub observed: String,
+}
+
 /// Helper `arg_type` contract-violation signal (from `bpf_func_proto` checks).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelperArgViolation {
@@ -114,6 +130,12 @@ pub struct CoreMetrics {
     pub jit_interp_diff: Option<JitInterpDiff>,
     /// KCOV coverage delta + exec counter N.
     pub coverage_delta: CoverageDelta,
-    /// Helper arg_type contract violations (zero or more).
+    /// Helper arg_type contract violations (zero or more). LEGACY / synthetic path
+    /// (carries its own expected); the real path uses `helper_arg_observations`.
     pub helper_arg_violations: Vec<HelperArgViolation>,
+    /// Helper-call argument observations from the real verifier log. Expected
+    /// arg_type comes from ground truth, so mismatches are decided at `diff`.
+    /// Skipped when empty so existing artifacts stay byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub helper_arg_observations: Vec<HelperArgObservation>,
 }

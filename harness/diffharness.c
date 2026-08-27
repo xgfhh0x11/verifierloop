@@ -53,6 +53,12 @@
 #define BPF_LDX_MEM(SIZE, DST, SRC, OFF)                                       \
     ((struct bpf_insn){.code = BPF_LDX | BPF_SIZE(SIZE) | BPF_MEM,             \
                        .dst_reg = DST, .src_reg = SRC, .off = OFF, .imm = 0})
+#define BPF_ST_MEM(SIZE, DST, OFF, IMM)                                        \
+    ((struct bpf_insn){.code = BPF_ST | BPF_SIZE(SIZE) | BPF_MEM,              \
+                       .dst_reg = DST, .src_reg = 0, .off = OFF, .imm = IMM})
+#define BPF_EMIT_CALL(FUNC)                                                    \
+    ((struct bpf_insn){.code = BPF_JMP | BPF_CALL,                             \
+                       .dst_reg = 0, .src_reg = 0, .off = 0, .imm = (FUNC)})
 #define BPF_EXIT_INSN()                                                        \
     ((struct bpf_insn){.code = BPF_JMP | BPF_EXIT,                             \
                        .dst_reg = 0, .src_reg = 0, .off = 0, .imm = 0})
@@ -94,6 +100,39 @@ static void run_one(const char *name, const struct bpf_insn *insns, int n) {
     printf("---LOG---\n%s\n---END---\n", g_log);
     if (fd >= 0)
         close(fd);
+}
+
+// Create a small ARRAY map and run a CORRECT bpf_map_lookup_elem(&map, &key) call
+// so the verifier log shows a real helper-call site (arg register types at the
+// call). This is what the verifier-log parser extracts as the OBSERVED arg type.
+static void run_map_lookup(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4;
+    m.value_size = 8;
+    m.max_entries = 1;
+    int map_fd = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_fd < 0) {
+        printf("===PROG map_lookup type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n"
+               "---LOG---\n---END---\n", errno);
+        return;
+    }
+    struct bpf_insn insns[] = {
+        BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0),   // *(u32*)(r10-4) = 0  (key on stack)
+        BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),   // r2 = r10
+        BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4),  // r2 = &key (PTR_TO_STACK) = arg1
+        // r1 = map (pseudo LD_MAP_FD, 2 slots) = arg0
+        ((struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                           .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_fd}),
+        ((struct bpf_insn){0}),
+        BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem),
+        BPF_MOV64_IMM(BPF_REG_0, 0),
+        BPF_EXIT_INSN(),
+    };
+    run_one("map_lookup", insns, (int)(sizeof(insns) / sizeof(insns[0])));
+    close(map_fd);
 }
 
 int main(void) {
@@ -155,5 +194,6 @@ int main(void) {
             (int)(sizeof(prog_shift) / sizeof(prog_shift[0])));
     run_one("bounded_cmp", prog_bounded,
             (int)(sizeof(prog_bounded) / sizeof(prog_bounded[0])));
+    run_map_lookup();
     return 0;
 }

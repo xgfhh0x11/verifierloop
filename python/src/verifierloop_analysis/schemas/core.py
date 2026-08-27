@@ -54,7 +54,16 @@ class CoverageDelta:
 
 
 @dataclass
-class HelperArgViolation:
+class HelperArgObservation:
+    # Real-path helper-call arg observation; expected comes from ground truth
+    # (bpf_func_proto), NOT from CORE -> mismatch is decided at diff.
+    helper: str
+    arg_index: int
+    observed: str
+
+
+@dataclass
+class HelperArgViolation:  # legacy / synthetic path (carries its own expected)
     helper: str
     arg_index: int
     expected: str
@@ -72,3 +81,4 @@ class CoreMetrics:
     jit_interp_diff: Optional[JitInterpDiff]
     coverage_delta: CoverageDelta
     helper_arg_violations: "list[HelperArgViolation]"
+    helper_arg_observations: "list[HelperArgObservation]" = None  # optional (skipped when empty)

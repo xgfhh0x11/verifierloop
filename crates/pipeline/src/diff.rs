@@ -162,6 +162,7 @@ pub fn run(
         let idx = idx as u64;
         check_logical_invariants(idx, record, &mut findings);
         check_helper_proto(idx, record, ground_truth, &mut findings);
+        check_helper_observations(idx, record, ground_truth, &mut findings);
     }
 
     let mut by_source = BySource::default();
@@ -315,6 +316,38 @@ fn check_helper_proto(
     }
 }
 
+/// Source-backed check (source 3, REAL path): compare each OBSERVED helper-arg
+/// reg-type (from the verifier log) against the EXPECTED reg-type from the loaded
+/// `bpf_func_proto` slice. The expected comes ONLY from ground truth — never from
+/// CORE — so this decision is external, not pre-baked. `None` = slice doesn't
+/// cover this arg (cannot corroborate; stay silent).
+fn check_helper_observations(
+    idx: u64,
+    record: &MetricRecord,
+    ground_truth: &dyn GroundTruth,
+    out: &mut Vec<DivergenceFinding>,
+) {
+    for o in &record.core.helper_arg_observations {
+        let Some(expected) = ground_truth.helper_arg_regtype(&o.helper, o.arg_index) else {
+            continue;
+        };
+        if expected != o.observed {
+            out.push(DivergenceFinding {
+                record_index: Some(idx),
+                source: GroundTruthSource::HelperProto,
+                kind: "helper_arg_type_mismatch".to_string(),
+                aspect: "helper_arg".to_string(),
+                expected,
+                observed: o.observed.clone(),
+                detail: format!(
+                    "{}(arg{}): observed reg-type disagrees with bpf_func_proto (ground truth)",
+                    o.helper, o.arg_index
+                ),
+            });
+        }
+    }
+}
+
 /// The unsigned range a tnum can represent: `[value, value | mask]` (unknown bits
 /// all 0 .. all 1).
 fn tnum_unsigned_span(t: Tnum) -> (u64, u64) {
@@ -358,6 +391,7 @@ mod tests {
                 processed: Processed::default(),
                 jit_interp_diff: None,
                 coverage_delta: CoverageDelta::default(),
+                helper_arg_observations: Vec::new(),
                 helper_arg_violations: Vec::new(),
             },
             counterfactual: CounterfactualLayer::default(),
