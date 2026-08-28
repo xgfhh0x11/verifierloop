@@ -47,6 +47,18 @@ pub struct ReportSummary {
     pub top_score: f64,
 }
 
+/// Parse-health accounting for the period — kept SEPARATE from divergences so a
+/// parser's own blind-spots are never counted as verifier signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ParseHealth {
+    /// Records the parser produced.
+    pub records: u64,
+    /// Records parsed with caveats (non-empty parse_notes) — lower confidence.
+    pub records_with_notes: u64,
+    /// Native blocks the parser could not shape into records (blind-spots).
+    pub unparsed_blocks: u64,
+}
+
 /// Human-facing, triaged report for one period (the PERIOD_REPORT payload).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PeriodReport {
@@ -61,6 +73,8 @@ pub struct PeriodReport {
     pub period_findings: Vec<DivergenceFinding>,
     /// Period-level summary.
     pub summary: ReportSummary,
+    /// Parse health (blind-spots), kept apart from divergences.
+    pub parse_health: ParseHealth,
 }
 
 /// Errors from the report stage.
@@ -156,12 +170,29 @@ pub fn run(period: &PeriodPaths, generated_unix: Option<u64>) -> Result<PeriodRe
         top_score: scores.summary.max_score,
     };
 
+    // Parse health from NORMALIZED (optional: the report unit test builds only
+    // scores+diff). Blind-spots stay OUT of the divergence count.
+    let parse_health = contract::read_artifact::<crate::normalize::NormalizedMetrics>(
+        &period.normalized(),
+    )
+    .map(|a| {
+        let n = a.payload;
+        ParseHealth {
+            records: n.records.len() as u64,
+            records_with_notes: n.records.iter().filter(|r| !r.parse_notes.is_empty()).count()
+                as u64,
+            unparsed_blocks: n.unparsed.len() as u64,
+        }
+    })
+    .unwrap_or_default();
+
     let report = PeriodReport {
         exec_count: scores.exec_count,
         generated_unix,
         items,
         period_findings,
         summary,
+        parse_health,
     };
 
     // Write PERIOD_REPORT (borrow the payload so we can return it after the block).

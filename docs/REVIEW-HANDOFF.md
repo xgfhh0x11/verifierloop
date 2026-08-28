@@ -11,7 +11,7 @@
 > - **Repo kökü:** `/home/tylersec/verifierloop` — **git deposu** (branch `main`,
 >   8 commit: `bf506f1`…HEAD)
 > - **Kernel rev (hedef):** `5e289c5a4a526e870efac0ca658635c47138593a` (`.lab/kernel.rev`)
-> - **Son devlog entry'si:** `0016` — `docs/devlog/devlog.md`
+> - **Son devlog entry'si:** `0017` — `docs/devlog/devlog.md`
 
 ---
 
@@ -53,7 +53,7 @@ ground-truth ile diffle → insana triyajlı batch → tekrar. Period = **exec s
 - Belirtilmeyen her şey ad-hoc yerine **TODO**.
 
 **Kaynak belgeler:** `README.md`, `docs/RUNBOOK.md` (operatör manueli),
-`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0016).
+`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0017).
 
 ---
 
@@ -105,7 +105,7 @@ ingest ✅ → normalize ✅ → score ✅ → diff ✅ → report ✅ → (huma
 **(V1) Derleme + testler**
 ```
 $ cargo build   → Finished
-$ cargo test    → 37 passed, 0 failed
+$ cargo test    → 41 passed, 0 failed
 ```
 (dağılım: contract 5, orchestrator 6 [loop 4 + vm_driver 2], pipeline lib 18
 [+5 verifier_log], golden_normalize 1, diğerleri şema/iskelet 0.)
@@ -159,6 +159,19 @@ dosyayı kaldır → bulgu kaybolur. Observed gerçek verifier log'undan; expect
 diliminden (kaynak: kernel/bpf/helpers.c ARG_CONST_MAP_PTR). intrinsic (tnum) + helper —
 her iki dedektör kolu gerçek yolda kalibre.
 
+**(V7) Unparsed politikası — parser gürültüsü sinyalin DIŞINDA**
+```
+$ cargo run -q -p pipeline --example parse_health_demo -- <dir>
+  SIGNAL   : divergences=0  flagged=0
+  PARSE HEALTH (separate): records=2  with_notes=1  unparsed_blocks=2
+     unparsed: headless (no RESULT), map_lookup (non-verifier RESULT)
+     noted   : rec1 [unrecognized reg-type form: arena_ptr]
+```
+`cargo test -p pipeline --test unparsed_policy` → 4 passed. RESULT'sız/hatalı blok
+ayrı `unparsed` kovasına gider (sahte accept'e dönüşmez); bilinmeyen reg-tipi → not;
+ikisi de ASLA divergence olmaz. Gerçek 7-program sample temiz (0 unparsed/0 not).
+Hacim gelince parser kör noktaları buraya düşer, sinyale değil.
+
 ---
 
 ## 5. Lab ortamı + kritik ortam gerçekleri
@@ -195,7 +208,7 @@ etkilenmez, sadece duvar-saati.
 
 Hafif (VM/root gerekmez):
 - **R1** `cargo build` → Finished. ✔ V1
-- **R2** `cargo test` → **37 passed, 0 failed**. ✔ V1
+- **R2** `cargo test` → **41 passed, 0 failed**. ✔ V1
 - **R3** `just check-python` (ya da elle import) → `python import OK`.
 - **R4** `cargo run -q -p pipeline --example report_demo -- /tmp/vl1` → `top_score=0.95`. ✔ V2
 - **R5** `cargo run -q -p pipeline --example harness_demo -- /tmp/vl2` → 6 gerçek kayıt (3 ranged-scalar dahil), 0 anomali. ✔ V3
@@ -212,6 +225,8 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
   (dedektör kalibre: temizde susar, enjekte tutarsızlıkta `tnum_malformed`). ✔ V5
 - **R12** `cargo test -p pipeline --test helper_calibration` → 3 passed; ve
   `cargo run -p pipeline --example helper_provenance` → expected FROM FILE, decision dosyaya bağlı. ✔ V6
+- **R13** `cargo test -p pipeline --test unparsed_policy` → 4 passed; ve
+  `cargo run -p pipeline --example parse_health_demo` → parse-health divergence'lardan ayrı. ✔ V7
 
 **Reviewer'ın özellikle sorgulaması istenen iddialar (şüphe listesi):**
 1. "İlk gerçek period çalışıyor" → evet ama **sabit corpus**, syzkaller-fuzzing değil
@@ -244,6 +259,10 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
 | 0011 | Differential/verifier-log harness v0 (guest-side C) | ✅ (JIT↔interp ertelendi) |
 | 0012 | `VerifierLogParser` + gerçek veri uçtan uca | ✅ |
 | 0013 | Gerçek `FuzzDriver` + **ilk gerçek period canlı** | ✅ |
+| 0014 | Harness zenginleştirme (ranged-scalar) + full-scalar path gerçek veride | ✅ |
+| 0015 | Detektör kalibrasyonu (intrinsic): diff true-positive gerçek yolda | ✅ |
+| 0016 | Helper kolu: file-loaded `bpf_func_proto` + helper true-positive | ✅ |
+| 0017 | Unparsed politikası (parser kör noktaları ayrı kova; rapor ayrı gösterir) | ✅ |
 
 ---
 
@@ -251,7 +270,7 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
 
 > "verifierloop'un **beş-stage'li pipeline'ı** ve **loop'u**, kendi derlediğimiz
 > bpf-next kernel'inden gelen **gerçek verifier verisiyle uçtan uca canlı koşuyor**
-> (`real_period` örneği: gerçek VM → harvest → report, 31 test geçer); harness'i
+> (`real_period` örneği: gerçek VM → harvest → report, 37 test geçer); harness'i
 > pipeline'a bağlayan **gerçek parser + VM-destekli FuzzDriver** yazıldı ve
 > `MockDriver`'ı değiştirdi; **eksik olan**, harness'i **syzkaller-güdümlü gerçek
 > fuzz hacmine** bağlamak (henüz sabit 6-program corpus'u), dış ground-truth

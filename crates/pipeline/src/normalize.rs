@@ -34,6 +34,10 @@ pub struct MetricRecord {
     pub counterfactual: CounterfactualLayer,
     /// Confirmation-bias probe (default NoPrediction).
     pub expectation: ExpectationFlag,
+    /// Partial-parse caveats for this record (empty = fully recognized). A record
+    /// with notes is a lower-confidence OBSERVATION, never an anomaly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parse_notes: Vec<String>,
 }
 
 /// The NORMALIZED payload for a period: many CORE records + period-level derived.
@@ -45,15 +49,52 @@ pub struct NormalizedMetrics {
     pub records: Vec<MetricRecord>,
     /// Period-level derived metrics.
     pub derived: DerivedMetrics,
+    /// Native blocks the parser could not shape into records (parser blind-spots,
+    /// kept apart from real signal). Skipped when empty so existing artifacts stay
+    /// byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unparsed: Vec<UnparsedBlock>,
 }
 
-/// Converts one tool's native output blob into zero or more CORE observations.
+/// A native block the parser could NOT shape into a trustworthy record. Kept in a
+/// SEPARATE bucket (see [`NormalizedMetrics::unparsed`]) — never silently dropped,
+/// and NEVER treated as a verifier anomaly. This is the policy that keeps a
+/// parser's own blind-spots distinguishable from real verifier signal, especially
+/// once a high-volume period surfaces log forms the parser has not seen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnparsedBlock {
+    /// Short label for triage (e.g. the program name, or a positional id).
+    pub label: String,
+    /// Why the block could not be turned into a record.
+    pub reason: String,
+}
+
+/// One parsed CORE observation plus any partial-parse caveats for THIS record.
+/// A record with non-empty `notes` was parsed but at reduced confidence — it is
+/// still an OBSERVATION, never an anomaly.
+pub struct ParsedRecord {
+    /// The CORE observation.
+    pub core: CoreMetrics,
+    /// Partial-parse caveats (empty = fully recognized).
+    pub notes: Vec<String>,
+}
+
+/// A parser's output: the records it could shape, and the blocks it could not.
+/// The two are kept apart on purpose (see [`UnparsedBlock`]).
+pub struct ParseOutput {
+    /// Records the parser produced (each with its own parse notes).
+    pub records: Vec<ParsedRecord>,
+    /// Blocks the parser could not shape into a trustworthy record.
+    pub unparsed: Vec<UnparsedBlock>,
+}
+
+/// Converts one tool's native output blob into CORE observations, keeping whatever
+/// it could NOT interpret in a separate `unparsed` bucket rather than guessing.
 ///
-/// A parser reads raw bytes and does not mutate them; it only *interprets* them
-/// into the schema.
+/// A parser reads raw bytes and does not mutate them; it only *interprets* them.
 pub trait RecordParser {
-    /// Parse `bytes` (one collected file from `tool`) into CORE observations.
-    fn parse(&self, tool: &str, bytes: &[u8]) -> Vec<CoreMetrics>;
+    /// Parse `bytes` (one collected file from `tool`) into a [`ParseOutput`].
+    fn parse(&self, tool: &str, bytes: &[u8]) -> ParseOutput;
 }
 
 /// Placeholder parser: yields no records. Swap in real per-tool parsers as their
@@ -64,8 +105,11 @@ pub trait RecordParser {
 pub struct UnimplementedParser;
 
 impl RecordParser for UnimplementedParser {
-    fn parse(&self, _tool: &str, _bytes: &[u8]) -> Vec<CoreMetrics> {
-        Vec::new()
+    fn parse(&self, _tool: &str, _bytes: &[u8]) -> ParseOutput {
+        ParseOutput {
+            records: Vec::new(),
+            unparsed: Vec::new(),
+        }
     }
 }
 
@@ -88,8 +132,8 @@ impl RecordParser for UnimplementedParser {
 pub struct ReferenceParser;
 
 impl RecordParser for ReferenceParser {
-    fn parse(&self, _tool: &str, bytes: &[u8]) -> Vec<CoreMetrics> {
-        String::from_utf8_lossy(bytes)
+    fn parse(&self, _tool: &str, bytes: &[u8]) -> ParseOutput {
+        let records = String::from_utf8_lossy(bytes)
             .lines()
             .filter(|l| !l.trim().is_empty())
             .map(|l| {
@@ -132,7 +176,15 @@ impl RecordParser for ReferenceParser {
                     },
                 }
             })
-            .collect()
+            .map(|core| ParsedRecord {
+                core,
+                notes: Vec::new(),
+            })
+            .collect();
+        ParseOutput {
+            records,
+            unparsed: Vec::new(),
+        }
     }
 }
 
@@ -189,11 +241,13 @@ pub fn run(
 ) -> Result<NormalizedMetrics, NormalizeError> {
     let raw_root = period.artifact("raw");
     let mut records = Vec::new();
+    let mut unparsed = Vec::new();
 
     for entry in &raw.entries {
         let path = raw_root.join(&entry.stored_path);
         let bytes = std::fs::read(&path)?;
-        for mut core in parser.parse(&entry.tool, &bytes) {
+        let out = parser.parse(&entry.tool, &bytes);
+        for ParsedRecord { mut core, notes } in out.records {
             // Carry provenance: stamp exec counter N if the parser left it unset.
             if core.coverage_delta.exec_n == 0 {
                 core.coverage_delta.exec_n = raw.exec_count;
@@ -202,8 +256,11 @@ pub fn run(
                 core,
                 counterfactual: CounterfactualLayer::default(), // opt-in; OFF here
                 expectation: ExpectationFlag::default(),         // NoPrediction
+                parse_notes: notes,
             });
         }
+        // Parser blind-spots kept in a SEPARATE bucket — never records, never anomalies.
+        unparsed.extend(out.unparsed);
     }
 
     let derived = DerivedMetrics {
@@ -216,6 +273,7 @@ pub fn run(
         exec_count: raw.exec_count,
         records,
         derived,
+        unparsed,
     };
 
     // Write NORMALIZED (borrow the payload so we can return it after the block).
@@ -240,8 +298,8 @@ mod tests {
     /// depending on any real tool's native format.
     struct LineParser;
     impl RecordParser for LineParser {
-        fn parse(&self, _tool: &str, bytes: &[u8]) -> Vec<CoreMetrics> {
-            String::from_utf8_lossy(bytes)
+        fn parse(&self, _tool: &str, bytes: &[u8]) -> ParseOutput {
+            let records = String::from_utf8_lossy(bytes)
                 .lines()
                 .filter(|l| !l.trim().is_empty())
                 .map(|l| {
@@ -264,7 +322,15 @@ mod tests {
                         helper_arg_violations: Vec::new(),
                     }
                 })
-                .collect()
+                .map(|core| ParsedRecord {
+                    core,
+                    notes: Vec::new(),
+                })
+                .collect();
+            ParseOutput {
+                records,
+                unparsed: Vec::new(),
+            }
         }
     }
 

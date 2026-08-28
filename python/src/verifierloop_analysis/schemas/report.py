@@ -30,9 +30,18 @@ class ReportSummary:
 
 
 @dataclass
+class ParseHealth:
+    # Parse-health accounting; kept separate from divergences.
+    records: int = 0
+    records_with_notes: int = 0
+    unparsed_blocks: int = 0
+
+
+@dataclass
 class PeriodReport:
     exec_count: int
     generated_unix: Optional[int]  # label only, never a criterion
     items: "list[TriageItem]"      # ordered by score descending
     period_findings: "list[DivergenceFinding]"  # diff findings with record_index=None
     summary: ReportSummary = field(default_factory=ReportSummary)
+    parse_health: ParseHealth = field(default_factory=ParseHealth)

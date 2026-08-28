@@ -14,7 +14,7 @@ use pipeline::diff::{self, DiffFindings};
 use pipeline::groundtruth::helper_proto::HelperProtoModel;
 use pipeline::groundtruth::StaticGroundTruth;
 use pipeline::ingest::{self, Source};
-use pipeline::normalize::{self, RecordParser};
+use pipeline::normalize::{self, ParseOutput, ParsedRecord, RecordParser};
 use std::fs;
 use std::path::PathBuf;
 
@@ -23,8 +23,8 @@ use std::path::PathBuf;
 /// a helper arg_type violation. Real parsers are TODO (native formats).
 struct DemoParser;
 impl RecordParser for DemoParser {
-    fn parse(&self, _tool: &str, bytes: &[u8]) -> Vec<CoreMetrics> {
-        String::from_utf8_lossy(bytes)
+    fn parse(&self, _tool: &str, bytes: &[u8]) -> ParseOutput {
+        let records = String::from_utf8_lossy(bytes)
             .lines()
             .filter(|l| !l.trim().is_empty())
             .map(|l| {
@@ -72,7 +72,15 @@ impl RecordParser for DemoParser {
                     },
                 }
             })
-            .collect()
+            .map(|core| ParsedRecord {
+                core,
+                notes: Vec::new(),
+            })
+            .collect();
+        ParseOutput {
+            records,
+            unparsed: Vec::new(),
+        }
     }
 }
 

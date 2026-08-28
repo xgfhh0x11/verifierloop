@@ -41,6 +41,7 @@ Her entry'nin sabit bir formatı vardır:
 | 0014 | Harness zenginleştirme: ranged-scalar programlar → full-scalar path + diff gerçek veride | Tamamlandı (parser chained-value fix; diff invariant'ları gerçek ranged-state'te koşuyor) |
 | 0015 | Detektör kalibrasyonu: diff true-positive'i GERÇEK parser yolunda kanıtlandı | Tamamlandı (temizde susar, enjekte tutarsızlıkta bağırır) |
 | 0016 | Helper kolu: parser-kapsaması + bpf_func_proto dilimi/loader + helper true-positive | Tamamlandı (expected LOADER'dan; provenance çıktıda gösterildi) |
+| 0017 | Unparsed politikası: parser kör noktaları ayrı kovada (hacimden önce) | Tamamlandı (blok→unparsed, satır→note; asla anomali; rapor ayrı gösterir) |
 
 ### Pipeline durumu (özet)
 
@@ -1283,3 +1284,69 @@ kalır. Ve karar nereden geliyor **çıktıda gösterilmeli**.
 - **syzkaller hacmi** — dedektörün her iki kolu (intrinsic + helper) gerçek yolda
   kalibre; artık hacmi güvenle açabiliriz.
 - `bpf_func_proto` dilimini genişlet / auto-extract; legacy violations alanını kaldır.
+
+
+## 0017 — Unparsed politikası: parser kör noktaları ayrı kovada (hacimden önce)
+
+- **Tarih:** 2026-08-28
+- **Durum:** Tamamlandı — parser tanımadığı log formunu artık sessizce düşürmüyor
+  ya da anomali saymıyor; ayrı bir `unparsed` kovasına / `parse_notes`'a koyuyor,
+  ve rapor bunu divergence'lardan ayrı gösteriyor.
+- **Alan:** `normalize.rs` (ParseOutput/UnparsedBlock/parse_notes/unparsed),
+  `verifier_log.rs` (classify_block), `report.rs` (ParseHealth), testler + demo,
+  python mirror.
+- **İlgili:** 0012 (parser), 0007 (report). Reviewer'ın hacim-öncesi sıralama ricası.
+
+### Neden (reviewer'ın hacim-öncesi şartı)
+İlk hacimli period önce **parser'ın kör noktalarını** çıkarır — verifier bug'ını
+değil. Bu ayrım olmadan rapor **parser-gürültüsü ile gerçek sinyali karıştırır**
+(sistem "0 anomali" der, ama bu temiz mi yoksa parser sessizce mi düştü belli olmaz).
+Politika hacimden ÖNCE tanımlanmalı.
+
+### Ne yapıldı — üç-yönlü ayrım
+`RecordParser::parse` artık `ParseOutput { records: Vec<ParsedRecord>, unparsed:
+Vec<UnparsedBlock> }` döndürür:
+1. **Tam-parse** → normal kayıt, not yok.
+2. **Kısmi-parse** → kayıt + `parse_notes` (düşük güven; tanınmayan reg-tipi, eksik
+   `processed`). Hâlâ bir GÖZLEM, anomali değil.
+3. **Unparsed** → güvenilir verifier kararı olmayan blok (RESULT yok, ya da
+   non-verifier `decision=error`) ayrı **kovaya** gider — **sahte kayda dönüşmez**
+   (en tehlikeli silent-misparse: RESULT'sız blok → default `accept` — engellendi).
+
+`normalize`: `NormalizedMetrics.unparsed` + `MetricRecord.parse_notes` (serde
+`skip_if_empty` → golden/eski artifact'ler byte-identical). `report`: **`ParseHealth`**
+(records / records_with_notes / unparsed_blocks) — divergence sayısından **AYRI**.
+
+### Değişmez kural
+Unparsed/partial **ASLA** verifier anomalisi olmaz ve **ASLA** sessizce düşmez.
+`parse_issues_never_become_diff_anomalies` testi bunu kilitler.
+
+### Doğrulama (kanıt)
+- **`unparsed_policy` (4 test):** undecidable blok → `unparsed` kovası (kayıt değil);
+  novel reg-tipi (`arena_ptr`) → not; parse-issue'lar diff'te 0 anomali; **gerçek
+  7-program sample temiz** → 0 unparsed / 0 not (politika gerçek veriyi false-flag'lemiyor).
+- **`parse_health_demo`** (karışık batch, uçtan uca): `SIGNAL divergences=0` ama
+  `PARSE HEALTH records=2 with_notes=1 unparsed_blocks=2`; unparsed'lar (`headless`:
+  no RESULT, `map_lookup`: non-verifier RESULT) ve notlu kayıt (`arena_ptr`) ayrı
+  listeleniyor. **Parser gürültüsü sinyalin DIŞINDA.**
+- Full suite **37 → 41 passed, 0 failed**. Python mirror (`UnparsedBlock`,
+  `ParseHealth`, `parse_notes`) + import OK; `harness_demo` python score hâlâ çalışıyor.
+
+### Kapsam dışı / hâlâ stub
+- Gerçek **syzkaller-güdümlü hacim** (sonraki iş) — politika artık hazır; o hacim
+  geldiğinde parser kör noktalarını doğru sınıflar (reviewer'ın bakacağı şey).
+- Not-tespiti şimdilik: bilinmeyen reg-tipi ailesi + eksik `processed`. Hacim yeni
+  kör nokta türleri gösterdikçe genişletilir.
+
+### Dokunulan dosyalar
+- `crates/pipeline/src/normalize.rs` (ParseOutput/ParsedRecord/UnparsedBlock, run, MetricRecord/NormalizedMetrics)
+- `crates/pipeline/src/verifier_log.rs` (classify_block + unrecognized_reg_families)
+- `crates/pipeline/src/report.rs` (ParseHealth)
+- `crates/pipeline/tests/unparsed_policy.rs`, `examples/parse_health_demo.rs` (yeni)
+- `crates/pipeline/{examples/{normalize,diff}_demo.rs, src/diff.rs}` (trait uyumu)
+- `python/.../schemas/{normalized,report}.py` (mirror)
+
+### Sonraki adımlar
+- **syzkaller-güdümlü ilk hacimli period** — programları harness'e besle; çıktının
+  parse-health'i (unparsed/notes) hacimde nasıl davranıyor gözle. Dedektör kalibre +
+  unparsed politikası hazır olduğundan, "0 anomali" artık güvenle yorumlanabilir.

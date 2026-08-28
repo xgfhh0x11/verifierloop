@@ -396,6 +396,7 @@ mod tests {
             },
             counterfactual: CounterfactualLayer::default(),
             expectation: ExpectationFlag::default(),
+            parse_notes: Vec::new(),
         }
     }
 
@@ -415,6 +416,7 @@ mod tests {
         NormalizedMetrics {
             exec_count: 100,
             records,
+            unparsed: Vec::new(),
             derived: metrics::derived::DerivedMetrics {
                 efficiency_per_exec: None,
                 record_count: 0,

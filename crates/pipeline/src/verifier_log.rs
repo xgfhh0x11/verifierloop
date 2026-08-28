@@ -22,7 +22,7 @@
 //! UNCHANGED-AT-SOURCE: this reads bytes and never mutates them; shaping into the
 //! schema is interpretation, done here in `normalize` and nowhere earlier.
 
-use crate::normalize::RecordParser;
+use crate::normalize::{ParseOutput, ParsedRecord, RecordParser, UnparsedBlock};
 use metrics::core::{
     CoreMetrics, CoverageDelta, HelperArgObservation, Processed, RegSnapshot, RegState, Tnum,
     VerifierDecision,
@@ -32,9 +32,17 @@ use metrics::core::{
 pub struct VerifierLogParser;
 
 impl RecordParser for VerifierLogParser {
-    fn parse(&self, _tool: &str, bytes: &[u8]) -> Vec<CoreMetrics> {
+    fn parse(&self, _tool: &str, bytes: &[u8]) -> ParseOutput {
         let text = String::from_utf8_lossy(bytes);
-        split_blocks(&text).iter().map(|b| parse_block(b)).collect()
+        let mut records = Vec::new();
+        let mut unparsed = Vec::new();
+        for b in split_blocks(&text) {
+            match classify_block(&b) {
+                Ok(pr) => records.push(pr),
+                Err(ub) => unparsed.push(ub),
+            }
+        }
+        ParseOutput { records, unparsed }
     }
 }
 
@@ -60,15 +68,21 @@ fn split_blocks(text: &str) -> Vec<String> {
     blocks
 }
 
-/// Parse one program block into a CORE observation.
-fn parse_block(block: &str) -> CoreMetrics {
-    let mut accept = true;
+/// Classify one native block: either a trustworthy record, or an [`UnparsedBlock`]
+/// kept in a SEPARATE bucket. UNPARSED POLICY — a block the parser cannot trust
+/// (no verifier decision, or a non-verifier RESULT) is NEVER turned into a
+/// default-filled record (which could masquerade as a clean accept) and NEVER
+/// treated as an anomaly; it is surfaced as a parser blind-spot. Recognized blocks
+/// may still carry per-record `notes` for partially-unrecognized content.
+fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
+    let label = block_label(block);
+    let mut result_line: Option<&str> = None;
     let mut in_log = false;
     let mut log: Vec<&str> = Vec::new();
 
     for line in block.lines() {
         if line.starts_with("RESULT ") {
-            accept = line.contains("decision=accept");
+            result_line = Some(line);
         } else if line.starts_with("---LOG---") {
             in_log = true;
         } else if line.starts_with("---END---") {
@@ -78,23 +92,84 @@ fn parse_block(block: &str) -> CoreMetrics {
         }
     }
 
-    let decision = if accept {
+    // Block-level unparsed: no trustworthy verifier decision -> do NOT invent a record.
+    let result = match result_line {
+        Some(r) => r,
+        None => {
+            return Err(UnparsedBlock {
+                label,
+                reason: "no RESULT line — decision unknown".to_string(),
+            })
+        }
+    };
+    let decision = if result.contains("decision=accept") {
         VerifierDecision::Accept
-    } else {
+    } else if result.contains("decision=reject") {
         VerifierDecision::Reject {
             reason: parse_reject_reason(&log),
         }
+    } else {
+        // e.g. `decision=error` (harness map-create failure) — not a verifier obs.
+        return Err(UnparsedBlock {
+            label,
+            reason: format!("non-verifier RESULT: {}", result.trim()),
+        });
     };
 
-    CoreMetrics {
+    let core = CoreMetrics {
         verifier_decision: decision,
         register_evolution: parse_register_evolution(&log),
         processed: parse_processed(&log),
-        jit_interp_diff: None,                     // v0: ALWAYS_ON kernel, no interp
-        coverage_delta: CoverageDelta::default(),  // exec_n stamped by normalize
+        jit_interp_diff: None,                    // v0: ALWAYS_ON kernel, no interp
+        coverage_delta: CoverageDelta::default(), // exec_n stamped by normalize
         helper_arg_observations: parse_helper_calls(&log),
-        helper_arg_violations: Vec::new(),         // legacy synthetic path
+        helper_arg_violations: Vec::new(),        // legacy synthetic path
+    };
+
+    // Record-level parse notes: partial-parse caveats (lower confidence, NOT anomalies).
+    let mut notes = Vec::new();
+    if !log.iter().any(|l| l.trim_start().starts_with("processed ")) {
+        notes.push("missing 'processed' counters".to_string());
     }
+    for fam in unrecognized_reg_families(&core) {
+        notes.push(format!("unrecognized reg-type form: {fam}"));
+    }
+
+    Ok(ParsedRecord { core, notes })
+}
+
+/// The `===PROG <name> ...` label of a block (for triage), or "block".
+fn block_label(block: &str) -> String {
+    block
+        .lines()
+        .next()
+        .and_then(|l| l.strip_prefix("===PROG "))
+        .map(|r| r.split_whitespace().next().unwrap_or("?").to_string())
+        .unwrap_or_else(|| "block".to_string())
+}
+
+/// Reg-type families the parser does NOT recognize (novel forms a high-volume
+/// period might surface). Flagged as a note so a blind-spot cannot pass as clean.
+fn unrecognized_reg_families(core: &CoreMetrics) -> Vec<String> {
+    const KNOWN: &[&str] = &[
+        "scalar", "map_ptr", "map_value", "map_value_or_null", "ctx", "fp", "pkt",
+        "pkt_meta", "pkt_end", "flow_keys", "sock", "sock_common", "tcp_sock",
+        "func", "stack", "ringbuf_mem", "buf", "mem", "btf_id", "trusted_ptr",
+    ];
+    let mut out = std::collections::BTreeSet::new();
+    for snap in &core.register_evolution {
+        for r in &snap.regs {
+            let fam = if r.reg_type.starts_with("fp") {
+                "fp"
+            } else {
+                r.reg_type.as_str()
+            };
+            if !KNOWN.contains(&fam) {
+                out.insert(fam.to_string());
+            }
+        }
+    }
+    out.into_iter().collect()
 }
 
 /// Does `t` begin with a `<digits>:` head (an instruction / state / liveness line)?
@@ -505,7 +580,12 @@ processed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
 ";
 
     fn parse_all() -> Vec<CoreMetrics> {
-        VerifierLogParser.parse("diffharness", SAMPLE.as_bytes())
+        VerifierLogParser
+            .parse("diffharness", SAMPLE.as_bytes())
+            .records
+            .into_iter()
+            .map(|r| r.core)
+            .collect()
     }
 
     fn reg_in(snaps: &[RegSnapshot], reg: u8) -> Option<RegState> {
@@ -592,7 +672,12 @@ processed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
 
     #[test]
     fn parses_bpf_next_richer_format() {
-        let recs = VerifierLogParser.parse("diffharness", BPF_NEXT_SAMPLE.as_bytes());
+        let recs: Vec<CoreMetrics> = VerifierLogParser
+            .parse("diffharness", BPF_NEXT_SAMPLE.as_bytes())
+            .records
+            .into_iter()
+            .map(|r| r.core)
+            .collect();
         assert_eq!(recs.len(), 7, "seven blocks (3 basic + 3 ranged + 1 helper call)");
 
         // Accept + counters survive the extra preamble.
