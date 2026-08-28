@@ -42,6 +42,7 @@ Her entry'nin sabit bir formatı vardır:
 | 0015 | Detektör kalibrasyonu: diff true-positive'i GERÇEK parser yolunda kanıtlandı | Tamamlandı (temizde susar, enjekte tutarsızlıkta bağırır) |
 | 0016 | Helper kolu: parser-kapsaması + bpf_func_proto dilimi/loader + helper true-positive | Tamamlandı (expected LOADER'dan; provenance çıktıda gösterildi) |
 | 0017 | Unparsed politikası: parser kör noktaları ayrı kovada (hacimden önce) | Tamamlandı (blok→unparsed, satır→note; asla anomali; rapor ayrı gösterir) |
+| 0018 | **İlk syzkaller-güdümlü hacimli period** + hacmin çıkardığı 5 parser kör noktası | Tamamlandı (70 kayıt, 20 gerçek reject metni, 0 divergence) |
 
 ### Pipeline durumu (özet)
 
@@ -1350,3 +1351,100 @@ Unparsed/partial **ASLA** verifier anomalisi olmaz ve **ASLA** sessizce düşmez
 - **syzkaller-güdümlü ilk hacimli period** — programları harness'e besle; çıktının
   parse-health'i (unparsed/notes) hacimde nasıl davranıyor gözle. Dedektör kalibre +
   unparsed politikası hazır olduğundan, "0 anomali" artık güvenle yorumlanabilir.
+
+
+## 0018 — İlk syzkaller-güdümlü hacimli period + hacmin çıkardığı parser kör noktaları
+
+- **Tarih:** 2026-08-28
+- **Durum:** Tamamlandı — syzkaller'ın corpus'u gerçek verifier log'una çevrilip
+  bpf-next VM'inde period olarak koştu; hacim **5 parser kör noktası** çıkardı,
+  hepsi düzeltildi ve regresyona sabitlendi.
+- **Alan:** `harness/syzreplay/shim.c` (yeni), `scripts/{syz-replay-build,run-syzreplay-vm}.sh`
+  (yeni), `verifier_log.rs` (5 düzeltme + 6 test), `examples/{parse_report,syz_period}.rs` (yeni),
+  RUNBOOK §4b.
+- **İlgili:** 0017 (unparsed politikası — bu koşuda sınandı), 0013 (FuzzDriver).
+
+### Fizibilite → çözüm (neden shim)
+syzkaller **`log_level=2` verifier log'u üretmez** (o veri çağıranın `log_buf`'ında).
+Yani "syzkaller-güdümlü" olmak için corpus'u harness yoluna sokmak gerekti. Yol:
+
+```
+corpus.db → syz-db unpack → syz-prog2c → C → [shim: -Dsyscall=vl_syscall]
+   → BPF_PROG_LOAD'a log_level=2 + log_buf enjekte → gerçek verifier log
+   → harness native format → ingest → normalize → score → diff → report
+```
+
+**Programlar syzkaller'ın kendisi**; shim yalnız **log yakalama alanlarını** ekler
+(prog/insn/attr'a dokunmaz) ve gerçek fd'yi çağırana döndürür (map/prog fd zincirleri
+bozulmaz). Çıktı zaten `VerifierLogParser`'ın okuduğu format.
+`run-syzreplay-vm.sh` mevcut `ScriptRunner` sözleşmesine birebir uyduğu için
+**sürücü soyutlaması değişmeden** çalıştı (0013 tasarımının sınavı).
+
+### Koşu (kanıt)
+- **Kampanya:** 900 sn, gerçek fuzzing → corpus.db 7 KB→**75 KB**, corpus 54→**254**,
+  coverage 0→**7523 BB**, **18k+ exec** (~24/sn, TCG), crash yok.
+- **Replay:** PROG_LOAD içeren **79** corpus programı → 79 static binary.
+- **Period (VM, TCG):** **95 blok** yakalandı → **70 kayıt** (35 accept / 35 reject),
+  **25 unparsed**, **0 divergence**, exec_count=95.
+
+### Hacmin çıkardığı 5 parser kör noktası (hepsi düzeltildi)
+Reviewer'ın öngörüsü birebir: **ilk hacim verifier bug'ı değil, parser kör noktası
+çıkardı** — ve 0017 politikası sayesinde hiçbiri sinyale karışmadı.
+
+| # | Kör nokta | Kök neden | Düzeltme |
+| --- | --- | --- | --- |
+| 1 | `reg-type "1"` | son token'a satır metadata'sı (`refs=2`) yapışıyordu | `value_head()` — paren-derinliği farkında değer kesme |
+| 2 | `ringbuf_mem_or_null` bilinmiyor | `_or_null` ayrı aile sanılıyordu | `base_family()` — nullability eki strip |
+| 3 | boş log'lu reject → sahte `Reject{unknown}` | verifier hiç çalışmamış (E2BIG/EINVAL) | **unparsed kovası** ("empty verifier log — nothing observed") |
+| 4 | **29x `reject reason: unknown`** + `mark_precise:` gerekçe sanılması | reason taraması önce bir state satırı görmeyi şart koşuyordu; ama **rejectlerin 54/60'ında hiç state yok** (özlü token en başta, `func#0`'dan hemen sonra) | state şartı kaldırıldı + `is_analysis_noise()` filtresi + `Verification failed:` headline fallback |
+| 5 | `invalid type id 1 in func infoprocessed 0 insns...` | verifier mesajı newline'sız basıyor, `processed` özeti yapışıyor | `strip_glued_summary()` |
+
+Ayrıca: reason bulunamazsa artık **uydurulmuyor** — kayıt kalır ama
+`"reject reason not identified in log"` **notu** düşer (0017 politikasının ruhu).
+
+### Düzeltme öncesi/sonrası (aynı yakalanmış veri)
+```
+ÖNCE : reject reasons = 29x "unknown" + 3x "mark_precise: frame0: last_idx ..."   (kirli)
+SONRA: 20 farklı GERÇEK verifier metni, ör.
+       "At program exit the register R0 has smin=4294967295 smax=4294967295 should have been in [0, 1]"
+       "BPF_EXIT uses reserved fields" | "fd -1 is not pointing to valid bpf_map"
+       "cannot call GPL-restricted function from non-GPL compatible program"
+PARSE HEALTH: records=70  with_notes=5 (2 missing 'processed', 3 reason-not-identified)
+              unparsed_blocks=25 (hepsi "empty verifier log" = syscall-seviyesi red)
+SIGNAL      : divergences=0  flagged=0
+```
+
+### Bulgu — helper kolu hacimde UYKUDA
+Period **112 helper-arg gözlemi / 8 farklı helper** üretti
+(`bpf_ringbuf_reserve`, `bpf_snprintf`, …), ama `helper_protos.tsv` dilimi yalnız
+`bpf_map_lookup_elem` arg0'ı kapsıyor → oracle hepsine `None` → **sessiz** (doğru
+davranış: "korroborasyon yok" ≠ "ihlal yok"). Yani helper dedektörü kalibre ama
+hacimde **fiilen dormant**; açık ve somut sonraki iş: dilimi bu helper'lara genişletmek.
+
+### Dürüst sınırlar
+- **Gerçek verifier bug'ı yok** (beklenen: gerçek kernel + syzkaller corpus'u,
+  0 divergence doğru sonuç). Dedektör kalibre olduğu için bu "sağır" değil "temiz".
+- **25/95 blok unparsed (%26)** — hepsi verifier'ın hiç çalışmadığı syscall-seviyesi
+  redler; CORE'a girmemeleri doğru.
+- Kalan 3 "reason not identified": log'da gerçekten **hiç arıza metni yok**
+  (sadece `processed 0 insns`) — verinin sınırı, parser'ın değil.
+- `run-syzreplay-vm.sh` her koşuda binary'leri sıfırdan derliyor (~66 sn) — israf,
+  ileride cache'lenebilir.
+
+### Doğrulama
+- Full suite **41 → 47 passed, 0 failed** (6 yeni regresyon testi: hacim-keşifli
+  formların tamamı — metadata yapışması, `_or_null`, boş log, state'siz reject,
+  glued summary, mark_precise, tanımlanamayan reason).
+- `parse_report` aynı yakalanmış veriyi VM'siz yeniden analiz eder (triyaj aracı).
+
+### Dokunulan dosyalar
+- `harness/syzreplay/shim.c`, `scripts/syz-replay-build.sh`, `scripts/run-syzreplay-vm.sh` (yeni)
+- `crates/pipeline/src/verifier_log.rs` (5 düzeltme + 6 test)
+- `crates/pipeline/examples/parse_report.rs`, `crates/orchestrator/examples/syz_period.rs` (yeni)
+- `docs/RUNBOOK.md` (§4b syzkaller-güdümlü period + bayat maddeler senkronu)
+
+### Sonraki adımlar
+- **`bpf_func_proto` dilimini genişlet** — hacimde gözlenen 8 helper'ı kapsa
+  (helper kolunu dormant'tan çıkarır). Auto-extraction hâlâ TODO.
+- Daha uzun kampanya + daha çok corpus → daha geniş reject/reg-type yüzeyi.
+- `verifier.c` / `verifier.rst` / patch-diff loader'ları (kalan 3 ground-truth kaynağı).

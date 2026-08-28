@@ -11,7 +11,7 @@
 > - **Repo kökü:** `/home/tylersec/verifierloop` — **git deposu** (branch `main`,
 >   8 commit: `bf506f1`…HEAD)
 > - **Kernel rev (hedef):** `5e289c5a4a526e870efac0ca658635c47138593a` (`.lab/kernel.rev`)
-> - **Son devlog entry'si:** `0017` — `docs/devlog/devlog.md`
+> - **Son devlog entry'si:** `0018` — `docs/devlog/devlog.md`
 
 ---
 
@@ -31,12 +31,17 @@ gerçek bpf-next VM → diffharness (log_level=2) → VmHarnessDriver → run_pe
    → normalize(VerifierLogParser) → score(Python) → diff → report
 ```
 
-**Reviewer'ın en çok şüpheyle bakması gereken nokta:** "ilk gerçek period çalışıyor"
-iddiası **doğru ama dar**. Harness şu an **sabit 6-program corpus'u** koşuyor (3 basic + 3 ranged-scalar) —
-syzkaller-güdümlü gerçek fuzzing DEĞİL. Yani kanıtlanan şey **mekanizma + gerçek
-verifier verisi akışı**, henüz **bug avı hacmi değil**. Ayrıca şu ana kadar gerçek
-veriden **hiç true-positive anomali yüzeye çıkmadı** (bilinçli: corpus temiz). Bu
-dürüstçe işaretli (§4, §7).
+**Güncelleme (0018): hacim açıldı.** Artık syzkaller'ın kendi corpus'u (900 sn'lik
+gerçek kampanya) bir shim ile `log_level=2` verifier log'una çevrilip period olarak
+koşuyor: **70 kayıt, 20 farklı gerçek reject metni, 0 divergence** (✔ V8).
+
+**Reviewer'ın en çok şüpheyle bakması gereken nokta:** hacim **gerçek bir verifier
+bug'ı üretmedi** — beklenen sonuç (gerçek kernel + coverage-güdümlü corpus), ve
+dedektörün her iki kolu kalibre olduğu için bu "sağır" değil "temiz" okunur. Ayrıca
+hacmin ilk çıkardığı şey **5 parser kör noktasıydı**, verifier bug'ı değil — hepsi
+parse-health'e düştü, sinyale karışmadı, düzeltildi ve regresyona sabitlendi.
+**Helper kolu hacimde dormant**: 112 gözlem / 8 helper üretildi ama proto dilimi
+yalnız 1 helper'ı kapsıyor → oracle sessiz (§6 #1).
 
 ---
 
@@ -53,7 +58,7 @@ ground-truth ile diffle → insana triyajlı batch → tekrar. Period = **exec s
 - Belirtilmeyen her şey ad-hoc yerine **TODO**.
 
 **Kaynak belgeler:** `README.md`, `docs/RUNBOOK.md` (operatör manueli),
-`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0017).
+`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0018).
 
 ---
 
@@ -105,7 +110,7 @@ ingest ✅ → normalize ✅ → score ✅ → diff ✅ → report ✅ → (huma
 **(V1) Derleme + testler**
 ```
 $ cargo build   → Finished
-$ cargo test    → 41 passed, 0 failed
+$ cargo test    → 47 passed, 0 failed
 ```
 (dağılım: contract 5, orchestrator 6 [loop 4 + vm_driver 2], pipeline lib 18
 [+5 verifier_log], golden_normalize 1, diğerleri şema/iskelet 0.)
@@ -172,6 +177,22 @@ ayrı `unparsed` kovasına gider (sahte accept'e dönüşmez); bilinmeyen reg-ti
 ikisi de ASLA divergence olmaz. Gerçek 7-program sample temiz (0 unparsed/0 not).
 Hacim gelince parser kör noktaları buraya düşer, sinyale değil.
 
+**(V8) İLK SYZKALLER-GÜDÜMLÜ HACİMLİ PERIOD — canlı (VM boot eder, dakikalar)**
+```
+$ TIMEOUT=1200 cargo run -q -p orchestrator --example syz_period -- <dir>
+  [syzreplay] captured 95 program block(s)
+  HARVEST  period=1 exec_count=95
+  RECORDS  70 (accept 35 / reject 35)
+  SIGNAL   divergences=0  flagged=0
+  PARSE HEALTH (separate)  records=70  with_notes=5  unparsed_blocks=25
+  distinct verifier reject reasons (20): "BPF_EXIT uses reserved fields",
+    "At program exit the register R0 has smin=... should have been in [0, 1]", ...
+```
+Kampanya: 900 sn gerçek fuzzing (corpus 54→254, coverage 0→7523 BB, 18k+ exec).
+Hacim **5 parser kör noktası** çıkardı (verifier bug'ı değil) — hepsi parse-health'e
+düştü, düzeltildi, regresyona sabitlendi (devlog 0018). Aynı veri VM'siz yeniden
+analiz edilebilir: `cargo run -p pipeline --example parse_report -- <capture>`.
+
 ---
 
 ## 5. Lab ortamı + kritik ortam gerçekleri
@@ -193,8 +214,10 @@ etkilenmez, sadece duvar-saati.
 
 ## 6. Açık uçlar / sıradaki iş (dosya:satır)
 
-1. **syzkaller → harness besleme + coverage/crash parser** — harness'i syzkaller'ın
-   ürettiği programlarla besle; KCOV delta + crash → CORE. **İlk gerçek bug-avı yüzeyi.**
+1. **`bpf_func_proto` dilimini genişlet** — hacimde 112 helper-arg gözlemi / 8 helper
+   (`bpf_ringbuf_reserve`, `bpf_snprintf`, …) üretildi ama dilim yalnız 1 helper'ı
+   kapsıyor → **helper kolu dormant**. En yüksek getirili sonraki iş.
+   *(syzkaller besleme 0018'de yapıldı; syzkaller coverage/crash → DERIVED hâlâ ayrı iş.)*
 2. **Daha zengin harness corpus'u** (`harness/diffharness.c`) — pointer aritmetiği,
    helper çağrıları, map erişimi → gerçek helper `arg_type` + register-state sinyali.
 3. **Dış ground-truth loader'ları** — `crates/pipeline/src/groundtruth/*.rs`
@@ -208,7 +231,7 @@ etkilenmez, sadece duvar-saati.
 
 Hafif (VM/root gerekmez):
 - **R1** `cargo build` → Finished. ✔ V1
-- **R2** `cargo test` → **41 passed, 0 failed**. ✔ V1
+- **R2** `cargo test` → **47 passed, 0 failed**. ✔ V1
 - **R3** `just check-python` (ya da elle import) → `python import OK`.
 - **R4** `cargo run -q -p pipeline --example report_demo -- /tmp/vl1` → `top_score=0.95`. ✔ V2
 - **R5** `cargo run -q -p pipeline --example harness_demo -- /tmp/vl2` → 6 gerçek kayıt (3 ranged-scalar dahil), 0 anomali. ✔ V3
@@ -227,6 +250,8 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
   `cargo run -p pipeline --example helper_provenance` → expected FROM FILE, decision dosyaya bağlı. ✔ V6
 - **R13** `cargo test -p pipeline --test unparsed_policy` → 4 passed; ve
   `cargo run -p pipeline --example parse_health_demo` → parse-health divergence'lardan ayrı. ✔ V7
+- **R14** (ağır) `TIMEOUT=1200 cargo run -p orchestrator --example syz_period -- /tmp/vlsyz`
+  → 70 kayıt, 20 gerçek reject metni, divergences=0, parse-health ayrı. ✔ V8
 
 **Reviewer'ın özellikle sorgulaması istenen iddialar (şüphe listesi):**
 1. "İlk gerçek period çalışıyor" → evet ama **sabit corpus**, syzkaller-fuzzing değil
@@ -263,15 +288,20 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
 | 0015 | Detektör kalibrasyonu (intrinsic): diff true-positive gerçek yolda | ✅ |
 | 0016 | Helper kolu: file-loaded `bpf_func_proto` + helper true-positive | ✅ |
 | 0017 | Unparsed politikası (parser kör noktaları ayrı kova; rapor ayrı gösterir) | ✅ |
+| 0018 | **İlk syzkaller-güdümlü hacimli period** + hacmin çıkardığı 5 parser kör noktası | ✅ |
 
 ---
 
 ## 9. Tek cümlelik doğrulanabilir durum ifadesi
 
 > "verifierloop'un **beş-stage'li pipeline'ı** ve **loop'u**, kendi derlediğimiz
-> bpf-next kernel'inden gelen **gerçek verifier verisiyle uçtan uca canlı koşuyor**
-> (`real_period` örneği: gerçek VM → harvest → report, 37 test geçer); harness'i
-> pipeline'a bağlayan **gerçek parser + VM-destekli FuzzDriver** yazıldı ve
-> `MockDriver`'ı değiştirdi; **eksik olan**, harness'i **syzkaller-güdümlü gerçek
-> fuzz hacmine** bağlamak (henüz sabit 6-program corpus'u), dış ground-truth
-> loader'ları ve JIT↔interp cross-kernel modu; **KVM host-side bloklu, TCG çalışır.**"
+> bpf-next kernel'inden gelen **gerçek verifier verisiyle uçtan uca canlı koşuyor**;
+> **hacim açık**: syzkaller'ın kendi corpus'u (900 sn gerçek kampanya) bir shim ile
+> `log_level=2` verifier log'una çevrilip period olarak koşuyor (`syz_period`:
+> 70 kayıt, **20 farklı gerçek reject metni**, 0 divergence; 47 test geçer).
+> Dedektörün **her iki kolu** (intrinsic tnum + file-loaded `bpf_func_proto`) gerçek
+> yolda kalibre, ve **parser kör noktaları ayrı kanalda** raporlanıyor (hacmin
+> çıkardığı 5 kör nokta düzeltildi). **Eksik olan**: proto dilimini hacimde gözlenen
+> 8 helper'a genişletmek (helper kolu şu an dormant), `verifier.c`/`verifier.rst`/
+> patch-diff loader'ları, JIT↔interp cross-kernel modu; **KVM host-side bloklu,
+> TCG çalışır**; **gerçek bir verifier bug'ı henüz yüzeye çıkmadı** (beklenen)."

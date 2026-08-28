@@ -102,12 +102,15 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
             })
         }
     };
+    let mut reason_unidentified = false;
     let decision = if result.contains("decision=accept") {
         VerifierDecision::Accept
     } else if result.contains("decision=reject") {
-        VerifierDecision::Reject {
-            reason: parse_reject_reason(&log),
-        }
+        let reason = parse_reject_reason(&log).unwrap_or_else(|| {
+            reason_unidentified = true;
+            "unknown".to_string()
+        });
+        VerifierDecision::Reject { reason }
     } else {
         // e.g. `decision=error` (harness map-create failure) — not a verifier obs.
         return Err(UnparsedBlock {
@@ -115,6 +118,20 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
             reason: format!("non-verifier RESULT: {}", result.trim()),
         });
     };
+
+    // An empty verifier log means nothing was observed: the load failed before (or
+    // without) verification (e.g. E2BIG at the syscall boundary), or the log was
+    // not produced. Attributing a `reject` reason here would invent verifier text
+    // that does not exist, so this is a blind-spot, not an observation.
+    if log.iter().all(|l| l.trim().is_empty()) {
+        return Err(UnparsedBlock {
+            label,
+            reason: format!(
+                "empty verifier log ({}) — nothing observed",
+                result.trim().trim_start_matches("RESULT ")
+            ),
+        });
+    }
 
     let core = CoreMetrics {
         verifier_decision: decision,
@@ -128,6 +145,10 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
 
     // Record-level parse notes: partial-parse caveats (lower confidence, NOT anomalies).
     let mut notes = Vec::new();
+    if reason_unidentified {
+        // Never let a fabricated reason pass as verifier text unnoticed.
+        notes.push("reject reason not identified in log".to_string());
+    }
     if !log.iter().any(|l| l.trim_start().starts_with("processed ")) {
         notes.push("missing 'processed' counters".to_string());
     }
@@ -159,17 +180,20 @@ fn unrecognized_reg_families(core: &CoreMetrics) -> Vec<String> {
     let mut out = std::collections::BTreeSet::new();
     for snap in &core.register_evolution {
         for r in &snap.regs {
-            let fam = if r.reg_type.starts_with("fp") {
-                "fp"
-            } else {
-                r.reg_type.as_str()
-            };
-            if !KNOWN.contains(&fam) {
-                out.insert(fam.to_string());
+            let base = base_family(&r.reg_type);
+            if !KNOWN.contains(&base.as_str()) {
+                out.insert(base);
             }
         }
     }
     out.into_iter().collect()
+}
+
+/// Collapse a verifier reg-type to its base family: any `fp<off>` is `fp`, and the
+/// `_or_null` nullability suffix is not a distinct family.
+fn base_family(reg_type: &str) -> String {
+    let t = if reg_type.starts_with("fp") { "fp" } else { reg_type };
+    t.strip_suffix("_or_null").unwrap_or(t).to_string()
 }
 
 /// Does `t` begin with a `<digits>:` head (an instruction / state / liveness line)?
@@ -183,33 +207,71 @@ fn has_digit_head(t: &str) -> bool {
     }
 }
 
-/// The verifier's failure line. Scans forward for the FIRST un-indented, non-empty
-/// line that appears AFTER the per-insn state section and is not a state/summary
-/// line. On both the host and bpf-next logs this is the concise verifier token
-/// (e.g. `R0 !read_ok`) — stable across bpf-next's richer multi-line diagnostic
-/// (`Verification failed: ...`, `Reason:`, `Suggestion:`) that follows it, and
-/// past its pre-analysis preamble (`func#`, `topo_order`, `subprog#`,
-/// `stack use/def`). Indented lines are preamble/detail and are skipped. Verbatim.
-fn parse_reject_reason(log: &[&str]) -> String {
-    let mut seen_state = false;
+/// Analysis scaffolding a verifier log emits around the real failure text: the
+/// pre-analysis preamble, precision/liveness tracking, state-walk markers, the
+/// `processed` summary, and bpf-next's structured diagnostic headers.
+fn is_analysis_noise(t: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "func#",
+        "topo_order",
+        "subprog#",
+        "stack use/def",
+        "Live regs",
+        "processed ",
+        "mark_precise:",
+        "from ",              // "from 8 to 10: R0=..." state-walk marker
+        "Verification failed:", // structured diagnostic (kept as a fallback below)
+        "Reason:",
+        "At:",
+        "Suggestion:",
+        "Instruction context",
+    ];
+    t.starts_with('(') || PREFIXES.iter().any(|p| t.starts_with(p))
+}
+
+/// The verifier's failure text, verbatim, or `None` if it could not be identified.
+///
+/// Scans the WHOLE log for the first un-indented, non-empty line that is neither a
+/// state/insn line nor analysis scaffolding — the concise verifier token (e.g.
+/// `R0 !read_ok`, `last insn is not an exit or jmp`). VOLUME LESSON (devlog 0018):
+/// most real rejects fail BEFORE any per-insn state is printed, so this must not
+/// require a preceding state section. If no concise token exists, fall back to
+/// bpf-next's structured headline (`Verification failed: ...`), which is still the
+/// verifier's own text. `None` (rather than a fabricated "unknown") lets the caller
+/// record a parse note instead of inventing verifier text.
+fn parse_reject_reason(log: &[&str]) -> Option<String> {
+    let mut headline: Option<String> = None;
     for line in log {
         if line.starts_with(' ') {
             continue; // indented: disasm / liveness / diagnostic detail
         }
         let t = line.trim();
-        if t.is_empty() {
+        if t.is_empty() || has_digit_head(t) {
             continue;
         }
-        if has_digit_head(t) {
-            seen_state = true; // an un-indented "N: ..." state/insn line
+        if t.starts_with("Verification failed:") {
+            headline.get_or_insert_with(|| t.to_string());
             continue;
         }
-        if !seen_state || t.starts_with("processed ") {
-            continue; // still in the analysis preamble, or the summary line
+        if is_analysis_noise(t) {
+            continue;
         }
-        return t.to_string();
+        return Some(strip_glued_summary(t).to_string());
     }
-    "unknown".to_string()
+    headline
+}
+
+/// Some verifier messages are emitted without a trailing newline, so the
+/// `processed N insns (limit ...)` summary ends up glued onto the failure text
+/// (e.g. `invalid type id 1 in func infoprocessed 0 insns (limit 1000000) ...`).
+/// Cut the summary back off so the recorded reason is the verifier's message only.
+fn strip_glued_summary(t: &str) -> &str {
+    if let Some(i) = t.find("processed ") {
+        if i > 0 && t[i..].contains(" insns (limit") {
+            return t[..i].trim_end();
+        }
+    }
+    t
 }
 
 /// `processed N insns ... total_states T ...` -> insn_processed = N, states = T.
@@ -316,6 +378,24 @@ fn parse_reg_tokens(s: &str) -> Vec<RegState> {
         .collect()
 }
 
+/// The value part of a reg token: everything up to the first space at paren depth
+/// 0. The verifier appends per-line metadata after the last register (e.g.
+/// `R2=1 refs=2`), which must not be glued onto the value; but a value's own
+/// parens may contain spaces (`var_off=(0x0; 0xff)`) and must be kept whole.
+fn value_head(expr: &str) -> &str {
+    let b = expr.as_bytes();
+    let mut depth = 0i32;
+    for (i, &c) in b.iter().enumerate() {
+        match c {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b' ' if depth <= 0 => return expr[..i].trim_end(),
+            _ => {}
+        }
+    }
+    expr
+}
+
 /// Parse one `R<k>=<expr>` token into a RegState.
 fn parse_reg_token(tok: &str) -> Option<RegState> {
     let eq = tok.find('=')?;
@@ -324,7 +404,7 @@ fn parse_reg_token(tok: &str) -> Option<RegState> {
         return None;
     }
     let reg: u8 = regpart[1..].parse().ok()?;
-    Some(build_regstate(reg, tok[eq + 1..].trim()))
+    Some(build_regstate(reg, value_head(tok[eq + 1..].trim())))
 }
 
 /// Interpret a register value expression into a RegState.
@@ -664,6 +744,173 @@ processed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
         assert_eq!(r0.tnum, Tnum { value: 0, mask: 0xff });
         assert_eq!((r0.umin, r0.umax), (0, 255));
         assert_eq!(r0.tnum.value & r0.tnum.mask, 0);
+    }
+
+    // Forms first surfaced by REPLAYING THE SYZKALLER CORPUS (volume), pinned so
+    // they cannot regress. Each was a real parser blind-spot found by volume, not
+    // a verifier bug — see devlog 0018.
+    #[test]
+    fn volume_discovered_forms_parse_correctly() {
+        // (a) trailing per-line metadata (`refs=2`) must not glue onto the value,
+        // (b) `_or_null` is a nullability suffix, not an unknown family.
+        const VOL: &str = "\
+===PROG syz#0 type=3 ===
+RESULT decision=accept fd=3 errno=0 load_ns=1
+---LOG---
+0: R1=ctx() R10=fp0
+7: (bf) r9 = r0                       ; R0=ringbuf_mem_or_null(id=2,ref_obj_id=2,sz=20) R9=ringbuf_mem_or_null(id=2,ref_obj_id=2,sz=20) refs=2
+11: (b7) r2 = 1                       ; R2=1 refs=2
+12: (95) exit
+processed 13 insns (limit 1000000) total_states 0 peak_states 0
+---END---
+";
+        let out = VerifierLogParser.parse("syzreplay", VOL.as_bytes());
+        assert_eq!(out.records.len(), 1);
+        assert!(out.unparsed.is_empty());
+        let rec = &out.records[0];
+        assert!(
+            rec.notes.is_empty(),
+            "no blind-spot notes expected for these forms: {:?}",
+            rec.notes
+        );
+        let regs: Vec<(u8, String, u64)> = rec
+            .core
+            .register_evolution
+            .iter()
+            .flat_map(|s| s.regs.iter())
+            .map(|r| (r.reg, r.reg_type.clone(), r.tnum.value))
+            .collect();
+        // `R2=1 refs=2` is the const 1, NOT a reg-type called "1".
+        assert!(
+            regs.iter().any(|(reg, ty, v)| *reg == 2 && ty == "scalar" && *v == 1),
+            "R2 should be const scalar 1: {regs:?}"
+        );
+        // The or_null pointer keeps its verbatim reg-type (no metadata glued on).
+        assert!(
+            regs.iter().any(|(reg, ty, _)| *reg == 0 && ty == "ringbuf_mem_or_null"),
+            "R0 keeps its verbatim reg-type: {regs:?}"
+        );
+    }
+
+    // A load that fails before/without verification produces no log; inventing a
+    // reject reason there would fabricate verifier text -> it is a blind-spot.
+    #[test]
+    fn empty_verifier_log_is_unparsed_not_a_reject_record() {
+        const EMPTY: &str = "\
+===PROG syz#1 type=3 ===
+RESULT decision=reject fd=-1 errno=7 load_ns=2357
+---LOG---
+
+---END---
+";
+        let out = VerifierLogParser.parse("syzreplay", EMPTY.as_bytes());
+        assert!(out.records.is_empty(), "no record invented from an empty log");
+        assert_eq!(out.unparsed.len(), 1);
+        assert!(
+            out.unparsed[0].reason.contains("empty verifier log"),
+            "{:?}",
+            out.unparsed[0]
+        );
+    }
+
+    // Reject-log forms found by the FIRST SYZKALLER-DRIVEN VOLUME PERIOD (devlog
+    // 0018). Most real rejects fail before any per-insn state is printed, so the
+    // reason scan must not require a state section first.
+    #[test]
+    fn reject_reason_without_any_state_section() {
+        const R: &str = "\
+===PROG syz#0 type=3 ===
+RESULT decision=reject fd=-1 errno=22 load_ns=1
+---LOG---
+func#0 @0
+last insn is not an exit or jmp
+Verification failed: Program Structure: Subprogram can fall through
+Reason:
+  Subprogram 0 reaches its last instruction 117 without an exit or jump.
+At:
+  insn 117
+Suggestion:
+  End each subprogram with an exit.
+processed 0 insns (limit 1000000) total_states 0 peak_states 0
+---END---
+";
+        let out = VerifierLogParser.parse("syzreplay", R.as_bytes());
+        assert_eq!(out.records.len(), 1);
+        assert_eq!(
+            out.records[0].core.verifier_decision,
+            VerifierDecision::Reject {
+                reason: "last insn is not an exit or jmp".to_string()
+            },
+            "the concise verifier token, not the structured headline or 'unknown'"
+        );
+        assert!(out.records[0].notes.is_empty());
+    }
+
+    // Some messages are emitted without a trailing newline, gluing the `processed`
+    // summary onto the failure text; it must be cut back off.
+    #[test]
+    fn glued_processed_summary_is_stripped_from_the_reason() {
+        const R: &str = "\
+===PROG syz#1 type=3 ===
+RESULT decision=reject fd=-1 errno=22 load_ns=1
+---LOG---
+func#0 @0
+invalid type id 1 in func infoprocessed 0 insns (limit 1000000) total_states 0 peak_states 0
+---END---
+";
+        let out = VerifierLogParser.parse("syzreplay", R.as_bytes());
+        assert_eq!(
+            out.records[0].core.verifier_decision,
+            VerifierDecision::Reject {
+                reason: "invalid type id 1 in func info".to_string()
+            }
+        );
+    }
+
+    // A reject whose log carries no failure text at all: flag it as a blind-spot
+    // rather than fabricating verifier text.
+    #[test]
+    fn unidentifiable_reject_reason_is_noted_not_invented() {
+        const R: &str = "\
+===PROG syz#2 type=3 ===
+RESULT decision=reject fd=-1 errno=22 load_ns=1
+---LOG---
+processed 0 insns (limit 1000000) total_states 0 peak_states 0
+---END---
+";
+        let out = VerifierLogParser.parse("syzreplay", R.as_bytes());
+        assert_eq!(out.records.len(), 1, "still an observation (decision is known)");
+        assert!(
+            out.records[0]
+                .notes
+                .iter()
+                .any(|n| n.contains("reject reason not identified")),
+            "the gap is surfaced as a parse note: {:?}",
+            out.records[0].notes
+        );
+    }
+
+    // Precision-tracking lines are analysis scaffolding, never a failure reason.
+    #[test]
+    fn mark_precise_lines_are_not_mistaken_for_a_reason() {
+        const R: &str = "\
+===PROG syz#3 type=3 ===
+RESULT decision=reject fd=-1 errno=22 load_ns=1
+---LOG---
+0: R1=ctx() R10=fp0
+0: (b7) r0 = 1                        ; R0=1
+R0 !read_ok
+mark_precise: frame0: last_idx 9 first_idx 0 subseq_idx -1
+processed 2 insns (limit 1000000) total_states 0 peak_states 0
+---END---
+";
+        let out = VerifierLogParser.parse("syzreplay", R.as_bytes());
+        assert_eq!(
+            out.records[0].core.verifier_decision,
+            VerifierDecision::Reject {
+                reason: "R0 !read_ok".to_string()
+            }
+        );
     }
 
     // Authoritative in-VM capture from the self-built bpf-next kernel: a richer log

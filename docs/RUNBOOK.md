@@ -4,7 +4,7 @@
 > Karmaşa yok. Bir şeyi hatırlamıyorsan **§2 (sağlık + demo)** ile başla.
 >
 > - Repo kökü: `/home/tylersec/verifierloop` — **tüm komutlar buradan çalışır.**
-> - Son güncelleme: 2026-08-26 (bu makinede probe edilerek doğrulandı).
+> - Son güncelleme: 2026-08-28 (bu makinede probe edilerek doğrulandı).
 
 ---
 
@@ -32,7 +32,7 @@
 ### A) Sağlık kontrolü — "hiçbir şeyi bozdum mu?" (~30 sn)
 ```bash
 cargo build            # Rust workspace derleniyor mu
-cargo test             # 23 test geçmeli (0 failed)
+cargo test             # 43 test geçmeli (0 failed)
 python3 -c "import sys; sys.path.insert(0,'python/src'); import verifierloop_analysis; print('python OK')"
 ```
 
@@ -44,9 +44,9 @@ cargo run -q -p pipeline --example report_demo -- /tmp/vl-demo
 Görmen gereken: `PERIOD REPORT ... top_score=0.95 divergences=3` + triyaj listesi.
 Artifact'ler: `/tmp/vl-demo/data/periods/1/*.json`.
 
-> ⚠️ Bu **sentetik** veri (elle yazılmış örnek kayıt). Gerçek verifier verisi
-> henüz akmıyor — bu demo **stage mantığının** çalıştığını gösterir, gerçek bug
-> avını değil.
+> ⚠️ Bu **sentetik** veri (elle yazılmış örnek kayıt) — stage mantığını gösterir.
+> **Gerçek** verifier verisi için: `harness_demo` (committed in-VM sample),
+> `real_period` (canlı VM), ya da `syz_period` (syzkaller-güdümlü, §4b).
 
 ### C) Stage'leri tek tek koştur
 Her biri bir `<base_dir>` alır; aynı dizini paylaşan stage'ler zincirlenir.
@@ -105,6 +105,39 @@ DURATION=600 ./scripts/run-syzkaller.sh   # ~10 dk sonra kendiliğinden durur
 - **TCG gerçeği:** ısınma ~90–100 sn (VM boot + machine check + candidate triage).
   **Coverage büyümesini görmek için en az 5 dk ver** — kısa koşu (200 sn) triage'de
   takılır (bkz devlog 0010).
+
+---
+
+## 4b. Syzkaller-güdümlü period (hacim yolu)
+
+syzkaller'ın corpus'unu **gerçek verifier log'una** çevirip pipeline'a sokar:
+corpus → `syz-prog2c` → replay shim (`log_level=2` enjekte eder) → bpf-next VM.
+
+```bash
+# 1) corpus büyüt (fuzzer'ı bir süre koştur)
+DURATION=900 ./scripts/run-syzkaller.sh
+
+# 2) replay binary'lerini derle (corpus -> C -> shim ile static binary)
+./scripts/syz-replay-build.sh
+
+# 3) VM'de replay + native çıktı yakala
+TIMEOUT=900 ./scripts/run-syzreplay-vm.sh /tmp/syz-capture.log
+
+# 4a) sadece triyaj (VM'siz, yakalanmış dosyadan)
+cargo run -q -p pipeline --example parse_report -- /tmp/syz-capture.log
+
+# 4b) ya da TAM period (2+3+4 hepsi; VM boot eder, dakikalar)
+TIMEOUT=900 cargo run -q -p orchestrator --example syz_period -- /tmp/syz-period
+```
+
+Çıktıda **iki kanal ayrı** okunur:
+- `SIGNAL divergences=...` → gerçek verifier sinyali (triyaj et),
+- `PARSE HEALTH ... with_notes / unparsed_blocks` → **parser kör noktaları**
+  (anomali DEĞİL; parser'ı düzeltmen gereken yer).
+
+> Hacim ilk çalıştığında büyük ihtimalle `parse notes` / `unparsed` çıkar — bu
+> beklenen ve doğru davranış: parser'ın görmediği log formları sinyale karışmadan
+> ayrı raporlanır (devlog 0017/0018).
 
 ---
 
@@ -180,9 +213,10 @@ Bunlar bilerek **niyet basıp `exit 1`** yapar; henüz bağlı değil:
 | `run-period` | placeholder — gerçek `FuzzDriver` bağlanınca |
 | `period-report` | placeholder |
 
-**Gerçek bug avı henüz koşmuyor.** Bugün çalışan: pipeline (sentetik veriyle, §2-B)
-ve fuzzer (syzkaller, §4). İkisini birleştiren gerçek parser + FuzzDriver sıradaki iş
-(devlog 0010 → "Sonraki adımlar").
+> Not: bunlar **eski `just` kısayolları**. Karşılıkları artık gerçek ve çalışıyor:
+> tek period → `cargo run -p orchestrator --example real_period` (harness) veya
+> `--example syz_period` (syzkaller-güdümlü, §4b); triyaj → `parse_report`.
+> Yani gerçek veri akıyor; kalan iş hacim + dış ground-truth loader'ları.
 
 ---
 
@@ -191,6 +225,6 @@ ve fuzzer (syzkaller, §4). İkisini birleştiren gerçek parser + FuzzDriver s�
 ```bash
 cat docs/devlog/devlog.md | sed -n '26,50p'   # entry tablosu + pipeline durumu
 git --no-pager log --oneline -5                 # son commit'ler
-cargo test                                        # her şey yeşil mi (23 passed)
+cargo test                                        # her şey yeşil mi (43 passed)
 ```
 Detaylı durum: `docs/REVIEW-HANDOFF.md`. Ne yapıldığının hikâyesi: `docs/devlog/devlog.md`.
