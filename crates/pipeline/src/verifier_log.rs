@@ -97,7 +97,7 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
         Some(r) => r,
         None => {
             return Err(UnparsedBlock {
-                label,
+                label: label.clone(),
                 kind: UnparsedKind::Unrecognized,
                 reason: "no RESULT line — decision unknown".to_string(),
             })
@@ -115,7 +115,7 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
     } else {
         // e.g. `decision=error` (harness map-create failure) — not a verifier obs.
         return Err(UnparsedBlock {
-            label,
+            label: label.clone(),
             kind: UnparsedKind::NotObserved,
             reason: format!("non-verifier RESULT: {}", result.trim()),
         });
@@ -127,7 +127,7 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
     // that does not exist, so this is a blind-spot, not an observation.
     if log.iter().all(|l| l.trim().is_empty()) {
         return Err(UnparsedBlock {
-            label,
+            label: label.clone(),
             kind: UnparsedKind::NotObserved,
             reason: format!(
                 "empty verifier log ({}) — verifier never ran",
@@ -167,7 +167,11 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
         notes.push(format!("unrecognized reg-type form: {fam}"));
     }
 
-    Ok(ParsedRecord { core, notes })
+    Ok(ParsedRecord {
+        core,
+        notes,
+        label: Some(label),
+    })
 }
 
 /// The `===PROG <name> ...` label of a block (for triage), or "block".
@@ -936,7 +940,7 @@ processed 2 insns (limit 1000000) total_states 0 peak_states 0
             .into_iter()
             .map(|r| r.core)
             .collect();
-        assert_eq!(recs.len(), 7, "seven blocks (3 basic + 3 ranged + 1 helper call)");
+        assert_eq!(recs.len(), 10, "10 blocks (3 basic + 3 ranged + 1 helper + 3 documented)");
 
         // Accept + counters survive the extra preamble.
         assert_eq!(recs[0].verifier_decision, VerifierDecision::Accept);

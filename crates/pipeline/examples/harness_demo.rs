@@ -11,7 +11,7 @@
 //!   cargo run -p pipeline --example harness_demo -- <base_dir>
 
 use contract::{Artifact, PeriodPaths};
-use pipeline::groundtruth::StaticGroundTruth;
+use pipeline::groundtruth::{helper_proto::HelperProtoModel, verifier_rst, StaticGroundTruth};
 use pipeline::ingest::{self, Source};
 use pipeline::report::{self, PeriodReport};
 use pipeline::verifier_log::VerifierLogParser;
@@ -41,8 +41,27 @@ fn main() {
     }
     score::run(&period, &analyzer).expect("score");
 
-    // 4. diff against ground truth (empty oracle -> only intrinsic invariants run).
-    diff::run(&period, &norm, &StaticGroundTruth::default()).expect("diff");
+    // 4. diff against ground truth: intrinsic invariants + helper protos (source 3)
+    //    + documented behaviour (source 2), both loaded from the tree/committed slice.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut gt = StaticGroundTruth::default();
+    if let Ok(p) = HelperProtoModel::load_from_file(&root.join("data/groundtruth/helper_protos.tsv")) {
+        gt = StaticGroundTruth::with_helper_proto(p);
+    }
+    if let Ok(rst) = verifier_rst::load(&root.join(".lab/bpf-next")) {
+        eprintln!(
+            "ground truth: {} helper contracts, {} documented cases ({} stale)",
+            gt.helper_proto.len(),
+            rst.len(),
+            rst.stale().len()
+        );
+        gt = gt.with_verifier_rst(rst);
+    }
+    let out = diff::run(&period, &norm, &gt).expect("diff");
+    eprintln!(
+        "CHECKS  helper-arg: {}  documented cases: {}",
+        out.summary.helper_args_checked, out.summary.documented_cases_checked
+    );
 
     // 5. report.
     let report = report::run(&period, Some(1_700_000_000)).expect("report");

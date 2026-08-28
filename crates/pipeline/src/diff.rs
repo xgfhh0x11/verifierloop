@@ -106,6 +106,10 @@ pub struct DiffSummary {
     pub by_source: BySource,
     /// Helper-arg observations seen across all records (any decision).
     pub helper_args_observed: u64,
+    /// Documented-behaviour cases (source 2) actually compared this period — the
+    /// same denominator logic as `helper_args_checked`.
+    #[serde(default)]
+    pub documented_cases_checked: u64,
     /// Of those, how many the helper check actually COMPARED against ground truth
     /// (accepted programs only, and only args the loaded `bpf_func_proto` slice
     /// covers). This is the DENOMINATOR that makes "0 helper findings"
@@ -169,6 +173,7 @@ pub fn run(
     let mut findings = Vec::new();
     let mut helper_args_observed = 0u64;
     let mut helper_args_checked = 0u64;
+    let mut documented_cases_checked = 0u64;
     for (idx, record) in metrics.records.iter().enumerate() {
         let idx = idx as u64;
         helper_args_observed += record.core.helper_arg_observations.len() as u64;
@@ -181,6 +186,9 @@ pub fn run(
             &mut findings,
             &mut helper_args_checked,
         );
+        if check_documented_behavior(idx, record, ground_truth, &mut findings) {
+            documented_cases_checked += 1;
+        }
     }
 
     let mut by_source = BySource::default();
@@ -193,6 +201,7 @@ pub fn run(
         by_source,
         helper_args_observed,
         helper_args_checked,
+        documented_cases_checked,
     };
 
     let out = DiffFindings {
@@ -379,6 +388,53 @@ fn check_helper_observations(
     }
 }
 
+/// Source-backed check (source 2): compare the OBSERVED verifier decision against
+/// what `Documentation/bpf/verifier.rst` says about this exact program.
+///
+/// This is the documented-vs-observed axis proper: intrinsic invariants check the
+/// verifier against itself and helper contracts check one argument, but only the
+/// documentation states end-to-end behaviour ("this program is rejected"). A
+/// mismatch means the kernel and its own documentation disagree — either the
+/// verifier regressed or the documentation is stale; both are findings worth a
+/// human. Returns whether a comparison was actually performed (the denominator).
+fn check_documented_behavior(
+    idx: u64,
+    record: &MetricRecord,
+    ground_truth: &dyn GroundTruth,
+    out: &mut Vec<DivergenceFinding>,
+) -> bool {
+    let Some(label) = record.source_label.as_deref() else {
+        return false;
+    };
+    let Some(documented) = ground_truth.documented_outcome(label) else {
+        return false; // no documented claim for this program (or its anchor drifted)
+    };
+    let observed_accept = matches!(record.core.verifier_decision, VerifierDecision::Accept);
+    let documented_accept = matches!(
+        documented,
+        crate::groundtruth::verifier_rst::DocumentedOutcome::Accept
+    );
+    if observed_accept != documented_accept {
+        let (expected, observed) = if documented_accept {
+            ("accept".to_string(), "reject".to_string())
+        } else {
+            ("reject".to_string(), "accept".to_string())
+        };
+        out.push(DivergenceFinding {
+            record_index: Some(idx),
+            source: GroundTruthSource::Documentation,
+            kind: "documented_behavior_mismatch".to_string(),
+            aspect: "decision".to_string(),
+            expected,
+            observed,
+            detail: format!(
+                "{label}: verifier decision disagrees with Documentation/bpf/verifier.rst"
+            ),
+        });
+    }
+    true
+}
+
 /// The unsigned range a tnum can represent: `[value, value | mask]` (unknown bits
 /// all 0 .. all 1).
 fn tnum_unsigned_span(t: Tnum) -> (u64, u64) {
@@ -428,6 +484,7 @@ mod tests {
             counterfactual: CounterfactualLayer::default(),
             expectation: ExpectationFlag::default(),
             parse_notes: Vec::new(),
+            source_label: None,
         }
     }
 

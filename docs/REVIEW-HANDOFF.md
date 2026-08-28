@@ -11,7 +11,7 @@
 > - **Repo kökü:** `/home/tylersec/verifierloop` — **git deposu** (branch `main`,
 >   8 commit: `bf506f1`…HEAD)
 > - **Kernel rev (hedef):** `5e289c5a4a526e870efac0ca658635c47138593a` (`.lab/kernel.rev`)
-> - **Son devlog entry'si:** `0021` — `docs/devlog/devlog.md`
+> - **Son devlog entry'si:** `0022` — `docs/devlog/devlog.md`
 
 ---
 
@@ -61,7 +61,7 @@ ground-truth ile diffle → insana triyajlı batch → tekrar. Period = **exec s
 
 **Kaynak belgeler:** `README.md`, `docs/RUNBOOK.md` (operatör manueli),
 `docs/OPEN-ITEMS.md` (**izlenen açık maddeler** — kapanmamış hipotezler/eksikler),
-`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0021).
+`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0022).
 
 ---
 
@@ -113,7 +113,7 @@ ingest ✅ → normalize ✅ → score ✅ → diff ✅ → report ✅ → (huma
 **(V1) Derleme + testler**
 ```
 $ cargo build   → Finished
-$ cargo test    → 58 passed, 0 failed
+$ cargo test    → 67 passed, 0 failed
 ```
 (dağılım: contract 5, orchestrator 6 [loop 4 + vm_driver 2], pipeline lib 18
 [+5 verifier_log], golden_normalize 1, diğerleri şema/iskelet 0.)
@@ -250,6 +250,27 @@ Doğrulama: elle yazılmış **12 kontratın 12'si** birebir üretildi, ve gerç
 **sessiz kayıp** hatası bulundu ve düzeltildi (`__weak` bildirimleri gerçek tanımı
 yutuyordu → `bpf_tail_call` kayıptı); regresyon testi var.
 
+**(V12) ÜÇÜNCÜ DEDEKTÖR KOLU: documented-behavior (kaynak 2) canlı**
+```
+$ cargo run -q -p pipeline --example harness_demo -- <dir>
+  ground truth: 274 helper contracts, 3 documented cases (0 stale)
+  CHECKS  helper-arg: 1  documented cases: 3
+  divergences=0
+```
+`Documentation/bpf/verifier.rst` **kural çıkarılacak prose değil** — açık davranış
+iddiaları içeriyor ("will be rejected, since R2 is unreadable…", "is a correct
+program"), her biri örnek programın yanında. Bunlar **çalıştırılabilir**: programı
+gerçek kernel'de koştur, kararı dokümanın dediğiyle karşılaştır.
+
+**Köken disiplini (alıntı-çapa):** her vaka dokümanın **kendi cümlesini birebir**
+taşır; `load()` alıntının hâlâ dosyada olduğunu **doğrular** — yoksa vaka **STALE**
+olur ve **asla kullanılmaz**. Yani doküman değişirse kural sessizce bayatlamaz.
+
+Gerçek bpf-next VM'inde üç vaka da dokümana uydu (`R2 !read_ok`, accept,
+`R1 invalid mem access 'scalar'`). **6 kalibrasyon testi**: uyumda susar, çelişkide
+bağırır, ground-truth yokken hiçbir şey demez (iddia dokümanda, checker'da değil),
+drift edince susar.
+
 ---
 
 ## 5. Lab ortamı + kritik ortam gerçekleri
@@ -288,7 +309,7 @@ etkilenmez, sadece duvar-saati.
 
 Hafif (VM/root gerekmez):
 - **R1** `cargo build` → Finished. ✔ V1
-- **R2** `cargo test` → **58 passed, 0 failed**. ✔ V1
+- **R2** `cargo test` → **67 passed, 0 failed**. ✔ V1
 - **R3** `just check-python` (ya da elle import) → `python import OK`.
 - **R4** `cargo run -q -p pipeline --example report_demo -- /tmp/vl1` → `top_score=0.95`. ✔ V2
 - **R5** `cargo run -q -p pipeline --example harness_demo -- /tmp/vl2` → 6 gerçek kayıt (3 ranged-scalar dahil), 0 anomali. ✔ V3
@@ -316,6 +337,8 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
   → 151 kayıt, unrecognized 0/151, **101 kontrol** (0021 sonrası), divergences=0. ✔ V10/V11
 - **R17** `cargo test -p pipeline helper_proto` → 5 passed (inclusion rule, bildirim/tanım
   regresyonu, bayrak-niteleyici, commit'li dilim). ✔ V11
+- **R18** `cargo test -p pipeline --test documented_behavior` → 6 passed (susma/bağırma
+  kalibrasyonu + köken + drift). ✔ V12
 
 **Crash'ler hakkında (0020) — bulgu olarak SAYILMADI:** 30 dk'lık kampanya 2 crash
 üretti (`int3 in sk_filter_trim_cap`, `int3 in __seccomp_filter`). Teşhis: her ikisinin
@@ -372,6 +395,7 @@ sorgulamalı.
 | 0019 | Kör nokta oranı **%0** ölçüldü + proto dilimi 8 helper'a genişledi (helper kolu uyandı) | ✅ |
 | 0020 | 2. hacimli period (2x corpus): %0 korundu, **82 helper kontrolü** + crash teşhisi | ✅ |
 | 0021 | `bpf_func_proto` **auto-extraction**: 12→274 kontrat, 8→194 helper (OI-4 kapandı) | ✅ |
+| 0022 | **Üçüncü kol**: documented-behavior (`verifier.rst`), alıntı-çapalı + drift-tespitli | ✅ |
 
 ---
 

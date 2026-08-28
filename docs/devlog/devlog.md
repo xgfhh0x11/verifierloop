@@ -46,6 +46,7 @@ Her entry'nin sabit bir formatı vardır:
 | 0019 | Kör nokta oranı ölçüldü (**%0**) + proto dilimi 8 helper'a genişletildi (helper kolu uyandı) | Tamamlandı (accept-only kapısı; 0 false positive) |
 | 0020 | 2. hacimli period (2x corpus): kör nokta **%0 korundu**, helper kolu **82 kontrol** | Tamamlandı (+ 2 crash: TCG artefaktı, verifier bug'ı değil) |
 | 0021 | `bpf_func_proto` **auto-extraction** (OI-4 kapandı): 12→274 kontrat, 8→194 helper | Tamamlandı (101 kontrol, 0 false positive) |
+| 0022 | **Üçüncü dedektör kolu**: documented-behavior (verifier.rst) — alıntı-çapalı, drift-tespitli | Tamamlandı (3 vaka canlı; kalibre) |
 
 ### Pipeline durumu (özet)
 
@@ -1720,3 +1721,87 @@ gerçek tanımlardan hemen önce bir dizi `__weak` **bildirimi** var (`=` yok); 
 - **OI-2**: syzkaller crash/coverage'ını pipeline'a bağla (crash'ler hâlâ veri yolu dışında).
 - **OI-1**: KVM açılınca crash'leri tekrar test et.
 - Daha uzun hacim: dilim artık 194 helper kapsadığı için yeni helper'lar otomatik kontrol edilir.
+
+
+## 0022 — Üçüncü dedektör kolu: documented-behavior (`verifier.rst`), alıntı-çapalı
+
+- **Tarih:** 2026-08-28
+- **Durum:** Tamamlandı — ground-truth **kaynak 2** canlı; dedektör iki koldan
+  **üçe** çıktı. 3 dokümante vaka gerçek bpf-next'te koşuyor, kalibre ve drift-tespitli.
+- **Alan:** `groundtruth/verifier_rst.rs` (stub → gerçek loader), `groundtruth/mod.rs`
+  (`documented_outcome`), `diff.rs` (`check_documented_behavior` + payda),
+  `normalize.rs` (`source_label` provenance), `harness/diffharness.c` (+3 program).
+- **İlgili:** OI-3 (kısmen kapandı). Reviewer'ın önceliklendirmesi.
+
+### Neden bu iş
+Reviewer'ın tespiti: aranan logic bug sınıflarının çoğu tnum invariant'ı veya helper
+arg-type ile değil, **"dokümante edilen ile gözlenen davranış farkı"** ile yakalanır —
+ve o eksen tamamen eksikti (5 kaynaktan 3'ü stub, fiilen iki kol).
+
+### İlk teşhisimin düzeltilmesi
+0021'de `verifier.rst`'i "20 KB düz metin, ondan kural çıkarmak sahte köken ya da
+kırılgan NLP olur" diye elemiştim. **Düzgün okuyunca yanıldığımı gördüm:** doküman
+*kural* çıkarılacak prose değil, **açık davranış iddiaları** içeriyor — her biri bir
+örnek programın yanında:
+
+| Program (dokümandan) | Dokümanın kendi cümlesi | Sonuç |
+| --- | --- | --- |
+| `bpf_mov R0 = R2; bpf_exit` | "will be rejected, since R2 is unreadable at the start of the program" | Reject |
+| `bpf_mov R6 = 1; bpf_call foo; bpf_mov R0 = R6; bpf_exit` | "is a correct program" | Accept |
+| `R1 = 1; R2 = 2; bpf_xadd *(u32*)(R1+3) += R2; exit` | "will be rejected, since R1 doesn't have a valid pointer type" | Reject |
+
+Bunlar **çalıştırılabilir**: programı gerçek kernel'de koştur, gözlenen kararı
+dokümanın dediğiyle karşılaştır. Fark = gerçek documented-vs-observed divergence.
+
+### Tasarım — alıntı-çapalı köken (provenance discipline)
+Kural benim okumam olduğu için köken **doğrulanabilir** olmalı. Her `DocumentedCase`
+dokümanın **kendi cümlesini birebir** ve satır numarasını taşır; `load()` dosyayı
+yeniden okuyup **alıntının hâlâ orada olduğunu kontrol eder**:
+
+- alıntı bulunur → vaka **kullanılabilir**,
+- alıntı bulunamaz → vaka **STALE** olarak raporlanır ve **asla kullanılmaz**.
+
+Yani doküman değişirse kural sessizce bayatlamaz; **gürültülü şekilde düşer**. (Prose
+hard-wrap'li olduğu için karşılaştırma whitespace-normalize edilir.) Pseudo-asm →
+gerçek insn çevirisi harness'te, vaka id'sinin yanında — `SINGLE_FAMILY_ARG_TYPES` ile
+aynı şekilde **gözden geçirilebilir yargı**; ama **beklenti** dokümandan gelir, benden değil.
+
+### Mimari not
+`MetricRecord.source_label` eklendi (provenance; CORE saf gözlem kalsın diye kayıt
+seviyesinde, `skip_if_none` → golden bozulmadı). Kaydı dokümante vakayla eşleştiren
+anahtar bu. `diff` ayrıca `documented_cases_checked` **paydasını** sayıyor (0020'deki
+helper paydasının aynısı: "0 bulgu / N kontrol" yorumlanabilir olsun diye).
+
+### Doğrulama (kanıt)
+- **Gerçek dokümana karşı**: 3 vakanın 3'ü de çapalandı, **0 stale**.
+- **Gerçek bpf-next VM'inde** (in-VM capture, 10 programlı yeni authoritative sample):
+  `doc_unreadable_reg` → reject (`R2 !read_ok`), `doc_callee_saved_r6` → accept,
+  `doc_bad_ptr_xadd` → reject (`R1 invalid mem access 'scalar'`). **Üçü de dokümana uyuyor.**
+- **Uçtan uca** (`harness_demo`): `ground truth: 274 helper contracts, 3 documented
+  cases (0 stale)` / `CHECKS helper-arg: 1 documented cases: 3` / `divergences=0`.
+- **6 kalibrasyon testi** (diğer kolların aldığı iki-yönlü ispatın aynısı):
+  uyumda **susar**; çelişkide **bağırır** (expected=reject, observed=accept,
+  source=Documentation); **ground truth yokken hiçbir şey demez** (iddia dokümanda,
+  checker'da değil); **drift edince vaka susar** (bayat iddia öne sürmez); ilgisiz
+  programlara dokunmaz. Full suite **58 → 67 passed**.
+
+### Dürüst sınırlar
+- **Sadece 3 vaka.** Doküman daha fazla açık iddia içeriyor; her yeni vaka, prose'dan
+  çıkarım değil, **açıkça yazılmış bir cümle** bulmayı gerektirir (bilinçli yavaş yol).
+- Kaynak **1 (`verifier.c`)** ve **4 (patch-diff)** hâlâ stub → dedektör 3 kollu, 5 değil.
+- Bu kolda da **hiç true-positive yok**: kernel kendi dokümantasyonuyla uyumlu (beklenen).
+
+### Dokunulan dosyalar
+- `crates/pipeline/src/groundtruth/verifier_rst.rs` (stub → loader + 3 test)
+- `crates/pipeline/src/groundtruth/mod.rs` (`documented_outcome`, `with_verifier_rst`)
+- `crates/pipeline/src/diff.rs` (`check_documented_behavior` + `documented_cases_checked`)
+- `crates/pipeline/src/normalize.rs` (`MetricRecord.source_label`, `ParsedRecord.label`)
+- `crates/pipeline/src/verifier_log.rs` (label taşıma)
+- `harness/diffharness.c` (+3 dokümante program), `harness/samples/bpf-next-sample.txt` (10 blok)
+- `crates/pipeline/tests/documented_behavior.rs` (yeni, 6 test)
+
+### Sonraki adımlar
+- Dokümandan **daha fazla açık iddia** kodla (vaka sayısını artır).
+- **OI-2**: syzkaller crash/coverage'ı pipeline'a bağla.
+- **OI-3** kalanı: `verifier.c` (kaynak 1) ve patch-diff (kaynak 4).
+- **OI-5** (yeni): extraction tablosunun denetlenemez yüzeyi — bkz OPEN-ITEMS.

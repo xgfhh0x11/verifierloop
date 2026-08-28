@@ -24,6 +24,7 @@ pub mod verifier_c;
 pub mod verifier_rst;
 
 use helper_proto::HelperProtoModel;
+use verifier_rst::{DocumentedOutcome, VerifierRstModel};
 
 /// The ground-truth oracle the `diff` stage consults for **source-backed** checks.
 ///
@@ -44,6 +45,13 @@ pub trait GroundTruth {
     /// what the diff stage compares an OBSERVED arg reg-type against. Default
     /// `None`; impls carrying a `bpf_func_proto` slice override it.
     fn helper_arg_regtype(&self, _helper: &str, _arg_index: u8) -> Option<String> {
+        None
+    }
+
+    /// Source 2 — what `Documentation/bpf/verifier.rst` says the verifier does with
+    /// the documented program labelled `case_id`. `None` = no documented claim (or
+    /// the claim's anchor drifted), which the diff stage reads as silence.
+    fn documented_outcome(&self, _case_id: &str) -> Option<DocumentedOutcome> {
         None
     }
 }
@@ -68,6 +76,8 @@ impl GroundTruth for NoGroundTruth {
 pub struct StaticGroundTruth {
     /// Source 3 — helper arg_type contracts.
     pub helper_proto: HelperProtoModel,
+    /// Source 2 — documented behaviour (anchor-verified cases).
+    pub verifier_rst: VerifierRstModel,
     // TODO(groundtruth): VerifierCModel, VerifierRstModel, PatchDiffModel — added
     // here (and exposed via new trait methods) as their loaders land.
 }
@@ -75,7 +85,16 @@ pub struct StaticGroundTruth {
 impl StaticGroundTruth {
     /// Build from a helper-proto table (the one source usable without a tree).
     pub fn with_helper_proto(helper_proto: HelperProtoModel) -> Self {
-        Self { helper_proto }
+        Self {
+            helper_proto,
+            ..Default::default()
+        }
+    }
+
+    /// Attach documented-behaviour cases (source 2).
+    pub fn with_verifier_rst(mut self, verifier_rst: VerifierRstModel) -> Self {
+        self.verifier_rst = verifier_rst;
+        self
     }
 }
 
@@ -90,6 +109,10 @@ impl GroundTruth for StaticGroundTruth {
         self.helper_proto
             .arg_regtype(helper, arg_index)
             .map(str::to_string)
+    }
+
+    fn documented_outcome(&self, case_id: &str) -> Option<DocumentedOutcome> {
+        self.verifier_rst.outcome(case_id)
     }
 }
 

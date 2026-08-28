@@ -72,6 +72,7 @@ impl RecordParser for DemoParser {
             .map(|core| ParsedRecord {
                 core,
                 notes: Vec::new(),
+                label: None,
             })
             .collect();
         ParseOutput {

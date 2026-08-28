@@ -38,6 +38,10 @@ pub struct MetricRecord {
     /// with notes is a lower-confidence OBSERVATION, never an anomaly.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parse_notes: Vec<String>,
+    /// Which program produced this observation (the tool's own label). PROVENANCE,
+    /// not a verifier fact — it is what joins a record to a documented case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_label: Option<String>,
 }
 
 /// The NORMALIZED payload for a period: many CORE records + period-level derived.
@@ -94,6 +98,8 @@ pub struct ParsedRecord {
     pub core: CoreMetrics,
     /// Partial-parse caveats (empty = fully recognized).
     pub notes: Vec<String>,
+    /// The tool's label for the program this came from (provenance).
+    pub label: Option<String>,
 }
 
 /// A parser's output: the records it could shape, and the blocks it could not.
@@ -196,6 +202,7 @@ impl RecordParser for ReferenceParser {
             .map(|core| ParsedRecord {
                 core,
                 notes: Vec::new(),
+                label: None,
             })
             .collect();
         ParseOutput {
@@ -264,7 +271,7 @@ pub fn run(
         let path = raw_root.join(&entry.stored_path);
         let bytes = std::fs::read(&path)?;
         let out = parser.parse(&entry.tool, &bytes);
-        for ParsedRecord { mut core, notes } in out.records {
+        for ParsedRecord { mut core, notes, label } in out.records {
             // Carry provenance: stamp exec counter N if the parser left it unset.
             if core.coverage_delta.exec_n == 0 {
                 core.coverage_delta.exec_n = raw.exec_count;
@@ -274,6 +281,7 @@ pub fn run(
                 counterfactual: CounterfactualLayer::default(), // opt-in; OFF here
                 expectation: ExpectationFlag::default(),         // NoPrediction
                 parse_notes: notes,
+                source_label: label,
             });
         }
         // Parser blind-spots kept in a SEPARATE bucket — never records, never anomalies.
@@ -342,6 +350,7 @@ mod tests {
                 .map(|core| ParsedRecord {
                     core,
                     notes: Vec::new(),
+                    label: None,
                 })
                 .collect();
             ParseOutput {

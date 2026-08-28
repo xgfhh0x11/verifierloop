@@ -135,6 +135,58 @@ static void run_map_lookup(void) {
     close(map_fd);
 }
 
+// ---------------------------------------------------------------------------
+// DOCUMENTED-BEHAVIOUR CASES (ground-truth source 2).
+//
+// Each program below is the pseudo-asm example printed in
+// Documentation/bpf/verifier.rst, translated to real insns. The label matches a
+// `DocumentedCase::id` in pipeline::groundtruth::verifier_rst, where the
+// document's own sentence is quoted and anchor-checked. The EXPECTED outcome
+// lives there (from the doc); this file only supplies the program.
+//
+// The pseudo-asm -> insn translation is a reviewable judgement, kept literal:
+// register numbers and instruction kinds follow the document exactly.
+// ---------------------------------------------------------------------------
+static void run_documented_cases(void) {
+    // verifier.rst:25-30 — "If register was never written to, it's not readable"
+    //   bpf_mov R0 = R2
+    //   bpf_exit
+    struct bpf_insn doc_unreadable_reg[] = {
+        BPF_MOV64_REG(BPF_REG_0, BPF_REG_2),
+        BPF_EXIT_INSN(),
+    };
+
+    // verifier.rst:37-45 — "Since R6-R9 are callee saved, their state is preserved
+    // across the call" ... "is a correct program".
+    //   bpf_mov R6 = 1 ; bpf_call foo ; bpf_mov R0 = R6 ; bpf_exit
+    // `foo` is instantiated as a helper callable from a socket filter.
+    struct bpf_insn doc_callee_saved_r6[] = {
+        BPF_MOV64_IMM(BPF_REG_6, 1),
+        BPF_EMIT_CALL(BPF_FUNC_get_prandom_u32),
+        BPF_MOV64_REG(BPF_REG_0, BPF_REG_6),
+        BPF_EXIT_INSN(),
+    };
+
+    // verifier.rst:49-56 — load/store only with valid pointer types; the example
+    //   bpf_mov R1 = 1 ; bpf_mov R2 = 2 ; bpf_xadd *(u32 *)(R1 + 3) += R2 ; bpf_exit
+    // "will be rejected, since R1 doesn't have a valid pointer type".
+    struct bpf_insn doc_bad_ptr_xadd[] = {
+        BPF_MOV64_IMM(BPF_REG_1, 1),
+        BPF_MOV64_IMM(BPF_REG_2, 2),
+        ((struct bpf_insn){.code = BPF_STX | BPF_W | BPF_ATOMIC,
+                           .dst_reg = BPF_REG_1, .src_reg = BPF_REG_2,
+                           .off = 3, .imm = BPF_ADD}),
+        BPF_EXIT_INSN(),
+    };
+
+    run_one("doc_unreadable_reg", doc_unreadable_reg,
+            (int)(sizeof(doc_unreadable_reg) / sizeof(doc_unreadable_reg[0])));
+    run_one("doc_callee_saved_r6", doc_callee_saved_r6,
+            (int)(sizeof(doc_callee_saved_r6) / sizeof(doc_callee_saved_r6[0])));
+    run_one("doc_bad_ptr_xadd", doc_bad_ptr_xadd,
+            (int)(sizeof(doc_bad_ptr_xadd) / sizeof(doc_bad_ptr_xadd[0])));
+}
+
 int main(void) {
     // Program A: clean, minimal accepted prog — `return 0`.
     struct bpf_insn prog_return0[] = {
@@ -195,5 +247,6 @@ int main(void) {
     run_one("bounded_cmp", prog_bounded,
             (int)(sizeof(prog_bounded) / sizeof(prog_bounded[0])));
     run_map_lookup();
+    run_documented_cases();
     return 0;
 }
