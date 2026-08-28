@@ -61,6 +61,12 @@ fn main() {
         "SIGNAL   divergences={}  flagged={}  top_score={}",
         rep.summary.divergence_count, rep.summary.flagged, rep.summary.top_score
     );
+    // The denominator: 0 findings out of MANY checks is evidence; 0 out of ZERO
+    // checks is an idle detector leg. Print it so the two can never be confused.
+    println!(
+        "CHECKS   helper-arg comparisons actually performed: {}   (0 findings out of {} checks)",
+        rep.summary.helper_args_checked, rep.summary.helper_args_checked
+    );
     let ph = rep.parse_health;
     println!(
         "BLOCKS   {} = {} records + {} unparsed",

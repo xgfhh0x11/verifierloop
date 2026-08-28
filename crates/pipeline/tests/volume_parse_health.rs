@@ -97,3 +97,51 @@ fn parsed_records_are_mostly_caveat_free_and_reasons_are_real_text() {
     // A few loads genuinely print no failure text; those are noted, not invented.
     assert!(unknown <= 5, "too many unidentified reject reasons: {unknown}");
 }
+
+/// The detector-leg denominator: "0 helper findings" is only evidence if real
+/// comparisons happened. This pins that the helper leg is NOT idle on real volume
+/// data — if the slice or the accept-gate ever silently stops matching, the count
+/// drops to zero and this fails, instead of a silent "clean" report.
+#[test]
+fn helper_leg_actually_performs_checks_on_volume() {
+    use pipeline::groundtruth::helper_proto::HelperProtoModel;
+    use pipeline::groundtruth::StaticGroundTruth;
+
+    let proto_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../data/groundtruth/helper_protos.tsv");
+    let gt = StaticGroundTruth::with_helper_proto(
+        HelperProtoModel::load_from_file(&proto_path).expect("load proto slice"),
+    );
+
+    let dir = std::env::temp_dir().join(format!("vl-volume-checks-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("diffharness.log");
+    std::fs::write(&src, VOLUME).unwrap();
+    let period = PeriodPaths::new(&dir.join("data"), 1);
+    let raw = ingest::run(&period, &[Source::new("syzreplay", &src)], 95).unwrap();
+    let n = normalize::run(&period, &raw, &VerifierLogParser).unwrap();
+    let out = pipeline::diff::run(&period, &n, &gt).unwrap();
+
+    assert!(
+        out.summary.helper_args_observed > 100,
+        "volume carries plenty of helper-arg observations: {}",
+        out.summary.helper_args_observed
+    );
+    assert!(
+        out.summary.helper_args_checked >= 40,
+        "the helper leg must actually compare against ground truth, not idle: \
+         {} checks out of {} observations",
+        out.summary.helper_args_checked,
+        out.summary.helper_args_observed
+    );
+    // And on this (sound) data those checks all agree — 0 findings out of N checks.
+    assert_eq!(
+        out.findings
+            .iter()
+            .filter(|f| f.kind == "helper_arg_type_mismatch")
+            .count(),
+        0
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -104,6 +104,15 @@ pub struct DiffSummary {
     pub finding_count: u64,
     /// Findings broken down by ground-truth source.
     pub by_source: BySource,
+    /// Helper-arg observations seen across all records (any decision).
+    pub helper_args_observed: u64,
+    /// Of those, how many the helper check actually COMPARED against ground truth
+    /// (accepted programs only, and only args the loaded `bpf_func_proto` slice
+    /// covers). This is the DENOMINATOR that makes "0 helper findings"
+    /// interpretable: 0 out of many checks means the programs were sound; 0 out of
+    /// ZERO checks means the leg never ran and proves nothing.
+    #[serde(default)]
+    pub helper_args_checked: u64,
 }
 
 /// The DIFF_FINDINGS payload for a period.
@@ -158,11 +167,20 @@ pub fn run(
     ground_truth: &dyn GroundTruth,
 ) -> Result<DiffFindings, DiffError> {
     let mut findings = Vec::new();
+    let mut helper_args_observed = 0u64;
+    let mut helper_args_checked = 0u64;
     for (idx, record) in metrics.records.iter().enumerate() {
         let idx = idx as u64;
+        helper_args_observed += record.core.helper_arg_observations.len() as u64;
         check_logical_invariants(idx, record, &mut findings);
         check_helper_proto(idx, record, ground_truth, &mut findings);
-        check_helper_observations(idx, record, ground_truth, &mut findings);
+        check_helper_observations(
+            idx,
+            record,
+            ground_truth,
+            &mut findings,
+            &mut helper_args_checked,
+        );
     }
 
     let mut by_source = BySource::default();
@@ -173,6 +191,8 @@ pub fn run(
         record_count: metrics.records.len() as u64,
         finding_count: findings.len() as u64,
         by_source,
+        helper_args_observed,
+        helper_args_checked,
     };
 
     let out = DiffFindings {
@@ -326,6 +346,7 @@ fn check_helper_observations(
     record: &MetricRecord,
     ground_truth: &dyn GroundTruth,
     out: &mut Vec<DivergenceFinding>,
+    checked: &mut u64,
 ) {
     // ACCEPTED PROGRAMS ONLY. On a rejected program a helper arg-type mismatch is
     // the verifier doing its job — agreement with ground truth, not divergence.
@@ -338,8 +359,9 @@ fn check_helper_observations(
     }
     for o in &record.core.helper_arg_observations {
         let Some(expected) = ground_truth.helper_arg_regtype(&o.helper, o.arg_index) else {
-            continue;
+            continue; // slice does not cover this arg -> cannot corroborate
         };
+        *checked += 1; // a real comparison against ground truth happened
         if expected != o.observed {
             out.push(DivergenceFinding {
                 record_index: Some(idx),

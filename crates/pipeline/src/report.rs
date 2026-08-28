@@ -39,6 +39,11 @@ pub struct TriageItem {
 pub struct ReportSummary {
     /// Records in the period (from ANOMALY_SCORES).
     pub record_count: u64,
+    /// Helper-arg comparisons the diff stage actually performed (from
+    /// DIFF_FINDINGS). Makes "0 helper findings" interpretable: 0 out of many is
+    /// evidence, 0 out of zero is an idle detector leg.
+    #[serde(default)]
+    pub helper_args_checked: u64,
     /// Records at/above the score flag threshold (from ANOMALY_SCORES).
     pub flagged: u64,
     /// Total diff findings, including period-level ones (from DIFF_FINDINGS).
@@ -124,6 +129,7 @@ impl From<contract::ContractError> for ReportError {
 pub fn run(period: &PeriodPaths, generated_unix: Option<u64>) -> Result<PeriodReport, ReportError> {
     let scores: AnomalyScores = contract::read_artifact(&period.anomaly_scores())?.payload;
     let diff: DiffFindings = contract::read_artifact(&period.diff_findings())?.payload;
+    let diff_summary = diff.summary;
 
     // Partition diff findings: per-record (join key) vs period-level (None).
     let mut per_record: BTreeMap<u64, Vec<DivergenceFinding>> = BTreeMap::new();
@@ -174,6 +180,7 @@ pub fn run(period: &PeriodPaths, generated_unix: Option<u64>) -> Result<PeriodRe
 
     let summary = ReportSummary {
         record_count: scores.summary.record_count,
+        helper_args_checked: diff_summary.helper_args_checked,
         flagged: scores.summary.flagged,
         divergence_count: diff.summary.finding_count,
         top_score: scores.summary.max_score,
