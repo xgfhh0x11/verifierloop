@@ -83,10 +83,23 @@ fn main() {
         "SIGNAL   divergences={}  flagged={}  top_score={}",
         rep.summary.divergence_count, rep.summary.flagged, rep.summary.top_score
     );
+    let ph = rep.parse_health;
     println!(
-        "PARSE HEALTH (separate)  records={}  with_notes={}  unparsed_blocks={}",
-        rep.parse_health.records, rep.parse_health.records_with_notes, rep.parse_health.unparsed_blocks
+        "BLOCKS   {} = {} records + {} unparsed",
+        ph.blocks, ph.records, ph.unparsed_blocks
     );
+    let denom = ph.records + ph.unrecognized; // blocks that DID carry verifier output
+    let rate = if denom == 0 { 0.0 } else { 100.0 * ph.unrecognized as f64 / denom as f64 };
+    println!("PARSE HEALTH (separate, never signal)");
+    println!(
+        "  UNRECOGNIZED (parser blind-spots) : {}/{} = {:.1}%   <-- must stay ~0",
+        ph.unrecognized, denom, rate
+    );
+    println!(
+        "  not observed (verifier never ran) : {}   <-- expected, not a parser issue",
+        ph.unparsed_not_observed
+    );
+    println!("  records with notes (lower confidence): {}", ph.records_with_notes);
 
     let mut notes: BTreeMap<String, usize> = BTreeMap::new();
     for r in &norm.records {

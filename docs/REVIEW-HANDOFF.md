@@ -11,7 +11,7 @@
 > - **Repo kökü:** `/home/tylersec/verifierloop` — **git deposu** (branch `main`,
 >   8 commit: `bf506f1`…HEAD)
 > - **Kernel rev (hedef):** `5e289c5a4a526e870efac0ca658635c47138593a` (`.lab/kernel.rev`)
-> - **Son devlog entry'si:** `0018` — `docs/devlog/devlog.md`
+> - **Son devlog entry'si:** `0019` — `docs/devlog/devlog.md`
 
 ---
 
@@ -40,8 +40,10 @@ bug'ı üretmedi** — beklenen sonuç (gerçek kernel + coverage-güdümlü cor
 dedektörün her iki kolu kalibre olduğu için bu "sağır" değil "temiz" okunur. Ayrıca
 hacmin ilk çıkardığı şey **5 parser kör noktasıydı**, verifier bug'ı değil — hepsi
 parse-health'e düştü, sinyale karışmadı, düzeltildi ve regresyona sabitlendi.
-**Helper kolu hacimde dormant**: 112 gözlem / 8 helper üretildi ama proto dilimi
-yalnız 1 helper'ı kapsıyor → oracle sessiz (§6 #1).
+**Güncelleme (0019):** hacmin "%26 unparsed" sayısı ölçüldü — gerçek parser kör
+nokta oranı **%0** (25'in tamamı "verifier hiç çalışmadı"), ve **helper kolu
+uyandırıldı** (dilim 8 helper'a genişledi: %45 kapsam, 45 fiili kontrol, 0 false
+positive). Bkz ✔ V9.
 
 ---
 
@@ -58,7 +60,7 @@ ground-truth ile diffle → insana triyajlı batch → tekrar. Period = **exec s
 - Belirtilmeyen her şey ad-hoc yerine **TODO**.
 
 **Kaynak belgeler:** `README.md`, `docs/RUNBOOK.md` (operatör manueli),
-`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0018).
+`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0019).
 
 ---
 
@@ -110,7 +112,7 @@ ingest ✅ → normalize ✅ → score ✅ → diff ✅ → report ✅ → (huma
 **(V1) Derleme + testler**
 ```
 $ cargo build   → Finished
-$ cargo test    → 47 passed, 0 failed
+$ cargo test    → 52 passed, 0 failed
 ```
 (dağılım: contract 5, orchestrator 6 [loop 4 + vm_driver 2], pipeline lib 18
 [+5 verifier_log], golden_normalize 1, diğerleri şema/iskelet 0.)
@@ -193,6 +195,25 @@ Hacim **5 parser kör noktası** çıkardı (verifier bug'ı değil) — hepsi p
 düştü, düzeltildi, regresyona sabitlendi (devlog 0018). Aynı veri VM'siz yeniden
 analiz edilebilir: `cargo run -p pipeline --example parse_report -- <capture>`.
 
+**(V9) SONUÇ: düzeltme-sonrası parser kör nokta oranı = %0; helper kolu uyanık**
+```
+$ cargo run -q -p pipeline --example parse_report -- crates/pipeline/tests/fixtures/volume/syz-replay-95.log
+  BLOCKS   95 = 70 records + 25 unparsed
+  PARSE HEALTH (separate, never signal)
+    UNRECOGNIZED (parser blind-spots) : 0/70 = 0.0%   <-- must stay ~0
+    not observed (verifier never ran) : 25            <-- expected, not a parser issue
+    records with notes (lower confidence): 5
+```
+%26 "unparsed" iki kategoriyi karıştırıyordu; ayrıldı: **`unrecognized`** (parser
+verilen çıktıyı okuyamadı = **0/70 = %0**) vs **`not_observed`** (verifier hiç
+çalışmadı: EINVAL 12 / EFAULT 7 / E2BIG 6 = 25). Gerçek 95-bloklu yakalama
+**commit'li fixture** + `volume_parse_health` (3 test) ile kilitli — oran artık
+iddia değil invaryant. **Helper kolu**: proto dilimi 1→12 kontrat / 8 helper
+(gerçek kernel kaynağı, satır referanslı) → aynı hacimde **112 gözlemin 51'i
+kapsandı (%45), 45'i accept'te fiilen kontrol edildi** (öncesi: 0 = dormant),
+**0 false positive**. Ayrıca **accept-only kapısı**: reddedilmiş programdaki
+uyuşmazlık verifier'ın doğru çalışmasıdır, divergence sayılmaz.
+
 ---
 
 ## 5. Lab ortamı + kritik ortam gerçekleri
@@ -214,10 +235,11 @@ etkilenmez, sadece duvar-saati.
 
 ## 6. Açık uçlar / sıradaki iş (dosya:satır)
 
-1. **`bpf_func_proto` dilimini genişlet** — hacimde 112 helper-arg gözlemi / 8 helper
-   (`bpf_ringbuf_reserve`, `bpf_snprintf`, …) üretildi ama dilim yalnız 1 helper'ı
-   kapsıyor → **helper kolu dormant**. En yüksek getirili sonraki iş.
-   *(syzkaller besleme 0018'de yapıldı; syzkaller coverage/crash → DERIVED hâlâ ayrı iş.)*
+1. **Hacmi tekrar aç** — parser oturdu (%0 kör nokta) ve helper kolu uyandı (%45
+   kapsam), yani daha uzun bir kampanya artık her iki kolu da çalışır halde koşar.
+   *(0019 sırası tamamlandı: parser doğrulandı → dilim genişledi → sıra hacimde.)*
+   Ayrıca `bpf_func_proto` **auto-extraction** (dilim hâlâ curated) ve syzkaller
+   coverage/crash → DERIVED hâlâ ayrı işler.
 2. **Daha zengin harness corpus'u** (`harness/diffharness.c`) — pointer aritmetiği,
    helper çağrıları, map erişimi → gerçek helper `arg_type` + register-state sinyali.
 3. **Dış ground-truth loader'ları** — `crates/pipeline/src/groundtruth/*.rs`
@@ -231,7 +253,7 @@ etkilenmez, sadece duvar-saati.
 
 Hafif (VM/root gerekmez):
 - **R1** `cargo build` → Finished. ✔ V1
-- **R2** `cargo test` → **47 passed, 0 failed**. ✔ V1
+- **R2** `cargo test` → **52 passed, 0 failed**. ✔ V1
 - **R3** `just check-python` (ya da elle import) → `python import OK`.
 - **R4** `cargo run -q -p pipeline --example report_demo -- /tmp/vl1` → `top_score=0.95`. ✔ V2
 - **R5** `cargo run -q -p pipeline --example harness_demo -- /tmp/vl2` → 6 gerçek kayıt (3 ranged-scalar dahil), 0 anomali. ✔ V3
@@ -252,6 +274,9 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
   `cargo run -p pipeline --example parse_health_demo` → parse-health divergence'lardan ayrı. ✔ V7
 - **R14** (ağır) `TIMEOUT=1200 cargo run -p orchestrator --example syz_period -- /tmp/vlsyz`
   → 70 kayıt, 20 gerçek reject metni, divergences=0, parse-health ayrı. ✔ V8
+- **R15** `cargo test -p pipeline --test volume_parse_health` → 3 passed (unrecognized==0,
+  sayılar mutabık); `cargo test -p pipeline --test helper_calibration` → 5 passed
+  (dilim uyanık + false positive yok + accept-only kapısı). ✔ V9
 
 **Reviewer'ın özellikle sorgulaması istenen iddialar (şüphe listesi):**
 1. "İlk gerçek period çalışıyor" → evet ama **sabit corpus**, syzkaller-fuzzing değil
@@ -289,6 +314,7 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
 | 0016 | Helper kolu: file-loaded `bpf_func_proto` + helper true-positive | ✅ |
 | 0017 | Unparsed politikası (parser kör noktaları ayrı kova; rapor ayrı gösterir) | ✅ |
 | 0018 | **İlk syzkaller-güdümlü hacimli period** + hacmin çıkardığı 5 parser kör noktası | ✅ |
+| 0019 | Kör nokta oranı **%0** ölçüldü + proto dilimi 8 helper'a genişledi (helper kolu uyandı) | ✅ |
 
 ---
 
@@ -298,10 +324,14 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
 > bpf-next kernel'inden gelen **gerçek verifier verisiyle uçtan uca canlı koşuyor**;
 > **hacim açık**: syzkaller'ın kendi corpus'u (900 sn gerçek kampanya) bir shim ile
 > `log_level=2` verifier log'una çevrilip period olarak koşuyor (`syz_period`:
-> 70 kayıt, **20 farklı gerçek reject metni**, 0 divergence; 47 test geçer).
+> 70 kayıt, **20 farklı gerçek reject metni**, 0 divergence; 52 test geçer).
+> Düzeltme-sonrası **parser kör nokta oranı %0** (0/70; kalan 25 blok "verifier hiç
+> çalışmadı") ve **helper kolu uyanık** (8 helper'lık `bpf_func_proto` dilimi,
+> %45 kapsam, 0 false positive).
 > Dedektörün **her iki kolu** (intrinsic tnum + file-loaded `bpf_func_proto`) gerçek
 > yolda kalibre, ve **parser kör noktaları ayrı kanalda** raporlanıyor (hacmin
 > çıkardığı 5 kör nokta düzeltildi). **Eksik olan**: proto dilimini hacimde gözlenen
-> 8 helper'a genişletmek (helper kolu şu an dormant), `verifier.c`/`verifier.rst`/
-> patch-diff loader'ları, JIT↔interp cross-kernel modu; **KVM host-side bloklu,
-> TCG çalışır**; **gerçek bir verifier bug'ı henüz yüzeye çıkmadı** (beklenen)."
+> `bpf_func_proto` **auto-extraction** (dilim curated), `verifier.c`/`verifier.rst`/
+> patch-diff loader'ları, JIT↔interp cross-kernel modu ve **daha uzun hacim**;
+> **KVM host-side bloklu, TCG çalışır**; **gerçek bir verifier bug'ı henüz yüzeye
+> çıkmadı** (beklenen)."

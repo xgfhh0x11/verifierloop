@@ -51,12 +51,21 @@ pub struct ReportSummary {
 /// parser's own blind-spots are never counted as verifier signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ParseHealth {
+    /// Native blocks seen in this period: `records + unparsed_blocks`. Reported so
+    /// the counts reconcile at a glance (records alone never equals blocks).
+    pub blocks: u64,
     /// Records the parser produced.
     pub records: u64,
     /// Records parsed with caveats (non-empty parse_notes) — lower confidence.
     pub records_with_notes: u64,
-    /// Native blocks the parser could not shape into records (blind-spots).
+    /// Blocks that produced no record (`not_observed + unrecognized`).
     pub unparsed_blocks: u64,
+    /// Of those: nothing to observe (the tool emitted no verifier output, e.g. the
+    /// load failed at the syscall boundary). EXPECTED at volume, not a deficiency.
+    pub unparsed_not_observed: u64,
+    /// Of those: the parser WAS given verifier output and failed on it. THE
+    /// blind-spot metric — this is the number that must stay near zero.
+    pub unrecognized: u64,
 }
 
 /// Human-facing, triaged report for one period (the PERIOD_REPORT payload).
@@ -177,11 +186,19 @@ pub fn run(period: &PeriodPaths, generated_unix: Option<u64>) -> Result<PeriodRe
     )
     .map(|a| {
         let n = a.payload;
+        let unrecognized = n
+            .unparsed
+            .iter()
+            .filter(|u| u.kind == crate::normalize::UnparsedKind::Unrecognized)
+            .count() as u64;
         ParseHealth {
+            blocks: (n.records.len() + n.unparsed.len()) as u64,
             records: n.records.len() as u64,
             records_with_notes: n.records.iter().filter(|r| !r.parse_notes.is_empty()).count()
                 as u64,
             unparsed_blocks: n.unparsed.len() as u64,
+            unparsed_not_observed: n.unparsed.len() as u64 - unrecognized,
+            unrecognized,
         }
     })
     .unwrap_or_default();

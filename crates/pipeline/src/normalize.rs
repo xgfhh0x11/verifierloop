@@ -56,15 +56,32 @@ pub struct NormalizedMetrics {
     pub unparsed: Vec<UnparsedBlock>,
 }
 
-/// A native block the parser could NOT shape into a trustworthy record. Kept in a
-/// SEPARATE bucket (see [`NormalizedMetrics::unparsed`]) — never silently dropped,
-/// and NEVER treated as a verifier anomaly. This is the policy that keeps a
-/// parser's own blind-spots distinguishable from real verifier signal, especially
-/// once a high-volume period surfaces log forms the parser has not seen.
+/// WHY a native block produced no record. These two are categorically different
+/// and must not share a number: one is the data having nothing to observe, the
+/// other is the parser failing on data it was given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnparsedKind {
+    /// There was no observation to make — the tool produced no verifier output
+    /// (e.g. the load failed at the syscall boundary, so the verifier never ran).
+    /// EXPECTED at volume; NOT a parser deficiency.
+    NotObserved,
+    /// The parser WAS given verifier output and could not shape it. This is the
+    /// real blind-spot metric — the number that must stay near zero.
+    Unrecognized,
+}
+
+/// A native block that produced no record. Kept in a SEPARATE bucket (see
+/// [`NormalizedMetrics::unparsed`]) — never silently dropped, and NEVER treated as
+/// a verifier anomaly. This is the policy that keeps a parser's own blind-spots
+/// distinguishable from real verifier signal, especially once a high-volume period
+/// surfaces log forms the parser has not seen.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnparsedBlock {
     /// Short label for triage (e.g. the program name, or a positional id).
     pub label: String,
+    /// Whether there was nothing to observe, or the parser failed on real output.
+    pub kind: UnparsedKind,
     /// Why the block could not be turned into a record.
     pub reason: String,
 }

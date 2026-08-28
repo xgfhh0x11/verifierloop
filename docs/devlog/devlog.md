@@ -43,6 +43,7 @@ Her entry'nin sabit bir formatı vardır:
 | 0016 | Helper kolu: parser-kapsaması + bpf_func_proto dilimi/loader + helper true-positive | Tamamlandı (expected LOADER'dan; provenance çıktıda gösterildi) |
 | 0017 | Unparsed politikası: parser kör noktaları ayrı kovada (hacimden önce) | Tamamlandı (blok→unparsed, satır→note; asla anomali; rapor ayrı gösterir) |
 | 0018 | **İlk syzkaller-güdümlü hacimli period** + hacmin çıkardığı 5 parser kör noktası | Tamamlandı (70 kayıt, 20 gerçek reject metni, 0 divergence) |
+| 0019 | Kör nokta oranı ölçüldü (**%0**) + proto dilimi 8 helper'a genişletildi (helper kolu uyandı) | Tamamlandı (accept-only kapısı; 0 false positive) |
 
 ### Pipeline durumu (özet)
 
@@ -1448,3 +1449,94 @@ hacimde **fiilen dormant**; açık ve somut sonraki iş: dilimi bu helper'lara g
   (helper kolunu dormant'tan çıkarır). Auto-extraction hâlâ TODO.
 - Daha uzun kampanya + daha çok corpus → daha geniş reject/reg-type yüzeyi.
 - `verifier.c` / `verifier.rst` / patch-diff loader'ları (kalan 3 ground-truth kaynağı).
+
+
+## 0019 — Kör nokta ORANI (%0) + proto dilimi 8 helper'a genişletildi
+
+- **Tarih:** 2026-08-28
+- **Durum:** Tamamlandı — "unparsed %26" sorusu **ölçülerek** cevaplandı (gerçek
+  kör nokta **%0**), sayılar mutabık hale getirildi, ve helper kolu dormant'tan
+  çıkarıldı (45 fiili kontrol, 0 false positive).
+- **Alan:** `normalize.rs` (`UnparsedKind`), `verifier_log.rs`, `report.rs`
+  (`ParseHealth` bölündü), `diff.rs` (accept-only kapısı),
+  `data/groundtruth/helper_protos.tsv` (1→12 kontrat), fixtures + 5 test.
+- **İlgili:** 0018 (hacim), 0016 (helper kalibrasyonu), 0017 (unparsed politikası).
+  Reviewer'ın iki şartını karşılar.
+
+### 1. Sorun: `%26 unparsed` sayısı okunamıyordu (raporlama hatası — bende)
+Reviewer haklıydı: "5 kör nokta düzeltildi" bir **süreç** ifadesi; lazım olan
+**sonuç** ifadesiydi. Ölçünce şu çıktı — ve tek kovada **kategorik olarak farklı
+iki şeyi** topladığım ortaya çıktı:
+
+| | sayı | |
+| --- | --- | --- |
+| Toplam blok | 95 | |
+| Verifier log'u **dolu** → hepsi kayda dönüştü | 70 | **70/70 = %100 parse** |
+| Verifier log'u **boş** (verifier hiç çalışmadı: EINVAL 12, EFAULT 7, E2BIG 6) | 25 | syscall-seviyesi red |
+| **Parser formatı okuyamadı** | **0** | **%0 gerçek kör nokta** |
+
+Yani %26, "parser başarısızlığı" değil "gözlenecek bir şey yoktu". Düzeltme:
+**`UnparsedKind`** eklendi — `NotObserved` (araç verifier çıktısı üretmedi; hacimde
+BEKLENEN) vs **`Unrecognized`** (parser verilen çıktıyı okuyamadı; **asıl metrik**).
+`ParseHealth` buna göre bölündü ve **mutabakat satırı** eklendi (`blocks = records
++ unparsed`) — 95≠70 artık hata gibi görünmüyor.
+
+```
+BLOCKS   95 = 70 records + 25 unparsed
+PARSE HEALTH (separate, never signal)
+  UNRECOGNIZED (parser blind-spots) : 0/70 = 0.0%   <-- must stay ~0
+  not observed (verifier never ran) : 25            <-- expected, not a parser issue
+  records with notes (lower confidence): 5
+```
+
+**Kalıcılık:** gerçek 95-bloklu hacim yakalaması **commit'li fixture** yapıldı
+(`tests/fixtures/volume/syz-replay-95.log`, 84 KB) + `volume_parse_health.rs` (3 test):
+unrecognized == 0, sayılar mutabık, notlu kayıt < %10, ≥15 farklı gerçek reject metni.
+Yani oran artık **bir iddia değil, kilitli bir invaryant**.
+
+### 2. Semantik düzeltme (dilimi genişletmeden ÖNCE): accept-only kapısı
+Hacim şunu görünür kıldı: **reddedilmiş** bir programda helper arg-tipi uyuşmazlığı
+**verifier'ın doğru çalıştığının kanıtıdır**, bug değil. Gerçek av sinyali tersi:
+**kabul edilmiş** programda dokümante kontratın ihlali. `check_helper_observations`
+artık yalnız `Accept` kayıtlarında koşuyor — bu yapılmadan dilim genişletilseydi,
+her reddedilen program gürültü üretirdi.
+
+### 3. Proto dilimi: 1 → 12 kontrat / 8 helper (gerçek kaynak, satır referanslı)
+Hacimde gözlenen 8 helper'ın `bpf_func_proto`'ları `.lab/bpf-next`'ten çıkarıldı:
+`ringbuf.c:554/555/596/635/637/666`, `helpers.c:55/1096/1097`, `core.c:3209/3210`,
+`bpf_trace.c:421`.
+
+**Dahil etme kuralı (dosyada da yazılı):** bir arg YALNIZCA `arg_type`'ı **tek bir**
+verifier reg-tipi ailesine karşılık geliyorsa listelenir. `ARG_ANYTHING` (her tip
+geçerli) ve `ARG_PTR_TO_MEM/_OR_NULL` (meşru olarak fp VEYA map_value VEYA pkt…)
+**bilinçli olarak dışarıda** — tek tip dayatmak false positive üretirdi. Dışarıda
+kalan = "korroborasyon yok" = sessizlik (≠ "ihlal yok").
+
+### Doğrulama (kanıt)
+- **Helper kolu uyandı:** aynı hacim verisinde **112 gözlem → 51 kapsandı (%45)**,
+  bunların **45'i accept kaydında** (fiilen kontrol edilen). Öncesi: **0** (dormant).
+- **False positive yok:** genişletilmiş dilim + gerçek hacim → `helper_arg_type_mismatch`
+  **0**. (Bu kritikti: dilim gürültü üretmiyor.)
+- **Accept-only kapısı testi:** aynı ihlal, `accept` → bulgu VAR; `reject` → bulgu YOK.
+- Full suite **47 → 52 passed, 0 failed**.
+
+### Dürüst sınırlar
+- Dilim **curated**; auto-extraction hâlâ TODO. Kapsam **%45** — kalan %55 çoğunlukla
+  `ARG_ANYTHING`/`ARG_PTR_TO_MEM` (bilinçli dışarıda, kapsanamaz değil).
+- Helper kolu artık uyanık ama **hiç true-positive üretmedi** — gerçek kernel,
+  beklenen sonuç.
+- 5 notlu kayıt: 2 eksik `processed`, 3 log'da gerçekten arıza metni olmayan reject.
+
+### Dokunulan dosyalar
+- `crates/pipeline/src/normalize.rs` (`UnparsedKind` + `UnparsedBlock.kind`)
+- `crates/pipeline/src/verifier_log.rs` (kind sınıflandırması)
+- `crates/pipeline/src/report.rs` (`ParseHealth`: blocks/unrecognized/not_observed)
+- `crates/pipeline/src/diff.rs` (accept-only kapısı)
+- `data/groundtruth/helper_protos.tsv` (1 → 12 kontrat, 8 helper)
+- `crates/pipeline/tests/{volume_parse_health.rs,fixtures/volume/syz-replay-95.log}` (yeni)
+- `crates/pipeline/tests/helper_calibration.rs` (+2 test), örnek çıktı formatları
+
+### Sonraki adımlar
+- **Hacmi tekrar aç** (reviewer sırası tamam: parser oturdu %0 → dilim genişledi →
+  hacim): daha uzun kampanya, helper kolu artık uyanık koşacak.
+- `bpf_func_proto` auto-extraction; `verifier.c`/`verifier.rst`/patch-diff loader'ları.

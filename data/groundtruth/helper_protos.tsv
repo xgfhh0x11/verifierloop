@@ -1,9 +1,48 @@
-# Minimal bpf_func_proto slice — REAL kernel contracts, hand-extracted from the
-# bpf-next tree (.lab/bpf-next). This is source 3 of the ground truth; the full
-# auto-extraction from the tree is still TODO — this curated slice feeds the
-# diff helper-arg check now. Columns (TAB-separated):
+# bpf_func_proto slice — REAL kernel contracts, extracted from the bpf-next tree
+# in .lab/bpf-next (source 3 of the ground truth). Auto-extraction from the tree is
+# still TODO; this curated slice feeds the diff helper-arg check today.
+#
+# Columns (TAB-separated):
 #   helper <TAB> arg_index(0-based) <TAB> arg_type(ARG_*) <TAB> expected_regtype
 #
-# bpf_map_lookup_elem: kernel/bpf/helpers.c:55  .arg1_type = ARG_CONST_MAP_PTR
-#   -> arg0 must be a const map pointer; verifier reg-type family: map_ptr
+# INCLUSION RULE: an entry is listed ONLY when its arg_type maps to exactly ONE
+# verifier reg-type family. Args typed ARG_ANYTHING (any reg is valid) or
+# ARG_PTR_TO_MEM/_OR_NULL (legitimately fp OR map_value OR pkt ...) are
+# deliberately LEFT OUT — asserting a single family there would manufacture false
+# positives. Omitted == "cannot corroborate", which the diff stage treats as
+# silence, not as "no violation".
+
+# bpf_map_lookup_elem — kernel/bpf/helpers.c:55
 bpf_map_lookup_elem	0	ARG_CONST_MAP_PTR	map_ptr
+
+# bpf_ringbuf_output — kernel/bpf/ringbuf.c:635,637
+#   arg1 ARG_PTR_TO_MEM|MEM_RDONLY and arg3 ARG_ANYTHING: omitted (many valid types)
+bpf_ringbuf_output	0	ARG_CONST_MAP_PTR	map_ptr
+bpf_ringbuf_output	2	ARG_MEM_SIZE_OR_ZERO	scalar
+
+# bpf_ringbuf_reserve — kernel/bpf/ringbuf.c:554,555
+#   arg2 ARG_ANYTHING: omitted
+bpf_ringbuf_reserve	0	ARG_CONST_MAP_PTR	map_ptr
+bpf_ringbuf_reserve	1	ARG_CONST_ALLOC_SIZE_OR_ZERO	scalar
+
+# bpf_ringbuf_submit — kernel/bpf/ringbuf.c:596
+#   arg1 ARG_ANYTHING: omitted
+bpf_ringbuf_submit	0	ARG_PTR_TO_RINGBUF_MEM|OBJ_RELEASE	ringbuf_mem
+
+# bpf_ringbuf_query — kernel/bpf/ringbuf.c:666
+#   arg1 ARG_ANYTHING: omitted
+bpf_ringbuf_query	0	ARG_CONST_MAP_PTR	map_ptr
+
+# bpf_snprintf — kernel/bpf/helpers.c:1096,1097
+#   arg0/arg3 ARG_PTR_TO_MEM variants: omitted (many valid types)
+bpf_snprintf	1	ARG_MEM_SIZE_OR_ZERO	scalar
+bpf_snprintf	2	ARG_PTR_TO_CONST_STR	map_value
+
+# bpf_tail_call — kernel/bpf/core.c:3209,3210
+#   arg2 ARG_ANYTHING: omitted
+bpf_tail_call	0	ARG_PTR_TO_CTX	ctx
+bpf_tail_call	1	ARG_CONST_MAP_PTR	map_ptr
+
+# bpf_trace_printk — kernel/trace/bpf_trace.c:421
+#   arg0 ARG_PTR_TO_MEM|MEM_RDONLY: omitted
+bpf_trace_printk	1	ARG_MEM_SIZE	scalar

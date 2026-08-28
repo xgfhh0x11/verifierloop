@@ -63,9 +63,14 @@ fn main() {
 
     println!("PERIOD REPORT");
     println!("  SIGNAL   : divergences={}  flagged={}", rep.summary.divergence_count, rep.summary.flagged);
+    let ph = rep.parse_health;
     println!(
-        "  PARSE HEALTH (separate): records={}  with_notes={}  unparsed_blocks={}",
-        rep.parse_health.records, rep.parse_health.records_with_notes, rep.parse_health.unparsed_blocks
+        "  BLOCKS   {} = {} records + {} unparsed",
+        ph.blocks, ph.records, ph.unparsed_blocks
+    );
+    println!(
+        "  PARSE HEALTH (separate): unrecognized={}  not_observed={}  with_notes={}",
+        ph.unrecognized, ph.unparsed_not_observed, ph.records_with_notes
     );
     println!("\nunparsed blocks (parser blind-spots, NOT anomalies):");
     for u in &norm.unparsed {

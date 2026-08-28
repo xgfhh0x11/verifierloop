@@ -22,7 +22,7 @@
 //! UNCHANGED-AT-SOURCE: this reads bytes and never mutates them; shaping into the
 //! schema is interpretation, done here in `normalize` and nowhere earlier.
 
-use crate::normalize::{ParseOutput, ParsedRecord, RecordParser, UnparsedBlock};
+use crate::normalize::{ParseOutput, ParsedRecord, RecordParser, UnparsedBlock, UnparsedKind};
 use metrics::core::{
     CoreMetrics, CoverageDelta, HelperArgObservation, Processed, RegSnapshot, RegState, Tnum,
     VerifierDecision,
@@ -98,6 +98,7 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
         None => {
             return Err(UnparsedBlock {
                 label,
+                kind: UnparsedKind::Unrecognized,
                 reason: "no RESULT line — decision unknown".to_string(),
             })
         }
@@ -115,6 +116,7 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
         // e.g. `decision=error` (harness map-create failure) — not a verifier obs.
         return Err(UnparsedBlock {
             label,
+            kind: UnparsedKind::NotObserved,
             reason: format!("non-verifier RESULT: {}", result.trim()),
         });
     };
@@ -126,8 +128,9 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
     if log.iter().all(|l| l.trim().is_empty()) {
         return Err(UnparsedBlock {
             label,
+            kind: UnparsedKind::NotObserved,
             reason: format!(
-                "empty verifier log ({}) — nothing observed",
+                "empty verifier log ({}) — verifier never ran",
                 result.trim().trim_start_matches("RESULT ")
             ),
         });

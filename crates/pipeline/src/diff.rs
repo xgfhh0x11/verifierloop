@@ -21,7 +21,7 @@
 use crate::groundtruth::GroundTruth;
 use crate::normalize::{MetricRecord, NormalizedMetrics};
 use contract::{Artifact, PeriodPaths, Producer};
-use metrics::core::Tnum;
+use metrics::core::{Tnum, VerifierDecision};
 use serde::{Deserialize, Serialize};
 
 /// Which ground-truth pillar a divergence was found against.
@@ -327,6 +327,15 @@ fn check_helper_observations(
     ground_truth: &dyn GroundTruth,
     out: &mut Vec<DivergenceFinding>,
 ) {
+    // ACCEPTED PROGRAMS ONLY. On a rejected program a helper arg-type mismatch is
+    // the verifier doing its job — agreement with ground truth, not divergence.
+    // The bug-hunting signal is the opposite: a program the verifier ACCEPTED even
+    // though an argument violates its documented `bpf_func_proto` contract.
+    // (Volume made this concrete: rejected programs routinely carry mismatched
+    // arg types, which is exactly why they were rejected.)
+    if !matches!(record.core.verifier_decision, VerifierDecision::Accept) {
+        return;
+    }
     for o in &record.core.helper_arg_observations {
         let Some(expected) = ground_truth.helper_arg_regtype(&o.helper, o.arg_index) else {
             continue;
