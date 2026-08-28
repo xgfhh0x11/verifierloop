@@ -44,6 +44,7 @@ Her entry'nin sabit bir formatı vardır:
 | 0017 | Unparsed politikası: parser kör noktaları ayrı kovada (hacimden önce) | Tamamlandı (blok→unparsed, satır→note; asla anomali; rapor ayrı gösterir) |
 | 0018 | **İlk syzkaller-güdümlü hacimli period** + hacmin çıkardığı 5 parser kör noktası | Tamamlandı (70 kayıt, 20 gerçek reject metni, 0 divergence) |
 | 0019 | Kör nokta oranı ölçüldü (**%0**) + proto dilimi 8 helper'a genişletildi (helper kolu uyandı) | Tamamlandı (accept-only kapısı; 0 false positive) |
+| 0020 | 2. hacimli period (2x corpus): kör nokta **%0 korundu**, helper kolu **82 kontrol** | Tamamlandı (+ 2 crash: TCG artefaktı, verifier bug'ı değil) |
 
 ### Pipeline durumu (özet)
 
@@ -1540,3 +1541,91 @@ kalan = "korroborasyon yok" = sessizlik (≠ "ihlal yok").
 - **Hacmi tekrar aç** (reviewer sırası tamam: parser oturdu %0 → dilim genişledi →
   hacim): daha uzun kampanya, helper kolu artık uyanık koşacak.
 - `bpf_func_proto` auto-extraction; `verifier.c`/`verifier.rst`/patch-diff loader'ları.
+
+
+## 0020 — 2. hacimli period: iki metrik büyük örneklemde doğrulandı (+ crash teşhisi)
+
+- **Tarih:** 2026-08-28
+- **Durum:** Tamamlandı — reviewer'ın istediği iki sayı ~2x daha büyük ve çeşitli
+  bir örneklemde ölçüldü: kör nokta oranı **%0'da kaldı**, helper kolu **82 fiili
+  kontrol** yaptı. Ayrıca kampanya 2 crash üretti; teşhis edildi ve **bulgu olarak
+  sayılmadı**.
+- **Alan:** `diff.rs`/`report.rs` (kontrol paydası), `verifier_log.rs` (not zenginleştirme),
+  yeni fixture + testler.
+- **İlgili:** 0019 (ilk ölçüm), 0018 (ilk hacim).
+
+### Enstrümantasyon: kontrol PAYDASI (yapısal cevap)
+"0 helper bulgusu" ancak **kaç kontrol yapıldığı** biliniyorsa yorumlanabilir. `diff`
+artık `helper_args_observed` / `helper_args_checked` sayıyor (accept-only + dilimin
+kapsadığı) ve rapor basıyor:
+
+```
+CHECKS   helper-arg comparisons actually performed: 82   (0 findings out of 82 checks)
+```
+
+Ayrım: **N>0 + 0 bulgu = programlar sağlamdı (kanıt)**; **N=0 + 0 bulgu = kol boşta,
+hiçbir şey kanıtlamaz**. `volume_parse_health` testi `N ≥ 40` şartını kilitler — dilim
+ya da accept-kapısı sessizce eşleşmeyi bıraksa "temiz rapor" yerine test kırmızı olur.
+
+### Koşu
+30 dk kampanya (corpus.db **75 KB → 127 KB**, corpus 317+, coverage ~7900 BB) →
+replay → VM'de period.
+
+### İki metrik — yan yana (iki bağımsız yakalama)
+| | capture #1 (95 blok) | capture #2 (184 blok) |
+| --- | --- | --- |
+| kayıt | 70 (35 acc / 35 rej) | **151** (72 acc / 79 rej) |
+| **UNRECOGNIZED (kör nokta)** | 0/70 = **%0** | **0/151 = %0** |
+| not observed (verifier hiç çalışmadı) | 25 | 33 |
+| notlu kayıt | 5 (%7) | 10 (%6.6) |
+| **helper kontrolü yapıldı** | 45 | **82** |
+| helper bulgusu | 0 | 0 |
+| farklı gerçek reject metni | 20 | **44** |
+| divergence | 0 | 0 |
+
+**(1)** Kör nokta oranı ~2x örneklemde **%0'da kaldı** — tek örneklem şansı değil.
+**(2)** Helper kolu **82 gerçek karşılaştırma** yaptı → "0 mismatch" = *corpus/verifier
+sağlam*, "kol uykuda" değil. Her iki fixture da commit'li; test **ikisinde birden**
+`unrecognized == 0` ve sayı mutabakatı şartını koşuyor.
+
+Notlu kayıtların 8'i "reason not identified" — incelendi: log'larında **yalnız
+`processed 0 insns`** var, yani verifier hiç mesaj basmamış (verinin sınırı, parser'ın
+değil). Not artık errno taşıyor: `reject reason not identified in log (errno=22;
+verifier printed no message)`.
+
+### Crash'ler — teşhis edildi, BULGU DEĞİL
+Kampanya 2 crash üretti: `int3 in sk_filter_trim_cap`, `int3 in __seccomp_filter`.
+**Aradığımız bug sınıfı değil ve büyük olasılıkla emülasyon artefaktı:**
+
+- Her ikisinin RIP'i **aynı nokta**: `filter.h:763` =
+  `static_branch_unlikely(&bpf_stats_enabled_key)` (kaynakta doğrulandı, `filter.h:744`).
+- Crash'ler **fuzzer'ın programlarında değil**, alakasız sistem süreçlerinde:
+  `udev-worker` (netlink broadcast → sk_filter) ve `systemd-udevd` (seccomp).
+- syzkaller `bpf$ENABLE_STATS` çağırıyor → bu static key'i flip ediyor → kernel
+  static branch'i **int3-tabanlı text patching** ile yamalıyor.
+- Biz `-accel tcg,thread=multi` kullanıyoruz; TCG'de eşzamanlı kod-yaması/vCPU
+  serializasyonu zayıf → başka bir vCPU int3'ü poke-handler devrede değilken yürütüyor.
+- **İkisi de `repro=false`** (zamanlama yarışı).
+
+Nedensel zincir tam ve tutarlı. **Bulgu olarak sunulmuyor.** Gerçek bir kernel sorunu
+olup olmadığını ayırt etmenin doğru yolu **KVM/bare-metal'de tekrar test**tir (KVM
+host-side açıldığında).
+
+### Dürüst sınırlar
+- Hâlâ **gerçek verifier bug'ı yok** — beklenen (gerçek kernel, sağlam corpus).
+- Helper kolu 82 kontrol yaptı ama **hiç true-positive görmedi**; kalibrasyonu
+  0016'daki fault-injection testi kanıtlıyor, hacim değil.
+- Dilim kapsamı hâlâ kısmi (`ARG_ANYTHING`/`ARG_PTR_TO_MEM` bilinçli dışarıda).
+- TCG throughput ana kısıt; KVM ~10-20x hızlandırırdı.
+
+### Dokunulan dosyalar
+- `crates/pipeline/src/{diff,report}.rs` (helper_args_observed/checked)
+- `crates/pipeline/src/verifier_log.rs` (not + errno)
+- `crates/pipeline/tests/fixtures/volume/syz-replay-184.log` (yeni), `volume_parse_health.rs`
+- `crates/pipeline/examples/parse_report.rs`, `crates/orchestrator/examples/syz_period.rs` (CHECKS satırı)
+
+### Sonraki adımlar
+- `bpf_func_proto` **auto-extraction** (dilim curated; kapsamı büyütür).
+- `verifier.c` / `verifier.rst` / patch-diff loader'ları (kalan 3 ground-truth kaynağı).
+- syzkaller **coverage/crash → DERIVED** (crash'ler şu an pipeline dışında).
+- KVM açılınca crash'leri yeniden test et (TCG artefaktı hipotezini doğrula/çürüt).

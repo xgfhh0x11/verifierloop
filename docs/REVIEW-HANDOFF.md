@@ -11,7 +11,7 @@
 > - **Repo kökü:** `/home/tylersec/verifierloop` — **git deposu** (branch `main`,
 >   8 commit: `bf506f1`…HEAD)
 > - **Kernel rev (hedef):** `5e289c5a4a526e870efac0ca658635c47138593a` (`.lab/kernel.rev`)
-> - **Son devlog entry'si:** `0019` — `docs/devlog/devlog.md`
+> - **Son devlog entry'si:** `0020` — `docs/devlog/devlog.md`
 
 ---
 
@@ -60,7 +60,7 @@ ground-truth ile diffle → insana triyajlı batch → tekrar. Period = **exec s
 - Belirtilmeyen her şey ad-hoc yerine **TODO**.
 
 **Kaynak belgeler:** `README.md`, `docs/RUNBOOK.md` (operatör manueli),
-`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0019).
+`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0020).
 
 ---
 
@@ -112,7 +112,7 @@ ingest ✅ → normalize ✅ → score ✅ → diff ✅ → report ✅ → (huma
 **(V1) Derleme + testler**
 ```
 $ cargo build   → Finished
-$ cargo test    → 52 passed, 0 failed
+$ cargo test    → 54 passed, 0 failed
 ```
 (dağılım: contract 5, orchestrator 6 [loop 4 + vm_driver 2], pipeline lib 18
 [+5 verifier_log], golden_normalize 1, diğerleri şema/iskelet 0.)
@@ -214,6 +214,27 @@ kapsandı (%45), 45'i accept'te fiilen kontrol edildi** (öncesi: 0 = dormant),
 **0 false positive**. Ayrıca **accept-only kapısı**: reddedilmiş programdaki
 uyuşmazlık verifier'ın doğru çalışmasıdır, divergence sayılmaz.
 
+**(V10) İKİ METRİK BÜYÜK ÖRNEKLEMDE — %0 korundu, dedektör kolu boşta değil**
+```
+$ cargo run -q -p pipeline --example parse_report -- crates/pipeline/tests/fixtures/volume/syz-replay-184.log
+  RECORDS  151 (accept 72 / reject 79)
+  SIGNAL   divergences=0  flagged=0
+  CHECKS   helper-arg comparisons actually performed: 82   (0 findings out of 82 checks)
+  BLOCKS   184 = 151 records + 33 unparsed
+    UNRECOGNIZED (parser blind-spots) : 0/151 = 0.0%
+```
+| | capture #1 (95) | capture #2 (184) |
+|---|---|---|
+| kör nokta oranı | 0/70 = **%0** | 0/151 = **%0** |
+| helper kontrolü yapıldı | 45 | **82** |
+| farklı gerçek reject metni | 20 | **44** |
+
+30 dk kampanya (corpus.db 75→127 KB). **(1)** Oran ~2x örneklemde **%0'da kaldı**
+(tek örneklem şansı değil; her iki fixture da commit'li ve test ikisini birden koşar).
+**(2)** Helper kolu **82 gerçek karşılaştırma** yaptı → "0 mismatch" = corpus/verifier
+sağlam, kol uykuda değil. Payda artık `DiffSummary.helper_args_checked` olarak
+raporun parçası; test `N ≥ 40` şartını kilitler.
+
 ---
 
 ## 5. Lab ortamı + kritik ortam gerçekleri
@@ -253,7 +274,7 @@ etkilenmez, sadece duvar-saati.
 
 Hafif (VM/root gerekmez):
 - **R1** `cargo build` → Finished. ✔ V1
-- **R2** `cargo test` → **52 passed, 0 failed**. ✔ V1
+- **R2** `cargo test` → **54 passed, 0 failed**. ✔ V1
 - **R3** `just check-python` (ya da elle import) → `python import OK`.
 - **R4** `cargo run -q -p pipeline --example report_demo -- /tmp/vl1` → `top_score=0.95`. ✔ V2
 - **R5** `cargo run -q -p pipeline --example harness_demo -- /tmp/vl2` → 6 gerçek kayıt (3 ranged-scalar dahil), 0 anomali. ✔ V3
@@ -277,6 +298,18 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
 - **R15** `cargo test -p pipeline --test volume_parse_health` → 3 passed (unrecognized==0,
   sayılar mutabık); `cargo test -p pipeline --test helper_calibration` → 5 passed
   (dilim uyanık + false positive yok + accept-only kapısı). ✔ V9
+- **R16** `cargo run -p pipeline --example parse_report -- crates/pipeline/tests/fixtures/volume/syz-replay-184.log`
+  → 151 kayıt, unrecognized 0/151, **82 kontrol**, divergences=0. ✔ V10
+
+**Crash'ler hakkında (0020) — bulgu olarak SAYILMADI:** 30 dk'lık kampanya 2 crash
+üretti (`int3 in sk_filter_trim_cap`, `int3 in __seccomp_filter`). Teşhis: her ikisinin
+RIP'i `filter.h:763` = `static_branch_unlikely(&bpf_stats_enabled_key)`; crash'ler
+fuzzer'ın programlarında değil alakasız sistem süreçlerinde (udev/seccomp); syzkaller
+`bpf$ENABLE_STATS` ile bu key'i flip ediyor → int3-tabanlı text patching →
+`-accel tcg,thread=multi` altında eşzamanlı yürütme; **ikisi de repro=false**.
+Yani **emülasyon artefaktı olması çok muhtemel, verifier logic bug'ı değil**. KVM/bare-metal'de
+tekrar test gerçek bir kernel sorunu olup olmadığını ayırt eder. Reviewer bu teşhisi
+sorgulamalı.
 
 **Reviewer'ın özellikle sorgulaması istenen iddialar (şüphe listesi):**
 1. "İlk gerçek period çalışıyor" → evet ama **sabit corpus**, syzkaller-fuzzing değil
@@ -315,6 +348,7 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
 | 0017 | Unparsed politikası (parser kör noktaları ayrı kova; rapor ayrı gösterir) | ✅ |
 | 0018 | **İlk syzkaller-güdümlü hacimli period** + hacmin çıkardığı 5 parser kör noktası | ✅ |
 | 0019 | Kör nokta oranı **%0** ölçüldü + proto dilimi 8 helper'a genişledi (helper kolu uyandı) | ✅ |
+| 0020 | 2. hacimli period (2x corpus): %0 korundu, **82 helper kontrolü** + crash teşhisi | ✅ |
 
 ---
 

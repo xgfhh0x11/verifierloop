@@ -149,8 +149,16 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
     // Record-level parse notes: partial-parse caveats (lower confidence, NOT anomalies).
     let mut notes = Vec::new();
     if reason_unidentified {
-        // Never let a fabricated reason pass as verifier text unnoticed.
-        notes.push("reject reason not identified in log".to_string());
+        // Never let a fabricated reason pass as verifier text unnoticed. Carry the
+        // syscall-level errno (observed, not synthesized verifier text) so triage
+        // can tell a data limit from a parser gap at a glance.
+        let errno = result
+            .split_whitespace()
+            .find_map(|t| t.strip_prefix("errno="))
+            .unwrap_or("?");
+        notes.push(format!(
+            "reject reason not identified in log (errno={errno}; verifier printed no message)"
+        ));
     }
     if !log.iter().any(|l| l.trim_start().starts_with("processed ")) {
         notes.push("missing 'processed' counters".to_string());

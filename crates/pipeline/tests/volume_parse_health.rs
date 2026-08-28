@@ -19,13 +19,16 @@ use pipeline::normalize::{self, UnparsedKind};
 use pipeline::verifier_log::VerifierLogParser;
 
 const VOLUME: &str = include_str!("fixtures/volume/syz-replay-95.log");
+/// A second, larger and more diverse capture (grown corpus, 30-min campaign).
+/// The blind-spot rate must hold across BOTH — one sample could be luck.
+const VOLUME2: &str = include_str!("fixtures/volume/syz-replay-184.log");
 
-fn normalized(tag: &str) -> normalize::NormalizedMetrics {
+fn normalized_of(text: &str, tag: &str) -> normalize::NormalizedMetrics {
     let dir = std::env::temp_dir().join(format!("vl-volume-{}-{}", std::process::id(), tag));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let src = dir.join("diffharness.log");
-    std::fs::write(&src, VOLUME).unwrap();
+    std::fs::write(&src, text).unwrap();
     let period = PeriodPaths::new(&dir.join("data"), 1);
     let raw = ingest::run(&period, &[Source::new("syzreplay", &src)], 95).unwrap();
     let n = normalize::run(&period, &raw, &VerifierLogParser).unwrap();
@@ -33,17 +36,55 @@ fn normalized(tag: &str) -> normalize::NormalizedMetrics {
     n
 }
 
+fn normalized(tag: &str) -> normalize::NormalizedMetrics {
+    normalized_of(VOLUME, tag)
+}
+
 #[test]
-fn no_unrecognized_blocks_in_the_real_volume_capture() {
-    let n = normalized("unrec");
-    let unrecognized: Vec<_> = n
-        .unparsed
+fn no_unrecognized_blocks_in_either_real_volume_capture() {
+    // The rate must hold on BOTH captures — a single sample could be luck, and the
+    // second is ~2x larger with 44 distinct reject reasons (vs 20).
+    for (text, tag, blocks) in [(VOLUME, "unrec95", 95usize), (VOLUME2, "unrec184", 184)] {
+        let n = normalized_of(text, tag);
+        let unrecognized: Vec<_> = n
+            .unparsed
+            .iter()
+            .filter(|u| u.kind == UnparsedKind::Unrecognized)
+            .collect();
+        assert!(
+            unrecognized.is_empty(),
+            "parser blind-spots in the {blocks}-block capture (must stay 0): {unrecognized:?}"
+        );
+        assert_eq!(
+            n.records.len() + n.unparsed.len(),
+            blocks,
+            "counts must reconcile in the {blocks}-block capture"
+        );
+    }
+}
+
+/// The bigger capture: same 0% rate, and a much wider spread of real verifier text.
+#[test]
+fn larger_capture_holds_the_rate_and_widens_coverage() {
+    let n = normalized_of(VOLUME2, "big");
+    assert_eq!(n.records.len(), 151);
+    assert_eq!(n.unparsed.len(), 33);
+    assert!(n.unparsed.iter().all(|u| u.kind == UnparsedKind::NotObserved));
+
+    let distinct: std::collections::BTreeSet<_> = n
+        .records
         .iter()
-        .filter(|u| u.kind == UnparsedKind::Unrecognized)
+        .filter_map(|r| match &r.core.verifier_decision {
+            metrics::core::VerifierDecision::Reject { reason } if reason != "unknown" => {
+                Some(reason.clone())
+            }
+            _ => None,
+        })
         .collect();
     assert!(
-        unrecognized.is_empty(),
-        "parser blind-spots on real volume data (must stay 0): {unrecognized:?}"
+        distinct.len() >= 40,
+        "the grown corpus should yield a much wider reject spread, got {}",
+        distinct.len()
     );
 }
 
