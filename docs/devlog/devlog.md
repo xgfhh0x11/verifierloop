@@ -45,6 +45,7 @@ Her entry'nin sabit bir formatı vardır:
 | 0018 | **İlk syzkaller-güdümlü hacimli period** + hacmin çıkardığı 5 parser kör noktası | Tamamlandı (70 kayıt, 20 gerçek reject metni, 0 divergence) |
 | 0019 | Kör nokta oranı ölçüldü (**%0**) + proto dilimi 8 helper'a genişletildi (helper kolu uyandı) | Tamamlandı (accept-only kapısı; 0 false positive) |
 | 0020 | 2. hacimli period (2x corpus): kör nokta **%0 korundu**, helper kolu **82 kontrol** | Tamamlandı (+ 2 crash: TCG artefaktı, verifier bug'ı değil) |
+| 0021 | `bpf_func_proto` **auto-extraction** (OI-4 kapandı): 12→274 kontrat, 8→194 helper | Tamamlandı (101 kontrol, 0 false positive) |
 
 ### Pipeline durumu (özet)
 
@@ -1637,3 +1638,85 @@ KVM'siz kısmi testlerin neden koşulmadığı orada yazılı.
 - `verifier.c` / `verifier.rst` / patch-diff loader'ları (kalan 3 ground-truth kaynağı).
 - syzkaller **coverage/crash → DERIVED** (crash'ler şu an pipeline dışında).
 - KVM açılınca crash'leri yeniden test et (OI-1; hipotezi doğrula/çürüt).
+
+
+## 0021 — `bpf_func_proto` auto-extraction: dilim elle değil ağaçtan (OI-4 kapandı)
+
+- **Tarih:** 2026-08-28
+- **Durum:** Tamamlandı — ground-truth kaynak 3'ün **gerçek loader'ı** yazıldı
+  (`helper_proto::load()` stub'ı dolduruldu); dilim **12→274 kontrat, 8→194 helper**.
+- **Alan:** `groundtruth/helper_proto.rs` (extract_from_tree/arg_type_to_regtype/to_tsv),
+  `examples/extract_protos.rs` (yeni), `data/groundtruth/helper_protos.tsv` (artık üretilen).
+- **İlgili:** OI-4 (kapandı), 0016/0019 (helper kolu), 0020 (kontrol paydası).
+
+### Neden bu iş (KVM bloklu olduğu için sıradaki en yüksek değer)
+Reviewer'ın sıradaki tercihleri KVM-crash-tekrarı (bloklu, bkz OI-1) ya da daha uzun
+hacimdi. Bunun yerine **fiilen kontrol yapan tek kolu çoğaltan** işi seçtim: dilim elle
+yazılıyordu (12 kontrat), yani hacimde görülen yeni helper'lar **sessizce
+korrobore edilmiyordu** (OI-4). Auto-extraction bunu yapısal olarak çözer.
+
+**Neden diğer iki kaynak seçilmedi (dürüst fizibilite):**
+- **`verifier.rst`** 20 KB **düz metin**. Ondan "kural" çıkarmak ya benim okuyup
+  yazdığım kuralları "dokümandan geldi" diye sunmak (sahte köken) ya da kırılgan NLP
+  olurdu. Yapılmadı.
+- **patch-diff (kaynak 4)** anlamlı olması için **iki kernel sürümünden gözlem**
+  gerektirir; elimizde tek rev var. Gözlemsel karşılığı yok.
+
+### Ne yapıldı
+`extract_from_tree(kernel_src)` — `kernel/` ve `net/` altındaki `.c` dosyalarını tarar,
+`const struct bpf_func_proto <name>_proto = { … };` bloklarını bulur, `.argN_type`
+alanlarını okur (kernel `arg1` = bizim index 0).
+
+**Mekanik olan çıkarım; yargı olan eşleme.** `SINGLE_FAMILY_ARG_TYPES` tablosu küçük,
+muhafazakâr ve gözden geçirilebilir: bir arg **yalnızca** `arg_type`'ı tek bir verifier
+reg-tipi ailesine sabitliyorsa kontrata dönüşür (`ARG_CONST_MAP_PTR`→map_ptr,
+`ARG_PTR_TO_CTX`→ctx, `ARG_MEM_SIZE*`/`ARG_CONST_*SIZE*`→scalar,
+`ARG_PTR_TO_RINGBUF_MEM`→ringbuf_mem, `ARG_PTR_TO_CONST_STR`→map_value).
+`ARG_ANYTHING`, `ARG_PTR_TO_MEM*`, map key/value ve BTF/sock/timer pointer'ları
+**düşürülür** — tek aile dayatmak false positive üretirdi. `|` sonrası bayraklar
+(`MEM_RDONLY`, `OBJ_RELEASE`, `PTR_MAYBE_NULL`) **niteleyici**, aile değiştirmez.
+
+TSV artık **üretilen** artefakt (başlıkta "GENERATED, do not edit by hand" + üretme
+komutu + dahil-etme kuralı). Testler ağaç olmadan çalışsın diye commit'li kalıyor.
+
+### Bulunan hata (sessiz kayıp sınıfı)
+İlk sürüm `bpf_tail_call`'ı **sessizce kaçırdı**. Kök neden: `kernel/bpf/core.c`'de
+gerçek tanımlardan hemen önce bir dizi `__weak` **bildirimi** var (`=` yok); parser
+"sonraki `=`"i sınırsız arayınca gerçek tanımın gövdesini atlıyordu. Düzeltme:
+`;` ile `{`'den hangisi önce geliyorsa ona göre **bildirim/tanım ayrımı**.
+`272 → 274 kontrat`, `bpf_tail_call` geri geldi. Regresyon testi yazıldı.
+
+### Doğrulama (kanıt)
+- **Elle yazılmış 12 kontratın 12'si de** çıkarımda birebir aynı çıktı (köken kontrolü).
+- **Gerçek hacim verisinde false positive YOK**, ve kontrol sayısı arttı:
+
+| | capture #1 (95) | capture #2 (184) |
+| --- | --- | --- |
+| helper kontrolü (önce, elle dilim) | 45 | 82 |
+| **helper kontrolü (sonra, çıkarım)** | **52** | **101** |
+| helper bulgusu | 0 | 0 |
+| kör nokta oranı | %0 | %0 |
+
+- **4 yeni birim testi**: inclusion rule (multi-family düşürülür), bildirim/tanım
+  regresyonu, bayrak-niteleyici ayrımı, commit'li dilimin yüklenmesi + hacim
+  helper'larını kapsaması. Full suite **54 → 58 passed**.
+
+### Dürüst sınırlar
+- Kapsam hâlâ **kısmi ve bilinçli**: 274 kontrat, ama `ARG_ANYTHING` (232 kullanım) ve
+  `ARG_PTR_TO_MEM*` aileleri dışarıda — bunlar kapsanamaz değil, **tek aileye
+  indirgenemez**. Kapsam artışı yeni helper'lardan geliyor, yeni arg *türlerinden* değil.
+- Eşleme tablosu **benim yargım**; yanlış bir satır false positive üretir. Bu yüzden
+  küçük tutuldu ve gerçek hacimde 0-false-positive ile doğrulandı.
+- Helper kolu 101 kontrol yapıyor ama **hâlâ hiç true-positive görmedi** (gerçek kernel).
+
+### Dokunulan dosyalar
+- `crates/pipeline/src/groundtruth/helper_proto.rs` (loader + eşleme + 4 test)
+- `crates/pipeline/examples/extract_protos.rs` (yeni)
+- `data/groundtruth/helper_protos.tsv` (üretilen; 274 kontrat / 194 helper)
+- `crates/pipeline/tests/volume_parse_health.rs` (kontrol eşiği 40→45)
+- `docs/OPEN-ITEMS.md` (OI-4 kapandı)
+
+### Sonraki adımlar
+- **OI-2**: syzkaller crash/coverage'ını pipeline'a bağla (crash'ler hâlâ veri yolu dışında).
+- **OI-1**: KVM açılınca crash'leri tekrar test et.
+- Daha uzun hacim: dilim artık 194 helper kapsadığı için yeni helper'lar otomatik kontrol edilir.

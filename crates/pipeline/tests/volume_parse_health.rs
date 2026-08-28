@@ -170,7 +170,7 @@ fn helper_leg_actually_performs_checks_on_volume() {
         out.summary.helper_args_observed
     );
     assert!(
-        out.summary.helper_args_checked >= 40,
+        out.summary.helper_args_checked >= 45,
         "the helper leg must actually compare against ground truth, not idle: \
          {} checks out of {} observations",
         out.summary.helper_args_checked,

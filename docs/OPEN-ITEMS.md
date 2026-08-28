@@ -95,14 +95,9 @@ affect the pipeline's correctness, and the crashes are outside the loop's data p
 
 ---
 
-## OI-4 — `bpf_func_proto` slice is curated, not extracted
+---
 
-- **Status:** OPEN (low/medium priority)
-- **What:** `data/groundtruth/helper_protos.tsv` is hand-extracted with source line
-  citations (12 contracts / 8 helpers). Coverage on real volume: 82 of ~190
-  helper-arg observations.
-- **Why it matters:** coverage grows only when someone edits the file; new helpers
-  seen at volume are silently uncorroborated.
-- **Shape of the fix:** parse `bpf_func_proto` definitions out of the bpf-next tree,
-  keeping the existing inclusion rule (only args whose `arg_type` maps to exactly one
-  verifier reg-type family).
+*(OI-4 — `bpf_func_proto` slice curated rather than extracted — **CLOSED** 2026-08-28
+by devlog 0021: `helper_proto::extract_from_tree` now generates the slice from the
+kernel tree; 12 → 274 contracts, 8 → 194 helpers, validated with 0 false positives on
+both volume captures.)*

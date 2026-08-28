@@ -11,7 +11,7 @@
 > - **Repo kökü:** `/home/tylersec/verifierloop` — **git deposu** (branch `main`,
 >   8 commit: `bf506f1`…HEAD)
 > - **Kernel rev (hedef):** `5e289c5a4a526e870efac0ca658635c47138593a` (`.lab/kernel.rev`)
-> - **Son devlog entry'si:** `0020` — `docs/devlog/devlog.md`
+> - **Son devlog entry'si:** `0021` — `docs/devlog/devlog.md`
 
 ---
 
@@ -61,7 +61,7 @@ ground-truth ile diffle → insana triyajlı batch → tekrar. Period = **exec s
 
 **Kaynak belgeler:** `README.md`, `docs/RUNBOOK.md` (operatör manueli),
 `docs/OPEN-ITEMS.md` (**izlenen açık maddeler** — kapanmamış hipotezler/eksikler),
-`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0020).
+`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0021).
 
 ---
 
@@ -113,7 +113,7 @@ ingest ✅ → normalize ✅ → score ✅ → diff ✅ → report ✅ → (huma
 **(V1) Derleme + testler**
 ```
 $ cargo build   → Finished
-$ cargo test    → 54 passed, 0 failed
+$ cargo test    → 58 passed, 0 failed
 ```
 (dağılım: contract 5, orchestrator 6 [loop 4 + vm_driver 2], pipeline lib 18
 [+5 verifier_log], golden_normalize 1, diğerleri şema/iskelet 0.)
@@ -234,7 +234,21 @@ $ cargo run -q -p pipeline --example parse_report -- crates/pipeline/tests/fixtu
 (tek örneklem şansı değil; her iki fixture da commit'li ve test ikisini birden koşar).
 **(2)** Helper kolu **82 gerçek karşılaştırma** yaptı → "0 mismatch" = corpus/verifier
 sağlam, kol uykuda değil. Payda artık `DiffSummary.helper_args_checked` olarak
-raporun parçası; test `N ≥ 40` şartını kilitler.
+raporun parçası; test `N ≥ 45` şartını kilitler.
+
+**(V11) Proto dilimi artık ELLE değil AĞAÇTAN üretiliyor (OI-4 kapandı)**
+```
+$ cargo run -p pipeline --example extract_protos -- .lab/bpf-next data/groundtruth/helper_protos.tsv
+  extracted 274 contracts across 194 helpers      (öncesi: elle 12 kontrat / 8 helper)
+```
+`helper_proto::extract_from_tree` `kernel/` + `net/` altındaki `bpf_func_proto`
+tanımlarını tarar. **Çıkarım mekanik, eşleme yargı**: `SINGLE_FAMILY_ARG_TYPES`
+tablosu küçük ve gözden geçirilebilir — bir arg yalnızca tek bir reg-tipi ailesine
+sabitleniyorsa kontrat olur; `ARG_ANYTHING`/`ARG_PTR_TO_MEM*`/map-key/BTF **düşürülür**.
+Doğrulama: elle yazılmış **12 kontratın 12'si** birebir üretildi, ve gerçek hacimde
+**0 false positive** ile kontroller arttı (45→**52** ve 82→**101**). Ayrıca bir
+**sessiz kayıp** hatası bulundu ve düzeltildi (`__weak` bildirimleri gerçek tanımı
+yutuyordu → `bpf_tail_call` kayıptı); regresyon testi var.
 
 ---
 
@@ -257,11 +271,10 @@ etkilenmez, sadece duvar-saati.
 
 ## 6. Açık uçlar / sıradaki iş (dosya:satır)
 
-1. **Hacmi tekrar aç** — parser oturdu (%0 kör nokta) ve helper kolu uyandı (%45
-   kapsam), yani daha uzun bir kampanya artık her iki kolu da çalışır halde koşar.
-   *(0019 sırası tamamlandı: parser doğrulandı → dilim genişledi → sıra hacimde.)*
-   Ayrıca `bpf_func_proto` **auto-extraction** (dilim hâlâ curated) ve syzkaller
-   coverage/crash → DERIVED hâlâ ayrı işler.
+1. **OI-2** — syzkaller crash/coverage'ını pipeline'a bağla (crash'ler hâlâ veri yolu
+   DIŞINDA, elle okunuyor). **OI-3** — 5 ground-truth kaynağından 3'ü hâlâ stub
+   (`verifier.c`/`verifier.rst`/patch-diff). **OI-1** — KVM açılınca crash'leri tekrar
+   test et. Tam liste: `docs/OPEN-ITEMS.md`.
 2. **Daha zengin harness corpus'u** (`harness/diffharness.c`) — pointer aritmetiği,
    helper çağrıları, map erişimi → gerçek helper `arg_type` + register-state sinyali.
 3. **Dış ground-truth loader'ları** — `crates/pipeline/src/groundtruth/*.rs`
@@ -275,7 +288,7 @@ etkilenmez, sadece duvar-saati.
 
 Hafif (VM/root gerekmez):
 - **R1** `cargo build` → Finished. ✔ V1
-- **R2** `cargo test` → **54 passed, 0 failed**. ✔ V1
+- **R2** `cargo test` → **58 passed, 0 failed**. ✔ V1
 - **R3** `just check-python` (ya da elle import) → `python import OK`.
 - **R4** `cargo run -q -p pipeline --example report_demo -- /tmp/vl1` → `top_score=0.95`. ✔ V2
 - **R5** `cargo run -q -p pipeline --example harness_demo -- /tmp/vl2` → 6 gerçek kayıt (3 ranged-scalar dahil), 0 anomali. ✔ V3
@@ -300,7 +313,9 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
   sayılar mutabık); `cargo test -p pipeline --test helper_calibration` → 5 passed
   (dilim uyanık + false positive yok + accept-only kapısı). ✔ V9
 - **R16** `cargo run -p pipeline --example parse_report -- crates/pipeline/tests/fixtures/volume/syz-replay-184.log`
-  → 151 kayıt, unrecognized 0/151, **82 kontrol**, divergences=0. ✔ V10
+  → 151 kayıt, unrecognized 0/151, **101 kontrol** (0021 sonrası), divergences=0. ✔ V10/V11
+- **R17** `cargo test -p pipeline helper_proto` → 5 passed (inclusion rule, bildirim/tanım
+  regresyonu, bayrak-niteleyici, commit'li dilim). ✔ V11
 
 **Crash'ler hakkında (0020) — bulgu olarak SAYILMADI:** 30 dk'lık kampanya 2 crash
 üretti (`int3 in sk_filter_trim_cap`, `int3 in __seccomp_filter`). Teşhis: her ikisinin
@@ -356,6 +371,7 @@ sorgulamalı.
 | 0018 | **İlk syzkaller-güdümlü hacimli period** + hacmin çıkardığı 5 parser kör noktası | ✅ |
 | 0019 | Kör nokta oranı **%0** ölçüldü + proto dilimi 8 helper'a genişledi (helper kolu uyandı) | ✅ |
 | 0020 | 2. hacimli period (2x corpus): %0 korundu, **82 helper kontrolü** + crash teşhisi | ✅ |
+| 0021 | `bpf_func_proto` **auto-extraction**: 12→274 kontrat, 8→194 helper (OI-4 kapandı) | ✅ |
 
 ---
 
