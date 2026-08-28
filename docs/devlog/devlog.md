@@ -1605,11 +1605,19 @@ Kampanya 2 crash üretti: `int3 in sk_filter_trim_cap`, `int3 in __seccomp_filte
   static branch'i **int3-tabanlı text patching** ile yamalıyor.
 - Biz `-accel tcg,thread=multi` kullanıyoruz; TCG'de eşzamanlı kod-yaması/vCPU
   serializasyonu zayıf → başka bir vCPU int3'ü poke-handler devrede değilken yürütüyor.
-- **İkisi de `repro=false`** (zamanlama yarışı).
 
-Nedensel zincir tam ve tutarlı. **Bulgu olarak sunulmuyor.** Gerçek bir kernel sorunu
-olup olmadığını ayırt etmenin doğru yolu **KVM/bare-metal'de tekrar test**tir (KVM
-host-side açıldığında).
+**Kanıt ağırlığı düzeltmesi (reviewer notu).** Her ikisi `repro=false`; bunu ilk yazımda
+fazla yükledim. Non-determinizm artefakt hipoteziyle **tutarlıdır ama onu kanıtlamaz** —
+**gerçek yarış-koşullu kernel bug'ları da non-deterministiktir**. Yani destekleyici,
+ayırt-edici değil. Asıl ağırlık taşıyan kanıt (1) RIP'in canlı-yamalanan static branch'te
+olması ve (2) crash'in fuzz edilen programda değil ilgisiz daemon'larda olmasıdır.
+
+**Statü: KAPANMADI — askı maddesi.** Hipotez falsifiable ama **test edilmemiş**, çünkü
+falsifying test (KVM/bare-metal'de tekrar) şu an koşulamıyor (KVM bloklu; 2026-08-28
+probe: `vmx/svm` flag sayısı **0**). Bulgu olarak sunulmuyor, ama "teşhis edildi ve
+kapandı" da denmiyor: **açık, düşük öncelikli, KVM açılınca tekrar bakılacak** olarak
+`docs/OPEN-ITEMS.md` **OI-1**'de izleniyor — falsifying test, güç (power) uyarısı ve
+KVM'siz kısmi testlerin neden koşulmadığı orada yazılı.
 
 ### Dürüst sınırlar
 - Hâlâ **gerçek verifier bug'ı yok** — beklenen (gerçek kernel, sağlam corpus).
@@ -1628,4 +1636,4 @@ host-side açıldığında).
 - `bpf_func_proto` **auto-extraction** (dilim curated; kapsamı büyütür).
 - `verifier.c` / `verifier.rst` / patch-diff loader'ları (kalan 3 ground-truth kaynağı).
 - syzkaller **coverage/crash → DERIVED** (crash'ler şu an pipeline dışında).
-- KVM açılınca crash'leri yeniden test et (TCG artefaktı hipotezini doğrula/çürüt).
+- KVM açılınca crash'leri yeniden test et (OI-1; hipotezi doğrula/çürüt).

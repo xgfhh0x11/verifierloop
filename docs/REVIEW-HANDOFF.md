@@ -60,6 +60,7 @@ ground-truth ile diffle → insana triyajlı batch → tekrar. Period = **exec s
 - Belirtilmeyen her şey ad-hoc yerine **TODO**.
 
 **Kaynak belgeler:** `README.md`, `docs/RUNBOOK.md` (operatör manueli),
+`docs/OPEN-ITEMS.md` (**izlenen açık maddeler** — kapanmamış hipotezler/eksikler),
 `docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0020).
 
 ---
@@ -306,9 +307,15 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
 RIP'i `filter.h:763` = `static_branch_unlikely(&bpf_stats_enabled_key)`; crash'ler
 fuzzer'ın programlarında değil alakasız sistem süreçlerinde (udev/seccomp); syzkaller
 `bpf$ENABLE_STATS` ile bu key'i flip ediyor → int3-tabanlı text patching →
-`-accel tcg,thread=multi` altında eşzamanlı yürütme; **ikisi de repro=false**.
-Yani **emülasyon artefaktı olması çok muhtemel, verifier logic bug'ı değil**. KVM/bare-metal'de
-tekrar test gerçek bir kernel sorunu olup olmadığını ayırt eder. Reviewer bu teşhisi
+`-accel tcg,thread=multi` altında eşzamanlı yürütme. Yani **emülasyon artefaktı olması
+muhtemel, verifier logic bug'ı değil**.
+
+**Ama statü "kapandı" DEĞİL, askı maddesi.** İki nüans: (a) `repro=false` hipotezi
+*destekler ama kanıtlamaz* — gerçek yarış-koşullu kernel bug'ları da non-deterministiktir;
+(b) falsifying test (**KVM/bare-metal'de tekrar**) şu an **koşulamıyor** (KVM bloklu,
+2026-08-28 probe: `vmx/svm` = 0). Yani hipotez **falsifiable ama test edilmemiş**.
+Açık/düşük-öncelikli olarak `docs/OPEN-ITEMS.md` **OI-1**'de izleniyor (falsifying test,
+güç uyarısı ve KVM'siz kısmi testlerin neden koşulmadığı orada). Reviewer bu teşhisi
 sorgulamalı.
 
 **Reviewer'ın özellikle sorgulaması istenen iddialar (şüphe listesi):**
