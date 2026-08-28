@@ -47,6 +47,7 @@ Her entry'nin sabit bir formatı vardır:
 | 0020 | 2. hacimli period (2x corpus): kör nokta **%0 korundu**, helper kolu **82 kontrol** | Tamamlandı (+ 2 crash: TCG artefaktı, verifier bug'ı değil) |
 | 0021 | `bpf_func_proto` **auto-extraction** (OI-4 kapandı): 12→274 kontrat, 8→194 helper | Tamamlandı (101 kontrol, 0 false positive) |
 | 0022 | **Üçüncü dedektör kolu**: documented-behavior (verifier.rst) — alıntı-çapalı, drift-tespitli | Tamamlandı (3 vaka canlı; kalibre) |
+| 0023 | **patch-diff (kaynak 4)**: doküman-vs-kod bayatlık kanıtı + SCC parser kör noktası | Tamamlandı (doküman 351 commit geride) |
 
 ### Pipeline durumu (özet)
 
@@ -1805,3 +1806,86 @@ helper paydasının aynısı: "0 bulgu / N kontrol" yorumlanabilir olsun diye).
 - **OI-2**: syzkaller crash/coverage'ı pipeline'a bağla.
 - **OI-3** kalanı: `verifier.c` (kaynak 1) ve patch-diff (kaynak 4).
 - **OI-5** (yeni): extraction tablosunun denetlenemez yüzeyi — bkz OPEN-ITEMS.
+
+
+## 0023 — patch-diff (kaynak 4): doküman-vs-kod bayatlık kanıtı + bir parser kör noktası
+
+- **Tarih:** 2026-08-28
+- **Durum:** Tamamlandı — kaynak 4 canlı (kanıt üreticisi olarak, bulgu üreticisi
+  olarak değil); ayrıca ölçüm sırasında **yeni bir parser kör noktası** bulunup düzeltildi.
+- **Alan:** `groundtruth/patch_diff.rs` (stub → git loader), `groundtruth/mod.rs`
+  (`doc_staleness_evidence`), `diff.rs` (kanıtı bulguya iliştirme),
+  `verifier_log.rs` (SCC gürültüsü).
+- **İlgili:** 0022 (kaynak 2'nin zayıflığı), OI-3.
+
+### Neden bu iş (reviewer'ın gerekçesi)
+Kaynak 2'nin yapısal zayıflığı: **alıntı-çapa cümlenin var olduğunu korur, doğru
+olduğunu değil.** Bir documented divergence'ın iki sebebi olabilir — gerçek bug ya da
+eskimiş doküman. patch-diff bunu telafi eder çünkü **koddan gelir, dokümandan değil**.
+
+### ÖNCE ölçtüm, sonra karar verdim (gönderilmeyen tasarım)
+İlk planım "verifier mesaj sözlüğü" kontrolüydü: gözlenen reject metni kernel
+kaynağındaki `verbose(env, "…")` şablonlarından biriyle eşleşmeli. Göndermeden önce
+gerçek veriye karşı **ölçtüm**: **43 tekil gözlenen metnin yalnız %51'i eşleşti.**
+Sebep: mesajlar tek literal değil, **birden çok ayrı `verbose()` çağrısından**
+birleşiyor (`"%s the register %s has"` + `" smin=%lld"` + …). Yani bu kontrol bulgu
+kaynağı olarak **yarı yarıya gürültü** üretirdi → **gönderilmedi.** Ölçüm olmasa
+"çalışıyor" sanıp gönderecektim.
+
+### Ölçümün yan ürünü: yeni parser kör noktası (makul ama YANLIŞ veri)
+Eşleşmeyenleri incelerken `SCC enter (1)`'in reject gerekçesi olarak raporlandığını
+gördüm. Kaynakta doğrulandı: `kernel/bpf/states.c:174/216/246` —
+`SCC enter/exit/backedge` **state-walk işaretçileri**, insn satırları arasında ve
+**gerçek arıza metninden ÖNCE** basılıyor. O blokta gerçek gerekçe
+`R1 type=fp expected=map_ptr` idi. Yani parser "unknown" değil, **makul ama yanlış**
+bir değer üretiyordu — bu daha kötü, çünkü sessizce güven veriyor.
+`is_analysis_noise`'a eklendi + regresyon testi (gerçek bloktan).
+
+### Ne yapıldı — kaynak 4'ün DÜRÜST kapsamı
+Tam bir cross-version davranış diff'i **iki kernel sürümünden gözlem** ister; lab tek
+sürüm derliyor. Bu yüzden kaynak 4 **kendi başına bulgu üretmiyor**; kaynak 2'yi
+**niteliyor**:
+
+```
+doc-vs-code (source 4): documentation last changed 2025-09-18 (107e16979905),
+verifier.c last changed 2026-08-18 (a2e98481a639), 351 verifier.c commits since
+```
+
+Yani reviewer'ın endişesi artık bir **rakam**: doküman ~11 ay ve **351 verifier
+commit'i** geride. Bir documented divergence çıktığında bu kanıt **bulgunun
+`detail`'ine iliştiriliyor** — triyaj sorusu sıfırdan sorulmuyor, gerçeklerle geliyor.
+
+### Tasarım kararları
+1. **Bulgu değil kanıt.** Bayatlık tek başına divergence sayılmaz (divergence sayacı
+   kirlenmez); yalnız kaynak-2 bulgusunu nitelendirir.
+2. **Hüküm vermez, olguyu söyler.** Not "stale/bug/likely" gibi kelime içermez —
+   test bunu zorunlu kılıyor. Karar insanın.
+3. **Kanıt yoksa sessizlik.** Git yoksa/başarısızsa model boş döner ve bulgu
+   niteleyicisiz durur — uydurma kanıt yok (test var).
+
+### Doğrulama (kanıt)
+- **4 birim testi** (parse, bozuk satır → tahmin yok, not hüküm içermez, geçmiş
+  yoksa sessizlik) + **2 entegrasyon testi** (bulgu kanıtı taşır / git yokken
+  niteleyicisiz durur).
+- **Gerçek ağaçta**: yukarıdaki 351-commit notu gerçek `git log`'dan geliyor.
+- **Uçtan uca**: `274 helper contracts, 3 documented cases (0 stale)` +
+  source-4 notu + `divergences=0`. Full suite **67 → 74 passed**.
+
+### Dürüst sınırlar
+- Kaynak 4 **kısmi**: sadece doc-vs-code bayatlığı. Gerçek cross-version davranış
+  diff'i hâlâ iki-revizyon gözlemi gerektiriyor (çaba değil, **bağımlılık** engeli).
+- Mesaj-sözlüğü kontrolü ölçüm sonucu **gönderilmedi** (%51 eşleşme). Şablon modeli
+  çok-çağrılı birleşimi desteklerse yeniden değerlendirilebilir.
+- Kaynak 1 (`verifier.c` state-transition) hâlâ stub.
+
+### Dokunulan dosyalar
+- `crates/pipeline/src/groundtruth/patch_diff.rs` (stub → git loader + 4 test)
+- `crates/pipeline/src/groundtruth/mod.rs` (`doc_staleness_evidence`, `with_patch_diff`)
+- `crates/pipeline/src/diff.rs` (kanıtı `detail`'e iliştirme)
+- `crates/pipeline/src/verifier_log.rs` (SCC gürültüsü + regresyon testi)
+- `crates/pipeline/tests/documented_behavior.rs` (+2 test), `examples/harness_demo.rs`
+
+### Sonraki adımlar
+- Dokümante vaka sayısını artır (hedef: birkaç düzine yüksek-değerli invariant).
+- **OI-2**: syzkaller crash/coverage'ı pipeline'a bağla.
+- Kaynak 1 (`verifier.c`) — en zor olan; şu an açık.

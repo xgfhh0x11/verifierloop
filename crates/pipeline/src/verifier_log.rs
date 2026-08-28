@@ -235,6 +235,13 @@ fn is_analysis_noise(t: &str) -> bool {
         "processed ",
         "mark_precise:",
         "from ",              // "from 8 to 10: R0=..." state-walk marker
+        // SCC (strongly-connected-component) walk markers, kernel/bpf/states.c:174/
+        // 216/246 — printed BETWEEN insn lines and BEFORE the real failure text, so
+        // without this they get reported as the reject reason. Found by measuring
+        // observed reasons against the kernel's own message strings (devlog 0023).
+        "SCC enter",
+        "SCC exit",
+        "SCC backedge",
         "Verification failed:", // structured diagnostic (kept as a fallback below)
         "Reason:",
         "At:",
@@ -925,6 +932,38 @@ processed 2 insns (limit 1000000) total_states 0 peak_states 0
             VerifierDecision::Reject {
                 reason: "R0 !read_ok".to_string()
             }
+        );
+    }
+
+    /// SCC walk markers (kernel/bpf/states.c) print between insn lines and BEFORE
+    /// the real failure text. Reporting one as the reject reason yields a
+    /// plausible-but-WRONG value — worse than "unknown". Real block from volume.
+    #[test]
+    fn scc_markers_are_not_mistaken_for_the_reject_reason() {
+        const R: &str = "\
+===PROG syz#0 type=3 ===
+RESULT decision=reject fd=-1 errno=22 load_ns=1
+---LOG---
+func#0 @0
+11: (18) r3 = 0xffff888005af5d20      ; R3=map_value(ks=4,vs=8)
+13: (b7) r5 = 8
+SCC enter (1)
+14:
+14: (85) call bpf_for_each_map_elem#164
+R1 type=fp expected=map_ptr
+Verification failed: Call Type Safety: Invalid call argument
+Reason:
+Suggestion:
+processed 13 insns (limit 1000000) total_states 1 peak_states 1
+---END---
+";
+        let out = VerifierLogParser.parse("syzreplay", R.as_bytes());
+        assert_eq!(
+            out.records[0].core.verifier_decision,
+            VerifierDecision::Reject {
+                reason: "R1 type=fp expected=map_ptr".to_string()
+            },
+            "the real verifier message, not the SCC scaffolding that precedes it"
         );
     }
 

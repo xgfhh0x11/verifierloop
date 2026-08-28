@@ -427,9 +427,18 @@ fn check_documented_behavior(
             aspect: "decision".to_string(),
             expected,
             observed,
-            detail: format!(
-                "{label}: verifier decision disagrees with Documentation/bpf/verifier.rst"
-            ),
+            detail: match ground_truth.doc_staleness_evidence() {
+                // Source 4 qualifies source 2: the first triage question about a
+                // documented divergence is "regression, or stale prose?" — answer it
+                // with git facts up front instead of leaving it to be asked.
+                Some(ev) => format!(
+                    "{label}: verifier decision disagrees with Documentation/bpf/verifier.rst \
+                     — {ev}"
+                ),
+                None => format!(
+                    "{label}: verifier decision disagrees with Documentation/bpf/verifier.rst"
+                ),
+            },
         });
     }
     true

@@ -24,6 +24,7 @@ pub mod verifier_c;
 pub mod verifier_rst;
 
 use helper_proto::HelperProtoModel;
+use patch_diff::PatchDiffModel;
 use verifier_rst::{DocumentedOutcome, VerifierRstModel};
 
 /// The ground-truth oracle the `diff` stage consults for **source-backed** checks.
@@ -54,6 +55,14 @@ pub trait GroundTruth {
     fn documented_outcome(&self, _case_id: &str) -> Option<DocumentedOutcome> {
         None
     }
+
+    /// Source 4 — git-derived evidence about how far the documentation has fallen
+    /// behind the verifier code. Not a check: it QUALIFIES a source-2 finding so the
+    /// "real regression or stale prose?" question arrives with facts attached.
+    /// `None` = no history available, which must read as silence.
+    fn doc_staleness_evidence(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The empty oracle: knows nothing, corroborates nothing. Used when only the
@@ -78,6 +87,8 @@ pub struct StaticGroundTruth {
     pub helper_proto: HelperProtoModel,
     /// Source 2 — documented behaviour (anchor-verified cases).
     pub verifier_rst: VerifierRstModel,
+    /// Source 4 — git-derived doc-vs-code staleness evidence.
+    pub patch_diff: PatchDiffModel,
     // TODO(groundtruth): VerifierCModel, VerifierRstModel, PatchDiffModel — added
     // here (and exposed via new trait methods) as their loaders land.
 }
@@ -94,6 +105,12 @@ impl StaticGroundTruth {
     /// Attach documented-behaviour cases (source 2).
     pub fn with_verifier_rst(mut self, verifier_rst: VerifierRstModel) -> Self {
         self.verifier_rst = verifier_rst;
+        self
+    }
+
+    /// Attach git-derived staleness evidence (source 4).
+    pub fn with_patch_diff(mut self, patch_diff: PatchDiffModel) -> Self {
+        self.patch_diff = patch_diff;
         self
     }
 }
@@ -113,6 +130,10 @@ impl GroundTruth for StaticGroundTruth {
 
     fn documented_outcome(&self, case_id: &str) -> Option<DocumentedOutcome> {
         self.verifier_rst.outcome(case_id)
+    }
+
+    fn doc_staleness_evidence(&self) -> Option<String> {
+        self.patch_diff.staleness_note()
     }
 }
 

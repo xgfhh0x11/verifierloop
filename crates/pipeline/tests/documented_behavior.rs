@@ -159,3 +159,51 @@ fn all_three_documented_cases_are_checkable_and_agree_when_correct() {
         Some(DocumentedOutcome::Accept)
     );
 }
+
+// ---------------------------------------------------------------------------
+// Source 4 (patch-diff) qualifying source 2 — devlog 0023.
+// ---------------------------------------------------------------------------
+
+use pipeline::groundtruth::patch_diff::{CommitInfo, PatchDiffModel};
+
+fn stale_evidence() -> PatchDiffModel {
+    PatchDiffModel {
+        doc_last: Some(CommitInfo {
+            sha: "107e16979905".into(),
+            date: "2025-09-18".into(),
+            subject: "doc".into(),
+        }),
+        code_last: Some(CommitInfo {
+            sha: "a2e98481a639".into(),
+            date: "2026-08-18".into(),
+            subject: "code".into(),
+        }),
+        code_commits_since_doc: 351,
+    }
+}
+
+#[test]
+fn a_documented_divergence_carries_doc_vs_code_staleness_evidence() {
+    // Citation anchoring proves the sentence still EXISTS, not that it is still
+    // TRUE. So when the leg fires, the finding must already carry the evidence a
+    // human needs to ask "regression, or stale prose?".
+    let gt = gt_with_doc().with_patch_diff(stale_evidence());
+    let out = run(&block("doc_unreadable_reg", "accept"), &gt, "evidence");
+    let f = doc_findings(&out);
+    assert_eq!(f.len(), 1);
+    assert!(
+        f[0].detail.contains("351 verifier.c commits since"),
+        "the finding must carry git evidence: {}",
+        f[0].detail
+    );
+    assert!(f[0].detail.contains("2025-09-18") && f[0].detail.contains("2026-08-18"));
+}
+
+#[test]
+fn without_git_history_the_finding_still_stands_but_claims_nothing_extra() {
+    // Missing evidence degrades to silence, never to an invented qualifier.
+    let out = run(&block("doc_unreadable_reg", "accept"), &gt_with_doc(), "noevidence");
+    let f = doc_findings(&out);
+    assert_eq!(f.len(), 1, "the divergence itself does not depend on source 4");
+    assert!(!f[0].detail.contains("commits since"), "no fabricated evidence");
+}

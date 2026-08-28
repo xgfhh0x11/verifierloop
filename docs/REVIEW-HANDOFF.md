@@ -11,7 +11,7 @@
 > - **Repo kökü:** `/home/tylersec/verifierloop` — **git deposu** (branch `main`,
 >   8 commit: `bf506f1`…HEAD)
 > - **Kernel rev (hedef):** `5e289c5a4a526e870efac0ca658635c47138593a` (`.lab/kernel.rev`)
-> - **Son devlog entry'si:** `0022` — `docs/devlog/devlog.md`
+> - **Son devlog entry'si:** `0023` — `docs/devlog/devlog.md`
 
 ---
 
@@ -61,7 +61,7 @@ ground-truth ile diffle → insana triyajlı batch → tekrar. Period = **exec s
 
 **Kaynak belgeler:** `README.md`, `docs/RUNBOOK.md` (operatör manueli),
 `docs/OPEN-ITEMS.md` (**izlenen açık maddeler** — kapanmamış hipotezler/eksikler),
-`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0022).
+`docs/eBPF ... Mimari ...md` (tasarım), `docs/devlog/devlog.md` (0001–0023).
 
 ---
 
@@ -113,7 +113,7 @@ ingest ✅ → normalize ✅ → score ✅ → diff ✅ → report ✅ → (huma
 **(V1) Derleme + testler**
 ```
 $ cargo build   → Finished
-$ cargo test    → 67 passed, 0 failed
+$ cargo test    → 74 passed, 0 failed
 ```
 (dağılım: contract 5, orchestrator 6 [loop 4 + vm_driver 2], pipeline lib 18
 [+5 verifier_log], golden_normalize 1, diğerleri şema/iskelet 0.)
@@ -271,6 +271,31 @@ Gerçek bpf-next VM'inde üç vaka da dokümana uydu (`R2 !read_ok`, accept,
 bağırır, ground-truth yokken hiçbir şey demez (iddia dokümanda, checker'da değil),
 drift edince susar.
 
+**(V13) KAYNAK 4 (patch-diff): doküman-vs-kod bayatlığı ARTIK BİR RAKAM**
+```
+$ cargo run -q -p pipeline --example harness_demo -- <dir>
+  doc-vs-code (source 4): documentation last changed 2025-09-18 (107e16979905),
+  verifier.c last changed 2026-08-18 (a2e98481a639), 351 verifier.c commits since
+```
+Kaynak 2'nin yapısal zayıflığı: alıntı-çapa cümlenin **var olduğunu** korur, **doğru
+olduğunu** değil. Kaynak 4 bunu **koddan** telafi ediyor: doküman ~11 ay / **351
+verifier commit'i** geride. Bu kanıt bir documented divergence çıktığında bulgunun
+`detail`'ine iliştiriliyor.
+
+**Kapsam dürüstlüğü:** kaynak 4 **kendi başına bulgu üretmiyor** (tam cross-version
+diff iki-revizyon gözlemi ister, lab tek sürüm derliyor) ve **hüküm vermiyor** —
+"stale/bug/likely" gibi kelime içermemesi test edilerek zorlanıyor; karar insanın.
+Git yoksa **sessiz** kalıyor (uydurma kanıt yok).
+
+**Gönderilmeyen tasarım (ölçüm sonucu):** "verifier mesaj sözlüğü" kontrolü
+denendi ve **ölçüldü**: 43 gözlenen reject metninin yalnız **%51'i** kernel
+kaynağıyla eşleşti (mesajlar birden çok `verbose()` çağrısından birleşiyor) →
+bulgu kaynağı olarak yarı yarıya gürültü olurdu, **gönderilmedi**. Ölçümün yan
+ürünü: **yeni bir parser kör noktası** (`SCC enter` state-walk işaretçisi reject
+gerekçesi sanılıyordu — *makul ama yanlış* veri; gerçek gerekçe
+`R1 type=fp expected=map_ptr` idi). Kaynakta doğrulandı (`states.c:174`), düzeltildi,
+regresyon testi eklendi.
+
 ---
 
 ## 5. Lab ortamı + kritik ortam gerçekleri
@@ -309,7 +334,7 @@ etkilenmez, sadece duvar-saati.
 
 Hafif (VM/root gerekmez):
 - **R1** `cargo build` → Finished. ✔ V1
-- **R2** `cargo test` → **67 passed, 0 failed**. ✔ V1
+- **R2** `cargo test` → **74 passed, 0 failed**. ✔ V1
 - **R3** `just check-python` (ya da elle import) → `python import OK`.
 - **R4** `cargo run -q -p pipeline --example report_demo -- /tmp/vl1` → `top_score=0.95`. ✔ V2
 - **R5** `cargo run -q -p pipeline --example harness_demo -- /tmp/vl2` → 6 gerçek kayıt (3 ranged-scalar dahil), 0 anomali. ✔ V3
@@ -337,8 +362,10 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
   → 151 kayıt, unrecognized 0/151, **101 kontrol** (0021 sonrası), divergences=0. ✔ V10/V11
 - **R17** `cargo test -p pipeline helper_proto` → 5 passed (inclusion rule, bildirim/tanım
   regresyonu, bayrak-niteleyici, commit'li dilim). ✔ V11
-- **R18** `cargo test -p pipeline --test documented_behavior` → 6 passed (susma/bağırma
-  kalibrasyonu + köken + drift). ✔ V12
+- **R18** `cargo test -p pipeline --test documented_behavior` → 8 passed (susma/bağırma
+  kalibrasyonu + köken + drift + kaynak-4 kanıtı). ✔ V12/V13
+- **R19** `cargo test -p pipeline groundtruth::patch_diff` → 4 passed (kanıt hüküm
+  içermez, geçmiş yoksa sessizlik). ✔ V13
 
 **Crash'ler hakkında (0020) — bulgu olarak SAYILMADI:** 30 dk'lık kampanya 2 crash
 üretti (`int3 in sk_filter_trim_cap`, `int3 in __seccomp_filter`). Teşhis: her ikisinin
@@ -396,6 +423,7 @@ sorgulamalı.
 | 0020 | 2. hacimli period (2x corpus): %0 korundu, **82 helper kontrolü** + crash teşhisi | ✅ |
 | 0021 | `bpf_func_proto` **auto-extraction**: 12→274 kontrat, 8→194 helper (OI-4 kapandı) | ✅ |
 | 0022 | **Üçüncü kol**: documented-behavior (`verifier.rst`), alıntı-çapalı + drift-tespitli | ✅ |
+| 0023 | **patch-diff (kaynak 4)**: doküman-vs-kod bayatlık kanıtı + SCC parser kör noktası | ✅ |
 
 ---
 

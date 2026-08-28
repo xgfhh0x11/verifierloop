@@ -11,7 +11,7 @@
 //!   cargo run -p pipeline --example harness_demo -- <base_dir>
 
 use contract::{Artifact, PeriodPaths};
-use pipeline::groundtruth::{helper_proto::HelperProtoModel, verifier_rst, StaticGroundTruth};
+use pipeline::groundtruth::{helper_proto::HelperProtoModel, patch_diff, verifier_rst, StaticGroundTruth};
 use pipeline::ingest::{self, Source};
 use pipeline::report::{self, PeriodReport};
 use pipeline::verifier_log::VerifierLogParser;
@@ -57,6 +57,12 @@ fn main() {
         );
         gt = gt.with_verifier_rst(rst);
     }
+    // Source 4: git-derived evidence qualifying source 2 (not a check of its own).
+    let pd = patch_diff::load(&root.join(".lab/bpf-next"));
+    if let Some(note) = pd.staleness_note() {
+        eprintln!("doc-vs-code (source 4): {note}");
+    }
+    gt = gt.with_patch_diff(pd);
     let out = diff::run(&period, &norm, &gt).expect("diff");
     eprintln!(
         "CHECKS  helper-arg: {}  documented cases: {}",

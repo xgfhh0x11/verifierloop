@@ -83,17 +83,18 @@ affect the pipeline's correctness, and the crashes are outside the loop's data p
 
 ---
 
-## OI-3 — Two of five ground-truth sources are still stubs
+## OI-3 — One of five ground-truth sources is still a stub
 
 - **Status:** OPEN (medium priority) — *narrowed 2026-08-28 by devlog 0022.*
 - **Live now:** intrinsic invariants; helper `bpf_func_proto` (source 3, extracted —
   274 contracts); **`Documentation/bpf/verifier.rst` (source 2, 3 anchored cases)**.
-- **Still stubs:** `verifier.c` state-transition logic (source 1) and cross-version
-  patch diffs (source 4), in `crates/pipeline/src/groundtruth/`.
-- **Why it matters:** the detector is three-legged, not five. Source 1 is a research
-  problem in itself (parsing verifier semantics); source 4 needs observations from
-  **two** kernel revisions and we only build one, so it has no observational
-  counterpart yet — that dependency, not effort, is what blocks it.
+- **Also live (0023):** **patch-diff (source 4), partially** — as doc-vs-code
+  staleness EVIDENCE qualifying source 2, not as an independent check.
+- **Still a stub:** `verifier.c` state-transition logic (source 1).
+- **Why it matters:** source 1 is a research problem in itself (parsing verifier
+  semantics into checkable transitions). Source 4 remains partial for a *dependency*
+  reason, not effort: a real cross-version behavioural diff needs observations from
+  **two** kernel revisions and the lab builds one.
 - **Also open within source 2:** only 3 documented claims are encoded. Each new case
   requires finding another sentence the document states OUTRIGHT — deliberately not
   inferred from prose.
@@ -130,3 +131,33 @@ both volume captures.)*
 - **Partial mitigations in place:** the accept-only gate (a rejected program's
   mismatch is the verifier working, not a finding); 0 false positives across two real
   volume captures (~150 checks); the mapping table is small and commented.
+
+---
+
+## OI-6 — A documented divergence will have two possible causes
+
+- **Status:** OPEN (standing triage instruction, not a defect)
+- **Raised:** 2026-08-28 (review of devlog 0022)
+- **What:** citation anchoring guarantees a documented sentence still EXISTS in
+  `verifier.rst`; it cannot guarantee the sentence is still TRUE. So the first
+  `documented_behavior_mismatch` has two candidate causes: a real verifier
+  regression, or documentation that fell behind the code.
+- **Evidence already attached (0023):** source 4 puts git facts on the finding —
+  currently *"documentation last changed 2025-09-18, verifier.c last changed
+  2026-08-18, 351 verifier.c commits since"*. The documentation is roughly eleven
+  months and 351 verifier commits behind, so **stale prose is a live hypothesis, not
+  a remote one**.
+- **Standing instruction:** on the first divergence, check whether the specific
+  behaviour changed in those commits (`git log -S` over the relevant verifier code)
+  BEFORE reporting a regression.
+- **Related:** OI-5 is the same shape for source 3 (extraction table first suspect).
+
+---
+
+## Coverage note — documented cases grow by hand, on purpose
+
+Source 2 currently encodes **3** documented claims. Unlike `bpf_func_proto`
+contracts, these cannot be auto-extracted: they are assertions embedded in prose, so
+each new case means finding another sentence the document states OUTRIGHT. The
+intended ceiling is **a few dozen high-value invariants, not hundreds** — coverage
+here is curated depth, not breadth.
