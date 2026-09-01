@@ -9,7 +9,7 @@
 >
 > - **Rapor tarihi:** 2026-09-01 (önceki sürümler: 2026-08-30, 2026-08-27)
 > - **Repo kökü:** `/home/tylersec/verifierloop` — **git deposu** (branch `main`,
->   **23 commit**, HEAD `0024`'ün commit'i)
+>   **22 commit**, HEAD `f6a763c`)
 > - **Kernel rev (hedef):** `5e289c5a4a526e870efac0ca658635c47138593a` (`.lab/kernel.rev`)
 > - **Son devlog entry'si:** `0024` — `docs/devlog/devlog.md`
 > - **Test durumu:** `cargo test` → **82 passed, 0 failed** (2026-09-01 teyit edildi)
