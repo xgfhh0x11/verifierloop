@@ -67,6 +67,21 @@ cargo test -p pipeline --test golden_normalize   # yeşil olmalı
 > Golden test kırmızıysa ve şemayı **değiştirmediysen**: bu bir regresyon, düzelt —
 > golden'ı ezme. (Parser-katmanı guardrail; bkz devlog 0010.)
 
+### E) `harness/diffharness.c`'yi değiştirdiysen — authoritative sample'ı yenile
+Committed sample (`harness/samples/bpf-next-sample.txt`) **gerçek bpf-next VM'inden
+alınmış** bir yakalamadır; host'ta üretilen çıktı onun yerine geçmez (host kernel
+farklı, mesaj metinleri farklı çıkar).
+```bash
+./scripts/build-harness.sh                                   # önce derle
+./harness/diffharness | head -40                             # hızlı akıl sağlığı (root, host kernel)
+TIMEOUT=300 ./scripts/run-harness-vm.sh /tmp/vm-capture.log   # ~3-5 dk, TCG
+# başlık bloğunu koruyup gövdeyi değiştir, sonra:
+cargo test -p pipeline --lib parses_bpf_next_richer_format    # blok sayısı + red gerekçeleri pinli
+```
+> Sample'daki blok sayısı ve red gerekçeleri teste **çapalıdır** — yeni program
+> eklediysen test kırmızı olur ve bilerek güncellenmesi gerekir. Bu kasıtlı: yeni bir
+> hata metni şekli parser'ı sessizce bozarsa dedektör "temiz" der (devlog 0018/0024).
+
 ---
 
 ## 3. Lab: kernel + VM kurulumu (ağır, sıralı — **zaten yapıldı**)
@@ -225,6 +240,6 @@ Bunlar bilerek **niyet basıp `exit 1`** yapar; henüz bağlı değil:
 ```bash
 cat docs/devlog/devlog.md | sed -n '26,50p'   # entry tablosu + pipeline durumu
 git --no-pager log --oneline -5                 # son commit'ler
-cargo test                                        # her şey yeşil mi (43 passed)
+cargo test                                        # her şey yeşil mi (82 passed)
 ```
 Detaylı durum: `docs/REVIEW-HANDOFF.md`. Ne yapıldığının hikâyesi: `docs/devlog/devlog.md`.

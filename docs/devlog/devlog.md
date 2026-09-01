@@ -48,6 +48,7 @@ Her entry'nin sabit bir formatı vardır:
 | 0021 | `bpf_func_proto` **auto-extraction** (OI-4 kapandı): 12→274 kontrat, 8→194 helper | Tamamlandı (101 kontrol, 0 false positive) |
 | 0022 | **Üçüncü dedektör kolu**: documented-behavior (verifier.rst) — alıntı-çapalı, drift-tespitli | Tamamlandı (3 vaka canlı; kalibre) |
 | 0023 | **patch-diff (kaynak 4)**: doküman-vs-kod bayatlık kanıtı + SCC parser kör noktası | Tamamlandı (doküman 351 commit geride) |
+| 0024 | **`verifier.rst` mesaj bölümü**: 11 örnek program → ilk SAĞLAMLIK ölçümü + `notes` (kanıt) kanalı | Tamamlandı (13 vaka; 12/12 karar uyuştu; 1 vaka kaynakta doğrulanmış önkoşulla superseded) |
 
 ### Pipeline durumu (özet)
 
@@ -1897,3 +1898,144 @@ commit'i** geride. Bir documented divergence çıktığında bu kanıt **bulgunu
 - Dokümante vaka sayısını artır (hedef: birkaç düzine yüksek-değerli invariant).
 - **OI-2**: syzkaller crash/coverage'ı pipeline'a bağla.
 - Kaynak 1 (`verifier.c`) — en zor olan; şu an açık.
+
+---
+
+## 0024 — `verifier.rst` mesaj bölümü: 11 örnek program, ilk SAĞLAMLIK (soundness) testi
+
+- **Tarih:** 2026-09-01
+- **Durum:** Tamamlandı — kaynak 2'nin ikinci damarı kodlandı (3 → **13 vaka**);
+  ölçüm sırasında **dokümanın eksik bir koşulu** kaynakta doğrulandı.
+- **Alan:** `harness/diffharness.c` (+10 program, `run_one_ex`), `groundtruth/verifier_rst.rs`
+  (+`expected_error`, +`SourcePrecondition`), `diff.rs` (**notes** kanalı),
+  `groundtruth/mod.rs`, `verifier_log.rs` (regresyon), `schemas/diff.py`.
+- **İlgili:** V14 ölçümü (REVIEW-HANDOFF), OI-6, 0022, 0023.
+
+### Neden bu iş
+V14'te ölçülmüştü: 0022'nin kullandığı **prose damarı tükeniyor** (7 aday cümlenin
+3'ü kodluydu, ~4 kalmıştı). `verifier.rst`'in "Understanding eBPF verifier messages"
+bölümü (satır 353-560) ise hiç işlenmemişti ve üç yönden daha güçlü: programlar
+**zaten `BPF_*` makro formunda** (harness'in kullandığı makroların aynısı → çeviri
+yargısı yok, transkripsiyon var), her biri **tam beklenen hata metnini** taşıyor, ve
+**11'i de reddedilmesi gereken** program. Sonuncusu asıl mesele: bu, döngünün ilk kez
+verifier'ın **sağlamlığını** (accept etmemesi gerekeni accept ediyor mu) test etmesi.
+
+### Ne yapıldı — üç ağırlık, tek kanal değil
+Doküman koddan **351 verifier commit'i geride** (OI-6). O yüzden iki tür iddia aynı
+ağırlıkta olamaz; üçüncü bir durum da ölçüm sırasında ortaya çıktı:
+
+| gözlem | sonuç | gerekçe |
+| --- | --- | --- |
+| `expected=reject`, `observed=accept` | **DIVERGENCE** (bulgu) | kernel kendi dokümanının güvenli demediği programı kabul etmiş |
+| karar doğru, **hata metni** farklı | **NOTE** (kanıt, hüküm değil) | mesaj metinleri sürüm-drift'ine açık; bu doküman bayatlığıdır, bug değil |
+| kaynakta doğrulanmış bir **önkoşul** iddiayı geçersiz kılıyor | **SUPERSEDED** (susturulur) | iddia bizim yükleme yolumuza uygulanmıyor; yine de iddia edilirse kalıcı sahte alarm üretir |
+
+`DiffFindings`'e ayrı bir **`notes: Vec<EvidenceNote>`** kanalı eklendi (+
+`summary.note_count`). Notlar `finding_count`'a **girmez** — tek farkı yeniden
+yazılmış bir hata metni olan bir period "temiz" okunmaya devam etmeli.
+`skip_serializing_if` sayesinde mevcut golden artifact'lar byte-identical kaldı.
+
+### Susturma mekanizmasının maliyeti bilerek yüksek tutuldu
+`SourcePrecondition` bir dosya + satır + **birebir kod metni** ister ve `load()` o
+metnin ağaçta **hâlâ durduğunu doğrular**. Yani bir dokümante iddiayı susturmak
+**pozitif, yeniden-kontrol edilebilir kanıt** gerektiriyor; kernel önkoşulu kaldırırsa
+çapa tutmaz ve **vaka kendiliğinden geri canlanır**. Kaynak okunamazsa vaka **canlı
+kalır** (susturma için kanıt şart; kanıtın yokluğu susturmaz). Susturulan vakalar
+sayılır ve gerekçesiyle birlikte **raporlanır**, sessizce düşmez.
+
+### ÖLÇÜM — gerçek bpf-next VM'inde (in-VM capture, 20 programlı yeni sample)
+```
+ground truth: 274 helper contracts, 12 documented cases (0 stale, 1 superseded, 0 error-text drifted)
+  SUPERSEDED doc_msg_uninit_stack_arg: ...
+CHECKS  helper-arg: 2  documented cases: 12   NOTES (evidence, not verdicts): 5
+PERIOD REPORT  records=20  flagged=0  divergences=0
+BLOCKS  20 = 20 records + 0 unparsed   UNRECOGNIZED: 0/20 = 0.0%
+```
+- **divergences = 0** → 12 vakanın **12'sinde de karar dokümanla uyuştu**. Bu,
+  sağlamlık ekseninde ilk temiz ölçüm.
+- **5 hata metni birebir tuttu**: `R2 !read_ok`, `R0 !read_ok`, `unreachable insn 1`,
+  `fd 0 is not pointing to valid bpf_map`, `R0 invalid mem access 'map_value_or_null'`.
+- **5 metin sürüklenmiş** (hepsi NOTE, hiçbiri bulgu değil):
+
+| doküman | bpf-next |
+| --- | --- |
+| `invalid stack off=8 size=8` | `invalid write to stack R10 off=8 size=8` |
+| `misaligned access off 4 size 8` | `misaligned value access off 0+4 size 8` |
+| `R0 invalid mem access 'imm'` | `R0 invalid mem access 'scalar'` |
+| `Unreleased reference id=1, alloc_insn=7` | `Unreleased reference id=2 alloc_insn=7` |
+
+### Asıl bulgu — doküman EKSİK, verifier değil
+`doc_msg_uninit_stack_arg` ("stack'i initialize etmeden adresini fonksiyona geçiren
+program") gerçek ağaçta **ACCEPT** alıyor. Karar-mismatch'i olduğu için bu en yüksek
+sesli sinyal sınıfı — ama gerekçesi kaynakta bulundu:
+
+```
+kernel/bpf/verifier.c:21141  env->allow_uninit_stack = bpf_allow_uninit_stack(env->prog->aux->token);
+include/linux/bpf.h:2869     return bpf_token_capable(token, CAP_PERFMON);
+```
+Yani dokümante red **yalnız yetkisiz (unprivileged) yükleme için** geçerli; harness
+root ile yüklüyor. Doküman bu koşulu **hiç söylemiyor** → kusur **dokümanda**.
+Vaka silinmedi: yukarıdaki satır çapa olarak kaydedildi, kernel gevşetmeyi kaldırırsa
+vaka kendiliğinden geri gelir. Bu, OI-6'nın öngördüğü "gerçek regresyon mu, bayat
+prose mu?" sorusunun **ilk gerçek örneği** ve cevabı prose çıktı.
+
+### Hacmin ulaşamadığı yüzey — doğrulandı
+V14 ölçümü 279 bloklu iki commit'li yakalamada bu hata sınıflarından **6'sının hiç
+görülmediğini** söylüyordu. Şimdi hepsi üretildi: `unreachable insn`,
+`invalid write to stack`, `invalid indirect read from stack` (bkz. superseded),
+`invalid mem access`, `misaligned value access`, `Unreleased reference`. Parser
+bunların **hepsini** tanıdı (0/20 kör nokta) ve 9 red gerekçesi label-çapalı
+regresyon testine sabitlendi — 0018'in dersi: yeni hata şekilleri parser'ı
+sessizce bozarsa detector "temiz" der.
+
+### Çeviri yargıları (kaydedildi, gizlenmedi)
+Doküman üç yerde bir şeyi söylemiyor; her biri harness'te ilgili vakanın yanında
+**JUDGEMENT** olarak yazılı:
+- **(a) map fd.** Doküman `BPF_LD_MAP_FD(BPF_REG_1, 0)` yazıyor ama kendi log'unda
+  `r1 = 1` (gerçek map) gösteriyor. fd 0, vakanın konusu olan kontrole **varmadan**
+  pseudo-ldimm64 çözümünde patlar → o vakalara gerçek map verildi. Konusu **fd 0 olan**
+  vaka 0'ı korudu.
+- **(b) value_size.** Doküman map'in value_size'ını hiç söylemiyor; 16 seçildi ki
+  dokümante offset'ler (`off 4 size 8`) sınır içinde kalsın ve vaka kendi konusuna ulaşsın.
+- **(c) program tipi / flag.** `bpf_sk_lookup_tcp` bir socket filter'dan çağrılamaz →
+  o iki vaka `sched_cls` olarak koşuyor. Hizalama vakası ise x86'da
+  `BPF_F_STRICT_ALIGNMENT` olmadan **meşru şekilde kabul edilir** (efficient unaligned
+  access) — flag olmadan dokümanın iddiası bu mimaride zaten geçerli değil.
+
+### Doğrulama
+- **4 yeni birim testi** (`verifier_rst.rs`): mesaj damarı tam metin taşıyor; metin
+  sürüklenirse **karar kontrolü hayatta kalır** ve kayıp gürültülü raporlanır;
+  doğrulanmış önkoşul susturur; **kanıt yoksa susturmaz ve kendiliğinden geri gelir**.
+- **4 yeni entegrasyon testi** (`documented_behavior.rs`): birebir metin → tam sessizlik;
+  yeniden yazılmış metin → **not**, bulgu değil, `finding_count=0`; yanlış karar →
+  **bulgu**, notu ezer; superseded vaka → hiç kontrol edilmez ve denominatöre girmez.
+- **Parser regresyonu** (`verifier_log.rs`): 20 blok + 9 red gerekçesi label-çapalı pinlendi.
+- Full suite **74 → 82 passed**, 0 failed.
+
+### Dürüst sınırlar
+- 10 mesaj vakasının **5'inde metin tutmadı**. Doküman metin düzeyinde gerçekten
+  bayat; bu damarın değeri **karar** yarısında, metin yarısı sadece kanıt.
+- `Unreleased reference` id'si dokümanda 1, ağaçta 2. Ref-id numaralandırması
+  incelenmedi; metin farkı zaten not olarak düşüyor.
+- **Susturma bir yanlış-negatif riskidir** (OI-7). Şu an 1 vaka susturulu ve
+  gerekçesi kaynakta doğrulanmış, ama mekanizma kötüye kullanılabilir.
+- Çeviri yargıları (a/b/c) kaynak 2 için OI-5'in karşılığıdır (OI-8).
+- Kaynak 2'nin gerçek tavanı ölçüldü: prose ~4 + mesaj 0 kaldı → **~17 vaka**,
+  "birkaç düzine" değil. OPEN-ITEMS düzeltildi.
+
+### Dokunulan dosyalar
+- `harness/diffharness.c` (+10 program, `run_one_ex`, `BPF_STX_MEM`/`BPF_LD_MAP_FD`)
+- `harness/samples/bpf-next-sample.txt` (10 → **20 program**, taze in-VM capture)
+- `crates/pipeline/src/groundtruth/verifier_rst.rs` (13 vaka, `expected_error`,
+  `SourcePrecondition`, `from_sources`, +4 test)
+- `crates/pipeline/src/groundtruth/mod.rs` (`documented_expected_error`)
+- `crates/pipeline/src/diff.rs` (`EvidenceNote`, `notes`, `note_count`, metin karşılaştırma)
+- `crates/pipeline/src/verifier_log.rs` (+ label-çapalı regresyon), `report.rs`
+- `crates/pipeline/tests/documented_behavior.rs` (+4 test), `examples/harness_demo.rs`
+- `python/src/verifierloop_analysis/schemas/diff.py` (mirror: `EvidenceNote` + denominatörler)
+
+### Sonraki adımlar
+- **Kaynak 1 pilotu** — tüm `verifier.c` değil, tek bir geçiş ailesi (ör. `check_alu_op`
+  bounds) mekanik olarak çıkarılabilir mi?
+- Kalan ~4 prose iddiasını kodla (düşük getiri, ucuz).
+- **OI-2** — KVM açılana kadar düşük öncelik.

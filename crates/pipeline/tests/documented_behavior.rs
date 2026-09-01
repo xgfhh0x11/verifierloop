@@ -55,6 +55,42 @@ will be rejected, since R1 doesn't have a valid pointer type at the time of
 execution of instruction bpf_xadd.
 ";
 
+/// A harness block whose verifier log actually carries a reject reason line.
+fn block_rejected_with(label: &str, reason: &str) -> String {
+    format!(
+        "===PROG {label} type=socket_filter ===\n\
+         RESULT decision=reject fd=-1 errno=13 load_ns=1\n\
+         ---LOG---\n\
+         0: R1=ctx() R10=fp0\n\
+         0: (7a) *(u64 *)(r10 +8) = 0\n\
+         {reason}\n\
+         processed 1 insns (limit 1000000) total_states 0 peak_states 0\n\
+         ---END---\n"
+    )
+}
+
+/// The "Understanding eBPF verifier messages" vein: a claim plus the exact error
+/// text the document prints for it.
+const DOC_MSG: &str = "\
+Program that accesses stack out of bounds::
+
+Error::
+
+  invalid stack off=8 size=8
+";
+
+fn gt_with_message_vein() -> StaticGroundTruth {
+    StaticGroundTruth::default()
+        .with_verifier_rst(verifier_rst::from_text(&format!("{DOC}{DOC_MSG}")))
+}
+
+fn drift_notes(out: &diff::DiffFindings) -> Vec<&diff::EvidenceNote> {
+    out.notes
+        .iter()
+        .filter(|n| n.kind == "documented_message_drift")
+        .collect()
+}
+
 fn run(native: &str, gt: &dyn GroundTruth, tag: &str) -> diff::DiffFindings {
     let dir = std::env::temp_dir().join(format!("vl-doc-{}-{}", std::process::id(), tag));
     let _ = std::fs::remove_dir_all(&dir);
@@ -206,4 +242,98 @@ fn without_git_history_the_finding_still_stands_but_claims_nothing_extra() {
     let f = doc_findings(&out);
     assert_eq!(f.len(), 1, "the divergence itself does not depend on source 4");
     assert!(!f[0].detail.contains("commits since"), "no fabricated evidence");
+}
+
+// ---------------------------------------------------------------------------
+// The message vein (verifier.rst:353-560) — devlog 0024.
+//
+// The decision claim and the error-text claim are deliberately NOT weighed the
+// same. The document is 351 verifier.c commits behind, so its message strings
+// drift constantly while its safety claims do not.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_exact_error_message_match_stays_completely_silent() {
+    let out = run(
+        &block_rejected_with("doc_msg_stack_oob", "invalid stack off=8 size=8"),
+        &gt_with_message_vein(),
+        "msg-exact",
+    );
+    assert!(doc_findings(&out).is_empty(), "{:?}", out.findings);
+    assert!(drift_notes(&out).is_empty(), "{:?}", out.notes);
+    assert_eq!(out.summary.documented_cases_checked, 1, "the case WAS compared");
+}
+
+#[test]
+fn a_reworded_error_message_is_evidence_not_a_divergence() {
+    // The kernel rejected the program exactly as documented; only the wording of
+    // the message changed. That is documentation drift, and reporting it as a
+    // divergence would make every period look dirty for no safety reason.
+    let out = run(
+        &block_rejected_with("doc_msg_stack_oob", "invalid write to stack R10 off=8 size=8"),
+        &gt_with_message_vein(),
+        "msg-drift",
+    );
+    assert!(
+        doc_findings(&out).is_empty(),
+        "message wording must never produce a verdict: {:?}",
+        out.findings
+    );
+    assert_eq!(out.summary.finding_count, 0, "a clean period must still read clean");
+
+    let n = drift_notes(&out);
+    assert_eq!(n.len(), 1, "but the drift must be visible: {:?}", out.notes);
+    assert_eq!(n[0].expected, "invalid stack off=8 size=8");
+    assert_eq!(n[0].observed, "invalid write to stack R10 off=8 size=8");
+    assert_eq!(n[0].source, diff::GroundTruthSource::Documentation);
+    assert_eq!(out.summary.note_count, 1, "counted apart from findings");
+    assert!(n[0].detail.contains("NOT a verifier divergence"));
+}
+
+#[test]
+fn a_wrong_decision_outranks_a_matching_message() {
+    // The loud half: the document says reject, the verifier accepted. This is the
+    // soundness signal the message vein exists for, and it is a finding, not a note.
+    let out = run(&block("doc_msg_stack_oob", "accept"), &gt_with_message_vein(), "msg-accept");
+    let f = doc_findings(&out);
+    assert_eq!(f.len(), 1, "{:?}", out.findings);
+    assert_eq!((f[0].expected.as_str(), f[0].observed.as_str()), ("reject", "accept"));
+    assert!(drift_notes(&out).is_empty(), "an accepted program has no reject text to drift");
+}
+
+#[test]
+fn a_case_superseded_by_the_kernel_source_is_not_checked_at_all() {
+    // MEASURED on the tree: a privileged load may read uninitialized stack, so the
+    // documented rejection cannot happen on our load path. Asserting it anyway
+    // would manufacture a permanent false divergence — but the silencing itself
+    // must be visible, and must rest on a citation that is re-checked every load.
+    let doc = format!(
+        "{DOC}Program that doesn't initialize stack before passing its address into function::
+
+Error::
+
+  invalid indirect read from stack off -8+0 size 8
+"
+    );
+    let mut sources = std::collections::BTreeMap::new();
+    sources.insert(
+        "kernel/bpf/verifier.c".to_string(),
+        "\tenv->allow_uninit_stack = bpf_allow_uninit_stack(env->prog->aux->token);\n".to_string(),
+    );
+
+    let live = verifier_rst::from_text(&doc);
+    assert_eq!(
+        live.outcome("doc_msg_uninit_stack_arg"),
+        Some(DocumentedOutcome::Reject),
+        "without the citation checked, the claim stands"
+    );
+
+    let model = verifier_rst::from_sources(&doc, &sources);
+    assert!(model.superseded().iter().any(|(id, _)| id == "doc_msg_uninit_stack_arg"));
+    let gt = StaticGroundTruth::default().with_verifier_rst(model);
+    // The kernel ACCEPTS this program. With the precondition verified, that must
+    // not be reported as a divergence.
+    let out = run(&block("doc_msg_uninit_stack_arg", "accept"), &gt, "superseded");
+    assert!(doc_findings(&out).is_empty(), "{:?}", out.findings);
+    assert_eq!(out.summary.documented_cases_checked, 0, "not compared, and counted as such");
 }

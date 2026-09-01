@@ -979,7 +979,11 @@ processed 13 insns (limit 1000000) total_states 1 peak_states 1
             .into_iter()
             .map(|r| r.core)
             .collect();
-        assert_eq!(recs.len(), 10, "10 blocks (3 basic + 3 ranged + 1 helper + 3 documented)");
+        assert_eq!(
+            recs.len(),
+            20,
+            "20 blocks (3 basic + 3 ranged + 1 helper + 3 documented prose + 10 documented messages)"
+        );
 
         // Accept + counters survive the extra preamble.
         assert_eq!(recs[0].verifier_decision, VerifierDecision::Accept);
@@ -1040,6 +1044,43 @@ processed 13 insns (limit 1000000) total_states 1 peak_states 1
         );
         // The scalar-only programs record NO helper observations.
         assert!(recs[3].helper_arg_observations.is_empty());
+
+        // The 10 documented-message programs (verifier.rst:353-560) all parse, and
+        // their reject reasons are pinned VERBATIM. This is the parser-level
+        // confirmation-bias guard: these five error shapes are new to the corpus
+        // (`unreachable insn`, stack write, misaligned value, mem access, unreleased
+        // reference), so if the parser ever starts mangling one, the test fails here
+        // instead of the detector quietly reporting a clean period.
+        let labelled = VerifierLogParser.parse("diffharness", BPF_NEXT_SAMPLE.as_bytes());
+        let by_label = |id: &str| {
+            labelled
+                .records
+                .iter()
+                .find(|r| r.label.as_deref() == Some(id))
+                .unwrap_or_else(|| panic!("{id} missing from the authoritative capture"))
+        };
+        let reason = |id: &str| match &by_label(id).core.verifier_decision {
+            VerifierDecision::Reject { reason } => reason.clone(),
+            VerifierDecision::Accept => "accept".to_string(),
+        };
+        assert_eq!(reason("doc_msg_unreachable_insn"), "unreachable insn 1");
+        assert_eq!(reason("doc_msg_uninit_r0_exit"), "R0 !read_ok");
+        assert_eq!(reason("doc_msg_stack_oob"), "invalid write to stack R10 off=8 size=8");
+        assert_eq!(
+            reason("doc_msg_unchecked_map_value"),
+            "R0 invalid mem access 'map_value_or_null'"
+        );
+        assert_eq!(reason("doc_msg_misaligned_value"), "misaligned value access off 0+4 size 8");
+        assert_eq!(reason("doc_msg_branch_imm_deref"), "R0 invalid mem access 'scalar'");
+        assert_eq!(reason("doc_msg_invalid_map_fd"), "fd 0 is not pointing to valid bpf_map");
+        assert_eq!(reason("doc_msg_unreleased_ref_null"), "Unreleased reference id=2 alloc_insn=7");
+        assert_eq!(reason("doc_msg_unreleased_ref_nocheck"), "Unreleased reference id=2 alloc_insn=7");
+        // The one documented case the current kernel ACCEPTS — kept pinned so the
+        // supersede citation in `groundtruth::verifier_rst` is measured, not assumed.
+        assert_eq!(
+            by_label("doc_msg_uninit_stack_arg").core.verifier_decision,
+            VerifierDecision::Accept
+        );
 
         // Every parsed tnum stays well-formed (value & mask == 0) across all recs —
         // the parser must never manufacture an inconsistency that diff would flag.

@@ -50,11 +50,17 @@ fn main() {
     }
     if let Ok(rst) = verifier_rst::load(&root.join(".lab/bpf-next")) {
         eprintln!(
-            "ground truth: {} helper contracts, {} documented cases ({} stale)",
+            "ground truth: {} helper contracts, {} documented cases \
+             ({} stale, {} superseded, {} error-text drifted)",
             gt.helper_proto.len(),
             rst.len(),
-            rst.stale().len()
+            rst.stale().len(),
+            rst.superseded().len(),
+            rst.drifted_error_text().len()
         );
+        for (id, why) in rst.superseded() {
+            eprintln!("  SUPERSEDED {id}: {why}");
+        }
         gt = gt.with_verifier_rst(rst);
     }
     // Source 4: git-derived evidence qualifying source 2 (not a check of its own).
@@ -65,9 +71,14 @@ fn main() {
     gt = gt.with_patch_diff(pd);
     let out = diff::run(&period, &norm, &gt).expect("diff");
     eprintln!(
-        "CHECKS  helper-arg: {}  documented cases: {}",
-        out.summary.helper_args_checked, out.summary.documented_cases_checked
+        "CHECKS  helper-arg: {}  documented cases: {}   NOTES (evidence, not verdicts): {}",
+        out.summary.helper_args_checked,
+        out.summary.documented_cases_checked,
+        out.summary.note_count
     );
+    for n in &out.notes {
+        eprintln!("  NOTE {} [{}] expected={:?} observed={:?}", n.kind, n.aspect, n.expected, n.observed);
+    }
 
     // 5. report.
     let report = report::run(&period, Some(1_700_000_000)).expect("report");

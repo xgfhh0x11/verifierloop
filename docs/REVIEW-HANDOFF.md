@@ -7,12 +7,12 @@
 > Reviewer'ın görevi: bu iddiaları kendi eliyle koşup teyit etmek ve
 > **abartılmış/yanlış** olanları işaretlemek.
 >
-> - **Rapor tarihi:** 2026-08-30 (önceki sürüm: 2026-08-27)
+> - **Rapor tarihi:** 2026-09-01 (önceki sürümler: 2026-08-30, 2026-08-27)
 > - **Repo kökü:** `/home/tylersec/verifierloop` — **git deposu** (branch `main`,
->   **21 commit**, HEAD `714ddda`)
+>   **23 commit**, HEAD `0024`'ün commit'i)
 > - **Kernel rev (hedef):** `5e289c5a4a526e870efac0ca658635c47138593a` (`.lab/kernel.rev`)
-> - **Son devlog entry'si:** `0023` — `docs/devlog/devlog.md`
-> - **Test durumu:** `cargo test` → **74 passed, 0 failed** (2026-08-30 teyit edildi)
+> - **Son devlog entry'si:** `0024` — `docs/devlog/devlog.md`
+> - **Test durumu:** `cargo test` → **82 passed, 0 failed** (2026-09-01 teyit edildi)
 
 ---
 
@@ -37,16 +37,22 @@ verifier log'una çevrilip period olarak koşuyor. İki kampanya **commit'li reg
 fixture'ı** olarak sabitlendi (95 ve 184 blok): **70 ve 151 kayıt**, **20 ve 44 farklı
 gerçek reject metni**, her ikisinde de **0 divergence** (✔ V8/V10).
 
-**Üç dedektör kolu canlı (0021–0023).** Beş ground-truth kaynağının **üçü çalışıyor**
+**Üç dedektör kolu canlı (0021–0024).** Beş ground-truth kaynağının **üçü çalışıyor**
 (intrinsic invariant'lar; ağaçtan **auto-extract edilen 274 helper kontratı / 194
-helper**; `verifier.rst`'ten **3 alıntı-çapalı** dokümante vaka), **biri kısmi**
+helper**; `verifier.rst`'ten **13 alıntı-çapalı** dokümante vaka), **biri kısmi**
 (patch-diff: bulgu değil **kanıt** üretir), **biri stub** (`verifier.c`
 state-transition). Üçü de gerçek yolda **kalibre**: temizde susar, enjekte
 tutarsızlıkta bağırır.
 
-**Ölçülen sayılar:** parser kör nokta oranı **%0** (0/70 ve 0/151 — iki bağımsız
-yakalamada), koşu başına **~101 helper kontrolü**, **0 false positive**, **74 test**
-yeşil.
+**İlk SAĞLAMLIK (soundness) ölçümü yapıldı (0024).** `verifier.rst`'in "Understanding
+eBPF verifier messages" bölümündeki **11 örnek program** — hepsi reddedilmesi
+gereken — harness'e kodlandı ve gerçek bpf-next VM'inde koşuldu: **12 vakanın 12'sinde
+de karar dokümanla uyuştu (divergences=0)**. Bu, döngünün ilk kez "verifier
+reddetmesi gerekeni reddediyor mu" eksenini ölçmesi.
+
+**Ölçülen sayılar:** parser kör nokta oranı **%0** (0/70, 0/151 ve 0/20 — üç bağımsız
+yakalamada), koşu başına **~101 helper kontrolü**, **12 dokümante vaka kontrolü**,
+**0 false positive**, **82 test** yeşil.
 
 **Reviewer'ın en çok şüpheyle bakması gereken nokta:** hacim **gerçek bir verifier
 bug'ı üretmedi** — beklenen sonuç (gerçek kernel + coverage-güdümlü corpus). Üç kol da
@@ -55,10 +61,12 @@ kalibre ve parser kör noktaları **ayrı kanalda** raporlandığı için bu "sa
 noktasıydı**; hepsi parse-health'e düştü, sinyale karışmadı, düzeltildi ve regresyona
 sabitlendi.
 
-**En yakın kazanım (2026-08-30 ölçüldü, ✔ V14):** `verifier.rst`'in "Understanding
-eBPF verifier messages" bölümü **işlenmemiş bir damar** — 11 örnek program, hepsi
-reddedilmesi gereken, hepsi harness'in makro formatında, altısı hacmin hiç üretmediği
-hata sınıfında.
+**Bu sürümün asıl bulgusu — ve kusur DOKÜMANDA (✔ V15).** 11 vakadan biri gerçek
+ağaçta **kabul** ediliyor. Karar-mismatch'i olduğu için en yüksek sesli sinyal
+sınıfı — ama gerekçe kaynakta bulundu: dokümante red **yalnız yetkisiz yükleme için**
+geçerli (`verifier.c:21141` → `bpf_token_capable(token, CAP_PERFMON)`), doküman bu
+koşulu hiç söylemiyor. OI-6'nın öngördüğü "gerçek regresyon mu, bayat prose mu?"
+sorusunun ilk gerçek örneği; cevabı **prose** çıktı.
 
 ---
 
@@ -111,7 +119,7 @@ ingest ✅ → normalize ✅ → score ✅ → diff ✅ → report ✅ → (huma
 | **ingest** | native çıktıyı DEĞİŞTİRMEDEN topla | toplama+indeks+hash | — |
 | **normalize** | ham → CORE şeması | **golden fixture** anchor + **2 gerçek parser** (aşağı) | zenginleştirme |
 | **score** | Rust→Python anomaly scoring | `baseline-hard-signals-v0` | istatistiksel |
-| **diff** | documented-vs-observed | intrinsic invariant'lar + helper `bpf_func_proto` (274 kontrat) + documented behaviour (3 vaka) + patch-diff kanıtı | `verifier.c` loader (kaynak 1) |
+| **diff** | documented-vs-observed | intrinsic invariant'lar + helper `bpf_func_proto` (274 kontrat) + documented behaviour (**13 vaka**, karar/mesaj ayrı ağırlıkta) + patch-diff kanıtı | `verifier.c` loader (kaynak 1) |
 | **report** | score ⋈ diff → triyaj | join + sıralama | — |
 | **`VerifierLogParser`** | harness çıktısı → CoreMetrics | decision, reject reason (verbatim), register-state, processed | full `scalar(...)` gerçek veride test edildi (0014); pointer/helper reg tipleri henüz yok |
 | **`VmHarnessDriver`** | VM'de harness koş, exec→N | `FuzzDriver` impl, `ScriptRunner`, `FakeRunner` test | syzkaller-driven execs |
@@ -360,6 +368,56 @@ yüzeyidir**.
 351 commit geride olduğu bir yerde çok mu iddialı?" — evet, bu yüzden §6'daki tasarım
 şartı: **karar** ile **mesaj** ayrı ağırlıkta.
 
+**(V15) MESAJ DAMARI KODLANDI — 11 vaka, ilk soundness ölçümü (2026-09-01)**
+```
+$ cargo run -q -p pipeline --example harness_demo -- /tmp/vl-hd
+ground truth: 274 helper contracts, 12 documented cases (0 stale, 1 superseded, 0 error-text drifted)
+  SUPERSEDED doc_msg_uninit_stack_arg: ...CAP_PERFMON...
+CHECKS  helper-arg: 2  documented cases: 12   NOTES (evidence, not verdicts): 5
+PERIOD REPORT  records=20  flagged=0  divergences=0
+
+$ cargo run -q -p pipeline --example parse_report -- harness/samples/bpf-next-sample.txt
+BLOCKS   20 = 20 records + 0 unparsed
+  UNRECOGNIZED (parser blind-spots) : 0/20 = 0.0%
+```
+V14'ün işaret ettiği damar işlendi: `verifier.rst:353-560`'taki **11 örnek program**
+harness'e kodlandı (biri prose vakasının aynısı olduğu için **10 yeni program**;
+toplam **13 dokümante vaka**). Sample yeniden yakalandı: **10 → 20 program**, taze
+in-VM capture.
+
+**Üç ağırlık, tek kanal değil** (tasarım şartı uygulandı):
+
+| gözlem | sonuç | neden |
+| --- | --- | --- |
+| doküman reject der, verifier accept eder | **DIVERGENCE** | soundness sinyali |
+| karar doğru, hata metni farklı | **NOTE** — `finding_count`'a girmez | doküman 351 commit geride; metin drift'i bug değil |
+| kaynakta doğrulanmış önkoşul iddiayı geçersiz kılar | **SUPERSEDED** | aksi halde kalıcı sahte alarm |
+
+**Ölçüm sonucu:** 12 vakanın **12'sinde karar uyuştu** → `divergences=0`. Hata
+metinlerinin **5'i birebir tuttu**, **5'i sürüklenmiş** ve hepsi NOT olarak düştü
+(`invalid stack off=8 size=8` → `invalid write to stack R10 off=8 size=8`;
+`R0 invalid mem access 'imm'` → `'scalar'`; `misaligned access off 4 size 8` →
+`misaligned value access off 0+4 size 8`; `Unreleased reference id=1, alloc_insn=7` →
+`id=2 alloc_insn=7` ×2).
+
+**Ve bir vaka ACCEPT aldı** — `doc_msg_uninit_stack_arg`. Susturulmadan önce gerekçe
+**kaynakta** bulundu:
+```
+kernel/bpf/verifier.c:21141  env->allow_uninit_stack = bpf_allow_uninit_stack(env->prog->aux->token);
+include/linux/bpf.h:2869     return bpf_token_capable(token, CAP_PERFMON);
+```
+Dokümante red **yalnız yetkisiz yükleme için** geçerli; harness root ile yüklüyor.
+Doküman bu koşulu söylemiyor → kusur dokümanda. Vaka silinmedi: o satır **çapa**
+olarak kaydedildi, kernel gevşetmeyi kaldırırsa vaka kendiliğinden canlanır.
+
+**Reviewer bunu şöyle sorgulamalı:** "susturma mekanizması, rahatsız edici bulguları
+sessizce yok etmenin yolu olabilir mi?" — evet, bu yüzden **OI-7** açıldı: susturma
+dosya+satır+birebir kod metni ister, her yüklemede yeniden doğrulanır, kaynak
+okunamazsa **susturmaz**, ve susturulanlar gerekçesiyle raporlanıp denominatörden
+düşülür. Ayrıca **OI-8**: 11 programın 3 yerinde doküman bir şeyi söylemiyor (map fd,
+value_size, program tipi/flag) ve harness seçmek zorunda kaldı — ilk `doc_msg_*`
+bulgusunda **ilk şüpheli o yargılardır**, verifier değil.
+
 ---
 
 ## 5. Lab ortamı + kritik ortam gerçekleri
@@ -388,21 +446,17 @@ görünmüyor. Period=exec-count olduğu için loop mantığı etkilenmez, sadec
 |---|---|---|---|
 | 5 | Klasik mantıksal analiz (intrinsic tnum/bounds/JIT-interp) | ✅ canlı, kalibre | `diff.rs` |
 | 3 | Helper `bpf_func_proto` | ✅ canlı — 274 kontrat / 194 helper | `groundtruth/helper_proto.rs` |
-| 2 | Dokümante davranış (`verifier.rst`) | ✅ canlı — **yalnız 3 vaka** | `groundtruth/verifier_rst.rs` |
+| 2 | Dokümante davranış (`verifier.rst`) | ✅ canlı — **13 vaka** (12 kontrol + 1 superseded); tavanı ~17 (ölçüldü) | `groundtruth/verifier_rst.rs` |
 | 4 | patch-diff | 🟡 **kısmi** — kanıt üretir, bulgu üretmez | `groundtruth/patch_diff.rs` |
 | 1 | `verifier.c` state-transition | ❌ **stub** (17 satır, `todo!()`) | `groundtruth/verifier_c.rs` |
 
-**Sıradaki iş — ölçülmüş önceliklendirme (gerekçe: ✔ V14):**
+**Sıradaki iş — ölçülmüş önceliklendirme (gerekçe: ✔ V15):**
 
-1. **`verifier.rst` örnek bölümünü kodla — 11 vaka.** En yüksek getiri/maliyet oranı:
-   3 → 14 vaka, syzkaller'ın hiç üretmediği 6 hata sınıfı, ve ilk kez verifier'ın
-   **sağlamlık (soundness)** yönü test ediliyor.
-   **Tasarım şartı — karar ile mesaj ayrı ağırlıkta:** `expected=reject` iken
-   `observed=accept` → **divergence** (bağır). Karar doğru ama hata metni farklı →
-   **not/kanıt**, hüküm değil; çünkü doküman 351 verifier commit'i geride (OI-6) ve
-   mesaj metinleri sürüm-drift'ine açık. Bu, `patch_diff`'te zaten uygulanan
-   "kanıt ver, hüküm verme" disiplininin aynısıdır.
-2. **Kaynak 1 için pilot** — tüm `verifier.c` değil, **tek bir geçiş ailesi**
+1. ~~`verifier.rst` örnek bölümünü kodla — 11 vaka.~~ **YAPILDI (0024, ✔ V15).**
+   3 → 13 vaka; syzkaller'ın hiç üretmediği 6 hata sınıfı artık üretiliyor; karar ile
+   mesaj ayrı ağırlıkta (`notes` kanalı); ilk soundness ölçümü `divergences=0`.
+   Kaynak 2'nin tavanı ölçüldü: ~4 prose iddiası kaldı, sonra **doküman bitiyor**.
+2. **Kaynak 1 için pilot (ARTIK SIRADAKİ İŞ)** — tüm `verifier.c` değil, **tek bir geçiş ailesi**
    (ör. `check_alu_op` bounds güncellemesi) mekanik olarak çıkarılabilir mi? Amaç,
    5. kaynağın fizibilitesini tamamına yatırım yapmadan öğrenmek.
 3. **OI-2** — syzkaller crash/coverage'ını pipeline'a bağla. Kanal gerçek, ama şu anki
@@ -414,6 +468,8 @@ görünmüyor. Period=exec-count olduğu için loop mantığı etkilenmez, sadec
    (pointer aritmetiği, map erişimi).
 
 **OI-1** (crash artefaktı hipotezi) KVM açılana kadar **falsifiable ama test edilemez**.
+**OI-7** (susturma = yanlış-negatif riski) ve **OI-8** (harness çeviri yargıları =
+yanlış-pozitif riski) 0024 ile açıldı; ikisi de duran talimat, kusur değil.
 Tam liste ve gerekçeler: `docs/OPEN-ITEMS.md`.
 
 ---
@@ -422,7 +478,7 @@ Tam liste ve gerekçeler: `docs/OPEN-ITEMS.md`.
 
 Hafif (VM/root gerekmez):
 - **R1** `cargo build` → Finished. ✔ V1
-- **R2** `cargo test` → **74 passed, 0 failed**. ✔ V1
+- **R2** `cargo test` → **82 passed, 0 failed**. ✔ V1
 - **R3** `just check-python` (ya da elle import) → `python import OK`.
 - **R4** `cargo run -q -p pipeline --example report_demo -- /tmp/vl1` → `top_score=0.95`. ✔ V2
 - **R5** `cargo run -q -p pipeline --example harness_demo -- /tmp/vl2` → 6 gerçek kayıt (3 ranged-scalar dahil), 0 anomali. ✔ V3
@@ -431,7 +487,7 @@ Hafif (VM/root gerekmez):
 
 Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
 - **R8** `sudo ./harness/... ` yerine host'ta `./harness/diffharness` (root) → 3 blok verifier log.
-- **R9** `TIMEOUT=220 ./scripts/run-harness-vm.sh /tmp/out.log` → "captured 6 program block(s)"
+- **R9** `TIMEOUT=300 ./scripts/run-harness-vm.sh /tmp/out.log` → "captured 20 program block(s)"
   (in-VM authoritative capture; `harness/samples/bpf-next-sample.txt` ile karşılaştır).
 - **R10** `TIMEOUT=220 cargo run -q -p orchestrator --example real_period -- /tmp/vlp` →
   `HARVEST ... PERIOD REPORT records=6 divergences=0`. ✔ V4
@@ -450,10 +506,20 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
   → 151 kayıt, unrecognized 0/151, **101 kontrol** (0021 sonrası), divergences=0. ✔ V10/V11
 - **R17** `cargo test -p pipeline helper_proto` → 5 passed (inclusion rule, bildirim/tanım
   regresyonu, bayrak-niteleyici, commit'li dilim). ✔ V11
-- **R18** `cargo test -p pipeline --test documented_behavior` → 8 passed (susma/bağırma
-  kalibrasyonu + köken + drift + kaynak-4 kanıtı). ✔ V12/V13
+- **R18** `cargo test -p pipeline --test documented_behavior` → **12 passed**
+  (susma/bağırma kalibrasyonu + köken + drift + kaynak-4 kanıtı). ✔ V12/V13/V15
 - **R19** `cargo test -p pipeline groundtruth::patch_diff` → 4 passed (kanıt hüküm
   içermez, geçmiş yoksa sessizlik). ✔ V13
+- **R20** R18'in içindeki 0024 testleri özellikle: yeniden yazılmış hata metni **not**
+  üretir (bulgu değil, `finding_count=0`), yanlış karar **bulgu** üretir, superseded
+  vaka hiç kontrol edilmez ve denominatöre girmez. ✔ V15
+- **R21** `cargo test -p pipeline groundtruth::verifier_rst` → **7 passed**; kritik
+  ikisi: kanıt yoksa **susturmaz**, önkoşul kalkarsa vaka **kendiliğinden canlanır**. ✔ V15
+- **R22** `cargo run -q -p pipeline --example harness_demo -- /tmp/vl-hd` →
+  `12 documented cases (0 stale, 1 superseded, ...)`, `NOTES: 5`, `divergences=0`;
+  susturulan vakanın gerekçesi ekrana basılır. ✔ V15
+- **R23** (ağır) `TIMEOUT=300 ./scripts/run-harness-vm.sh /tmp/out.log` →
+  "captured 20 program block(s)"; `harness/samples/bpf-next-sample.txt` ile karşılaştır. ✔ V15
 
 **Crash'ler hakkında (0020) — bulgu olarak SAYILMADI:** 30 dk'lık kampanya 2 crash
 üretti (`int3 in sk_filter_trim_cap`, `int3 in __seccomp_filter`). Teşhis: her ikisinin
@@ -523,17 +589,23 @@ sorgulamalı.
 > regresyon fixture'ı** olarak sabitlendi (95 ve 184 blok).
 > Beş ground-truth kaynağının **üçü canlı** (intrinsic invariant'lar; ağaçtan
 > **auto-extract edilen** 274 helper kontratı / 194 helper; `verifier.rst`'ten
-> **3 alıntı-çapalı** dokümante vaka), **biri kısmi** (patch-diff: bulgu değil kanıt
+> **13 alıntı-çapalı** dokümante vaka), **biri kısmi** (patch-diff: bulgu değil kanıt
 > üretir), **biri stub** (`verifier.c` state-transition).
-> Ölçülen sayılar: **parser kör nokta oranı %0** (0/70 ve 0/151), koşu başına
-> **~101 helper kontrolü**, **0 false positive**, **74 test** yeşil.
+> Ölçülen sayılar: **parser kör nokta oranı %0** (0/70, 0/151 ve 0/20), koşu başına
+> **~101 helper kontrolü** ve **12 dokümante vaka kontrolü**, **0 false positive**,
+> **82 test** yeşil.
 > Üç dedektör kolu da gerçek yolda **kalibre** (temizde susar, enjekte tutarsızlıkta
 > bağırır) ve parser kör noktaları **ayrı kanalda** raporlanıyor — bu yüzden
 > `divergences=0` *temiz* okunur, *sağır* değil.
-> **Gerçek bir verifier bug'ı henüz yüzeye çıkmadı** (beklenen).
-> **Eksik olan:** kaynak 1 (`verifier.c`) stub; kaynak 2'de yalnız 3 vaka; kaynak 4
-> kısmi (iki-revizyon gözlemi gerekiyor); JIT↔interp cross-kernel modu; istatistiksel
-> scoring; ve **KVM host-side bloklu → her şey TCG'de**.
-> **En yakın kazanım (ölçüldü, ✔ V14):** `verifier.rst`'in 'Understanding eBPF verifier
-> messages' bölümündeki **11 örnek program** — hepsi reddedilmesi gereken, hepsi
-> harness'in makro formatında, altısı hacmin hiç üretmediği hata sınıfında."
+> **İlk sağlamlık (soundness) ölçümü yapıldı:** reddedilmesi gereken 12 dokümante
+> programın 12'sinde de karar dokümanla uyuştu; 5 hata metni birebir tuttu, 5'i
+> sürüklendi ve **kanıt** olarak düştü, **hüküm** olarak değil.
+> **Gerçek bir verifier bug'ı henüz yüzeye çıkmadı** (beklenen) — çıkan tek
+> karar-mismatch'inin gerekçesi kaynakta bulundu ve kusur **dokümanda** çıktı
+> (yetkili yüklemede `allow_uninit_stack`; doküman koşulu söylemiyor).
+> **Eksik olan:** kaynak 1 (`verifier.c`) stub — artık **tek** stub; kaynak 2'nin
+> tavanı ölçüldü (~17 vaka, ~4 kaldı); kaynak 4 kısmi (iki-revizyon gözlemi
+> gerekiyor); JIT↔interp cross-kernel modu; istatistiksel scoring; ve **KVM host-side
+> bloklu → her şey TCG'de**.
+> **Sıradaki iş:** kaynak 1 için **tek geçiş ailesi pilotu** (ör. `check_alu_op`
+> bounds) — tamamına yatırım yapmadan fizibiliteyi ölçmek."

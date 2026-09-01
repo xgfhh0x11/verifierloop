@@ -85,19 +85,21 @@ affect the pipeline's correctness, and the crashes are outside the loop's data p
 
 ## OI-3 — One of five ground-truth sources is still a stub
 
-- **Status:** OPEN (medium priority) — *narrowed 2026-08-28 by devlog 0022.*
+- **Status:** OPEN (medium priority) — *narrowed 2026-08-28 by devlog 0022,
+  narrowed again 2026-09-01 by devlog 0024.*
 - **Live now:** intrinsic invariants; helper `bpf_func_proto` (source 3, extracted —
-  274 contracts); **`Documentation/bpf/verifier.rst` (source 2, 3 anchored cases)**.
+  274 contracts); **`Documentation/bpf/verifier.rst` (source 2, 13 anchored cases —
+  12 checked + 1 superseded)**.
 - **Also live (0023):** **patch-diff (source 4), partially** — as doc-vs-code
   staleness EVIDENCE qualifying source 2, not as an independent check.
-- **Still a stub:** `verifier.c` state-transition logic (source 1).
+- **Still a stub:** `verifier.c` state-transition logic (source 1). **This is now the
+  only stub**, and the next planned step is a pilot on ONE transition family (e.g.
+  `check_alu_op` bounds) rather than the whole file — the point is to learn whether
+  source 1 is mechanically extractable before investing in all of it.
 - **Why it matters:** source 1 is a research problem in itself (parsing verifier
   semantics into checkable transitions). Source 4 remains partial for a *dependency*
   reason, not effort: a real cross-version behavioural diff needs observations from
   **two** kernel revisions and the lab builds one.
-- **Also open within source 2:** only 3 documented claims are encoded. Each new case
-  requires finding another sentence the document states OUTRIGHT — deliberately not
-  inferred from prose.
 
 ---
 
@@ -150,14 +152,75 @@ both volume captures.)*
 - **Standing instruction:** on the first divergence, check whether the specific
   behaviour changed in those commits (`git log -S` over the relevant verifier code)
   BEFORE reporting a regression.
-- **Related:** OI-5 is the same shape for source 3 (extraction table first suspect).
+- **FIRST REAL INSTANCE (2026-09-01, devlog 0024) — and it was the documentation.**
+  `doc_msg_uninit_stack_arg` (verifier.rst:398, "doesn't initialize stack before
+  passing its address into function") is **accepted** by the tree. Cause located in
+  the source, not guessed: `kernel/bpf/verifier.c:21141`
+  `env->allow_uninit_stack = bpf_allow_uninit_stack(env->prog->aux->token)` →
+  `bpf_token_capable(token, CAP_PERFMON)` (`include/linux/bpf.h:2869`). The documented
+  rejection is **unprivileged-only** and the document states it unconditionally. So
+  the first decision-level divergence this source produced was a documentation gap —
+  exactly the outcome this item predicted. The case is now superseded (see OI-7),
+  not deleted.
+- **Related:** OI-5 is the same shape for source 3 (extraction table first suspect);
+  OI-8 is the same shape for the source-2 harness programs.
 
 ---
 
-## Coverage note — documented cases grow by hand, on purpose
+## OI-7 — `superseded_by` is a silencer, and silencers create false negatives
 
-Source 2 currently encodes **3** documented claims. Unlike `bpf_func_proto`
-contracts, these cannot be auto-extracted: they are assertions embedded in prose, so
-each new case means finding another sentence the document states OUTRIGHT. The
-intended ceiling is **a few dozen high-value invariants, not hundreds** — coverage
-here is curated depth, not breadth.
+- **Status:** OPEN (standing audit instruction, not a defect)
+- **Raised:** 2026-09-01 (devlog 0024)
+- **What:** a documented case may be silenced by a [`SourcePrecondition`] — a kernel
+  source citation showing the documented claim does not apply to our load path. Today
+  exactly **one** case is silenced this way (`doc_msg_uninit_stack_arg`, see OI-6).
+- **Why it matters (the failure mode):** this is the only mechanism in the loop that
+  can turn a real divergence into silence. A loosely chosen citation — one that is
+  merely *nearby* the behaviour rather than *causing* it — would hide precisely the
+  signal the leg exists to produce, and it would hide it permanently and quietly.
+- **Guards already in place:** silencing needs a file + line + verbatim code text;
+  `verifier_rst::load` re-checks that text is still in the tree on every load; a case
+  whose citation disappears **revives by itself**; an unreadable source silences
+  nothing; superseded cases are counted and printed with their reason, and are
+  excluded from `documented_cases_checked` so they cannot inflate the denominator.
+- **Standing instruction:** review the superseded list at every review, and require of
+  each citation that it *causally* establishes the precondition. When in doubt, leave
+  the case live and accept the false alarm — a visible false positive is cheaper than
+  an invisible false negative.
+
+---
+
+## OI-8 — The documented-message programs carry translation judgements
+
+- **Status:** OPEN (standing triage instruction, not a defect)
+- **Raised:** 2026-09-01 (devlog 0024)
+- **What:** the 11 examples in verifier.rst:353-560 are printed in `BPF_*` macro form,
+  so transcription is exact — but the document leaves three things unstated, and
+  `harness/diffharness.c` had to choose them (each marked JUDGEMENT at its case):
+  a real map fd where the document writes `BPF_LD_MAP_FD(…, 0)` yet its own log shows
+  a real map; `value_size = 16`, which the document never states; and the program type
+  / load flag two cases need (`sched_cls` for the socket helpers, and
+  `BPF_F_STRICT_ALIGNMENT`, without which x86's efficient-unaligned-access support
+  makes the alignment claim inapplicable).
+- **Why it matters:** a wrong choice here changes *which condition the program
+  actually exercises*, so it can produce a mismatch that looks exactly like a real
+  finding — the same shape as OI-5 for source 3.
+- **Standing instruction:** on the first `documented_behavior_mismatch` from a
+  `doc_msg_*` case, re-read that case's JUDGEMENT comment and confirm the program
+  still reaches the documented condition BEFORE reporting a verifier bug.
+
+---
+
+## Coverage note — source 2's ceiling, MEASURED (corrected 2026-09-01)
+
+Source 2 now encodes **13** documented claims (12 checked + 1 superseded). Unlike
+`bpf_func_proto` contracts, these cannot be auto-extracted: they are assertions
+embedded in prose, so each new case means finding another sentence the document
+states OUTRIGHT.
+
+**The earlier "a few dozen high-value invariants" target was wrong and is corrected
+here.** It was an estimate, never a measurement. Measured (V14, devlog 0024): the
+prose vein holds 7 candidate claims, 3 of them encoded, so ~4 remain; the message
+vein holds 11 examples and **all 11 are now encoded**. The document's real ceiling is
+therefore about **17 cases**, not "a few dozen" — and past that, growth in source 2
+requires the *document itself* to grow, which is outside this project's control.

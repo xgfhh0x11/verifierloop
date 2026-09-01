@@ -56,6 +56,14 @@ pub trait GroundTruth {
         None
     }
 
+    /// Source 2 — the exact error string the documentation prints for `case_id`,
+    /// when it prints one. Weighed DIFFERENTLY from the decision: a mismatch here
+    /// is evidence for a reviewer, never a divergence verdict, because message
+    /// text drifts between kernel versions far faster than behaviour does.
+    fn documented_expected_error(&self, _case_id: &str) -> Option<String> {
+        None
+    }
+
     /// Source 4 — git-derived evidence about how far the documentation has fallen
     /// behind the verifier code. Not a check: it QUALIFIES a source-2 finding so the
     /// "real regression or stale prose?" question arrives with facts attached.
@@ -130,6 +138,10 @@ impl GroundTruth for StaticGroundTruth {
 
     fn documented_outcome(&self, case_id: &str) -> Option<DocumentedOutcome> {
         self.verifier_rst.outcome(case_id)
+    }
+
+    fn documented_expected_error(&self, case_id: &str) -> Option<String> {
+        self.verifier_rst.expected_error(case_id).map(str::to_string)
     }
 
     fn doc_staleness_evidence(&self) -> Option<String> {

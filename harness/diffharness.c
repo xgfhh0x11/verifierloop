@@ -56,6 +56,16 @@
 #define BPF_ST_MEM(SIZE, DST, OFF, IMM)                                        \
     ((struct bpf_insn){.code = BPF_ST | BPF_SIZE(SIZE) | BPF_MEM,              \
                        .dst_reg = DST, .src_reg = 0, .off = OFF, .imm = IMM})
+#define BPF_STX_MEM(SIZE, DST, SRC, OFF)                                       \
+    ((struct bpf_insn){.code = BPF_STX | BPF_SIZE(SIZE) | BPF_MEM,             \
+                       .dst_reg = DST, .src_reg = SRC, .off = OFF, .imm = 0})
+// Pseudo LD_IMM64 loading a map fd. Occupies TWO insn slots — the macro expands
+// to both, exactly as the kernel's own bpf_insn.h spells it (and as
+// Documentation/bpf/verifier.rst writes it in its examples).
+#define BPF_LD_MAP_FD(DST, FD)                                                 \
+    ((struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = DST,      \
+                       .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = (FD)}),  \
+    ((struct bpf_insn){0})
 #define BPF_EMIT_CALL(FUNC)                                                    \
     ((struct bpf_insn){.code = BPF_JMP | BPF_CALL,                             \
                        .dst_reg = 0, .src_reg = 0, .off = 0, .imm = (FUNC)})
@@ -76,11 +86,19 @@ static uint64_t now_ns(void) {
 static char g_log[256 * 1024];
 
 // Load one program with log_level=2 and print its native frame.
-static void run_one(const char *name, const struct bpf_insn *insns, int n) {
+//
+// `prog_type`/`type_name` and `prog_flags` are explicit because a few documented
+// cases are only reachable under a specific program type (the socket helpers are
+// not callable from a socket filter) or a specific load flag (strict alignment).
+// The header line stays byte-identical for the default socket_filter/no-flag
+// programs — the extra `flags=` field is printed only when a flag is actually set.
+static void run_one_ex(const char *name, const struct bpf_insn *insns, int n,
+                       int prog_type, const char *type_name, uint32_t prog_flags) {
     g_log[0] = '\0';
     union bpf_attr attr;
     memset(&attr, 0, sizeof(attr));
-    attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER; // loadable as root, no attach
+    attr.prog_type = prog_type;
+    attr.prog_flags = prog_flags;
     attr.insn_cnt = n;
     attr.insns = (uint64_t)(unsigned long)insns;
     attr.license = (uint64_t)(unsigned long)"GPL";
@@ -93,13 +111,19 @@ static void run_one(const char *name, const struct bpf_insn *insns, int n) {
     int e = errno;
     uint64_t dt = now_ns() - t0;
 
-    printf("===PROG %s type=socket_filter ===\n", name);
+    printf("===PROG %s type=%s%s ===\n", name, type_name,
+           prog_flags & BPF_F_STRICT_ALIGNMENT ? " flags=strict_alignment" : "");
     printf("RESULT decision=%s fd=%d errno=%d load_ns=%llu\n",
            fd >= 0 ? "accept" : "reject", fd, fd >= 0 ? 0 : e,
            (unsigned long long)dt);
     printf("---LOG---\n%s\n---END---\n", g_log);
     if (fd >= 0)
         close(fd);
+}
+
+// Default program shape: socket filter, no load flags (loadable as root, no attach).
+static void run_one(const char *name, const struct bpf_insn *insns, int n) {
+    run_one_ex(name, insns, n, BPF_PROG_TYPE_SOCKET_FILTER, "socket_filter", 0);
 }
 
 // Create a small ARRAY map and run a CORRECT bpf_map_lookup_elem(&map, &key) call
@@ -187,6 +211,203 @@ static void run_documented_cases(void) {
             (int)(sizeof(doc_bad_ptr_xadd) / sizeof(doc_bad_ptr_xadd[0])));
 }
 
+// ---------------------------------------------------------------------------
+// DOCUMENTED-BEHAVIOUR CASES, part 2 — the "Understanding eBPF verifier
+// messages" section (verifier.rst:353-560).
+//
+// These 11 programs differ from the prose examples above in a way that matters:
+// the document prints them ALREADY in `BPF_*` macro form — the same macros this
+// harness uses — so getting them in here is transcription, not translation
+// judgement. Each also carries its exact expected error string, anchored by
+// `DocumentedCase::expected_error` on the Rust side. All 11 are programs the
+// verifier MUST reject, so they test the verifier's SOUNDNESS: an accept here is
+// a real finding, not a documentation quibble.
+//
+// Three places where the document leaves something implicit and a choice had to
+// be made. Each is a reviewable judgement, marked JUDGEMENT at its case:
+//  (a) The document writes `BPF_LD_MAP_FD(BPF_REG_1, 0)` even in examples whose
+//      OWN log shows `r1 = 1` (i.e. captured with a real map). fd 0 fails at
+//      pseudo-ldimm64 resolution — before the condition the case is about — so
+//      those cases get a real map. The one case that IS about fd 0 keeps 0.
+//  (b) The document never states the map's value_size. 16 is used so the
+//      documented offsets (`off 4 size 8`) are in bounds and the case reaches the
+//      condition it is about instead of failing the bounds check first.
+//  (c) Two cases call socket helpers, which a socket filter cannot call at all,
+//      and one is about alignment, which x86 skips unless strict alignment is
+//      requested. Both are stated per case.
+// ---------------------------------------------------------------------------
+
+// An ARRAY map big enough for every documented offset in the section (b).
+static int make_doc_map(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4;
+    m.value_size = 16;
+    m.max_entries = 1;
+    return bpf(BPF_MAP_CREATE, &m, sizeof(m));
+}
+
+static void run_documented_message_cases(void) {
+    // verifier.rst:356 — "Program with unreachable instructions" -> `unreachable insn 1`
+    struct bpf_insn doc_msg_unreachable_insn[] = {
+        BPF_EXIT_INSN(),
+        BPF_EXIT_INSN(),
+    };
+    run_one("doc_msg_unreachable_insn", doc_msg_unreachable_insn,
+            (int)(sizeof(doc_msg_unreachable_insn) / sizeof(doc_msg_unreachable_insn[0])));
+
+    // verifier.rst:367 — "Program that reads uninitialized register" -> `R2 !read_ok`.
+    // This is the SAME program as the prose example above (doc_unreadable_reg);
+    // it is not duplicated here — the prose case carries the error string instead.
+
+    // verifier.rst:377 — "Program that doesn't initialize R0 before exiting"
+    //   -> `R0 !read_ok`
+    struct bpf_insn doc_msg_uninit_r0_exit[] = {
+        BPF_MOV64_REG(BPF_REG_2, BPF_REG_1),
+        BPF_EXIT_INSN(),
+    };
+    run_one("doc_msg_uninit_r0_exit", doc_msg_uninit_r0_exit,
+            (int)(sizeof(doc_msg_uninit_r0_exit) / sizeof(doc_msg_uninit_r0_exit[0])));
+
+    // verifier.rst:388 — "Program that accesses stack out of bounds"
+    //   -> `invalid stack off=8 size=8`
+    struct bpf_insn doc_msg_stack_oob[] = {
+        BPF_ST_MEM(BPF_DW, BPF_REG_10, 8, 0),
+        BPF_EXIT_INSN(),
+    };
+    run_one("doc_msg_stack_oob", doc_msg_stack_oob,
+            (int)(sizeof(doc_msg_stack_oob) / sizeof(doc_msg_stack_oob[0])));
+
+    int map_fd = make_doc_map();
+    if (map_fd < 0) {
+        // Say so instead of silently skipping: a missing denominator must be
+        // visible, not look like a clean run.
+        printf("===PROG doc_msg_map_cases type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n"
+               "---LOG---\n---END---\n", errno);
+    } else {
+        // verifier.rst:398 — "Program that doesn't initialize stack before passing
+        //   its address into function" -> `invalid indirect read from stack off -8+0 size 8`
+        // JUDGEMENT (a): real map fd; with the document's literal fd 0 the load
+        // would fail at map resolution and never reach the uninitialized-stack check.
+        struct bpf_insn doc_msg_uninit_stack_arg[] = {
+            BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+            BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+            BPF_LD_MAP_FD(BPF_REG_1, map_fd),
+            BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem),
+            BPF_EXIT_INSN(),
+        };
+        run_one("doc_msg_uninit_stack_arg", doc_msg_uninit_stack_arg,
+                (int)(sizeof(doc_msg_uninit_stack_arg) / sizeof(doc_msg_uninit_stack_arg[0])));
+
+        // verifier.rst:432 — "Program that doesn't check return value of
+        //   map_lookup_elem() before accessing map element"
+        //   -> `R0 invalid mem access 'map_value_or_null'`
+        struct bpf_insn doc_msg_unchecked_map_value[] = {
+            BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+            BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+            BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+            BPF_LD_MAP_FD(BPF_REG_1, map_fd),
+            BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem),
+            BPF_ST_MEM(BPF_DW, BPF_REG_0, 0, 0),
+            BPF_EXIT_INSN(),
+        };
+        run_one("doc_msg_unchecked_map_value", doc_msg_unchecked_map_value,
+                (int)(sizeof(doc_msg_unchecked_map_value) / sizeof(doc_msg_unchecked_map_value[0])));
+
+        // verifier.rst:453 — "checks for NULL, but accesses the memory with
+        //   incorrect alignment" -> `misaligned access off 4 size 8`
+        // JUDGEMENT (c): x86_64 has efficient unaligned access, so the verifier
+        // skips this check unless the load asks for it. BPF_F_STRICT_ALIGNMENT is
+        // what makes the documented condition reachable at all on this arch;
+        // without it the program is legitimately accepted here and the document's
+        // claim simply does not apply.
+        struct bpf_insn doc_msg_misaligned_value[] = {
+            BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+            BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+            BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+            BPF_LD_MAP_FD(BPF_REG_1, map_fd),
+            BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem),
+            BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 1),
+            BPF_ST_MEM(BPF_DW, BPF_REG_0, 4, 0),
+            BPF_EXIT_INSN(),
+        };
+        run_one_ex("doc_msg_misaligned_value", doc_msg_misaligned_value,
+                   (int)(sizeof(doc_msg_misaligned_value) / sizeof(doc_msg_misaligned_value[0])),
+                   BPF_PROG_TYPE_SOCKET_FILTER, "socket_filter", BPF_F_STRICT_ALIGNMENT);
+
+        // verifier.rst:477 — "accesses memory with correct alignment in one side of
+        //   'if' branch, but fails to do so in the other" -> `R0 invalid mem access 'imm'`
+        struct bpf_insn doc_msg_branch_imm_deref[] = {
+            BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+            BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+            BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+            BPF_LD_MAP_FD(BPF_REG_1, map_fd),
+            BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem),
+            BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 2),
+            BPF_ST_MEM(BPF_DW, BPF_REG_0, 0, 0),
+            BPF_EXIT_INSN(),
+            BPF_ST_MEM(BPF_DW, BPF_REG_0, 0, 1),
+            BPF_EXIT_INSN(),
+        };
+        run_one("doc_msg_branch_imm_deref", doc_msg_branch_imm_deref,
+                (int)(sizeof(doc_msg_branch_imm_deref) / sizeof(doc_msg_branch_imm_deref[0])));
+
+        close(map_fd);
+    }
+
+    // verifier.rst:414 — "Program that uses invalid map_fd=0 while calling to
+    //   map_lookup_elem()" -> `fd 0 is not pointing to valid bpf_map`
+    // fd 0 is kept deliberately: here the invalid fd IS the documented condition.
+    struct bpf_insn doc_msg_invalid_map_fd[] = {
+        BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+        BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+        BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+        BPF_LD_MAP_FD(BPF_REG_1, 0),
+        BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem),
+        BPF_EXIT_INSN(),
+    };
+    run_one("doc_msg_invalid_map_fd", doc_msg_invalid_map_fd,
+            (int)(sizeof(doc_msg_invalid_map_fd) / sizeof(doc_msg_invalid_map_fd[0])));
+
+    // verifier.rst:508 / :536 — the two socket-lookup cases
+    //   -> `Unreleased reference id=1, alloc_insn=7` (both)
+    // JUDGEMENT (c): bpf_sk_lookup_tcp is not callable from a socket filter, so
+    // these run as BPF_PROG_TYPE_SCHED_CLS — the classic tc program type these
+    // examples come from. The program text itself is the document's, unchanged.
+    struct bpf_insn doc_msg_unreleased_ref_null[] = {
+        BPF_MOV64_IMM(BPF_REG_2, 0),
+        BPF_STX_MEM(BPF_W, BPF_REG_10, BPF_REG_2, -8),
+        BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+        BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+        BPF_MOV64_IMM(BPF_REG_3, 4),
+        BPF_MOV64_IMM(BPF_REG_4, 0),
+        BPF_MOV64_IMM(BPF_REG_5, 0),
+        BPF_EMIT_CALL(BPF_FUNC_sk_lookup_tcp),
+        BPF_MOV64_IMM(BPF_REG_0, 0),
+        BPF_EXIT_INSN(),
+    };
+    run_one_ex("doc_msg_unreleased_ref_null", doc_msg_unreleased_ref_null,
+               (int)(sizeof(doc_msg_unreleased_ref_null) / sizeof(doc_msg_unreleased_ref_null[0])),
+               BPF_PROG_TYPE_SCHED_CLS, "sched_cls", 0);
+
+    struct bpf_insn doc_msg_unreleased_ref_nocheck[] = {
+        BPF_MOV64_IMM(BPF_REG_2, 0),
+        BPF_STX_MEM(BPF_W, BPF_REG_10, BPF_REG_2, -8),
+        BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+        BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+        BPF_MOV64_IMM(BPF_REG_3, 4),
+        BPF_MOV64_IMM(BPF_REG_4, 0),
+        BPF_MOV64_IMM(BPF_REG_5, 0),
+        BPF_EMIT_CALL(BPF_FUNC_sk_lookup_tcp),
+        BPF_EXIT_INSN(),
+    };
+    run_one_ex("doc_msg_unreleased_ref_nocheck", doc_msg_unreleased_ref_nocheck,
+               (int)(sizeof(doc_msg_unreleased_ref_nocheck) / sizeof(doc_msg_unreleased_ref_nocheck[0])),
+               BPF_PROG_TYPE_SCHED_CLS, "sched_cls", 0);
+}
+
 int main(void) {
     // Program A: clean, minimal accepted prog — `return 0`.
     struct bpf_insn prog_return0[] = {
@@ -248,5 +469,6 @@ int main(void) {
             (int)(sizeof(prog_bounded) / sizeof(prog_bounded[0])));
     run_map_lookup();
     run_documented_cases();
+    run_documented_message_cases();
     return 0;
 }

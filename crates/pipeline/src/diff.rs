@@ -68,6 +68,33 @@ pub struct DivergenceFinding {
     pub detail: String,
 }
 
+/// One piece of QUALIFIED EVIDENCE — an observation that bears on a possible
+/// divergence without being one.
+///
+/// Same shape as [`DivergenceFinding`], deliberately a DIFFERENT type in a
+/// DIFFERENT channel, because it carries a different claim. A note says "here is a
+/// fact a reviewer should weigh"; a finding says "the kernel and its ground truth
+/// disagree". Notes are NOT counted in `finding_count`, so a period with notes and
+/// no findings still reads as clean — which is the honest reading when the only
+/// thing that differed was a reworded error string.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvidenceNote {
+    /// Index into `NormalizedMetrics.records`, or `None` for a period-level note.
+    pub record_index: Option<u64>,
+    /// Which ground-truth pillar the evidence came from.
+    pub source: GroundTruthSource,
+    /// Machine-ish label, verbatim (e.g. "documented_message_drift").
+    pub kind: String,
+    /// What was compared: "reject_reason" | ...
+    pub aspect: String,
+    /// Documented / expected value (verbatim).
+    pub expected: String,
+    /// Observed value (verbatim).
+    pub observed: String,
+    /// Human-readable explanation for triage.
+    pub detail: String,
+}
+
 /// Per-source finding counts (mirror of the [`GroundTruthSource`] variants).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct BySource {
@@ -117,6 +144,10 @@ pub struct DiffSummary {
     /// ZERO checks means the leg never ran and proves nothing.
     #[serde(default)]
     pub helper_args_checked: u64,
+    /// Evidence notes emitted this period. Reported next to `finding_count`, never
+    /// folded into it: evidence is not a verdict.
+    #[serde(default)]
+    pub note_count: u64,
 }
 
 /// The DIFF_FINDINGS payload for a period.
@@ -126,6 +157,10 @@ pub struct DiffFindings {
     pub exec_count: u64,
     /// All documented-vs-observed discrepancies.
     pub findings: Vec<DivergenceFinding>,
+    /// Qualified evidence that is explicitly NOT a verdict. `skip_serializing_if`
+    /// keeps existing golden artifacts byte-identical when there is none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<EvidenceNote>,
     /// Period-level summary.
     pub summary: DiffSummary,
 }
@@ -171,6 +206,7 @@ pub fn run(
     ground_truth: &dyn GroundTruth,
 ) -> Result<DiffFindings, DiffError> {
     let mut findings = Vec::new();
+    let mut notes = Vec::new();
     let mut helper_args_observed = 0u64;
     let mut helper_args_checked = 0u64;
     let mut documented_cases_checked = 0u64;
@@ -186,7 +222,7 @@ pub fn run(
             &mut findings,
             &mut helper_args_checked,
         );
-        if check_documented_behavior(idx, record, ground_truth, &mut findings) {
+        if check_documented_behavior(idx, record, ground_truth, &mut findings, &mut notes) {
             documented_cases_checked += 1;
         }
     }
@@ -202,11 +238,13 @@ pub fn run(
         helper_args_observed,
         helper_args_checked,
         documented_cases_checked,
+        note_count: notes.len() as u64,
     };
 
     let out = DiffFindings {
         exec_count: metrics.exec_count,
         findings,
+        notes,
         summary,
     };
 
@@ -402,6 +440,7 @@ fn check_documented_behavior(
     record: &MetricRecord,
     ground_truth: &dyn GroundTruth,
     out: &mut Vec<DivergenceFinding>,
+    notes: &mut Vec<EvidenceNote>,
 ) -> bool {
     let Some(label) = record.source_label.as_deref() else {
         return false;
@@ -440,6 +479,32 @@ fn check_documented_behavior(
                 ),
             },
         });
+        return true;
+    }
+
+    // The decision matched. The document may also print the exact error string it
+    // expects — but that is deliberately NOT held to the same standard. Error text
+    // is reworded constantly (`'imm'` became `'scalar'`, `invalid stack off=` grew
+    // a register name), so a mismatch here says "the documentation has drifted",
+    // not "the verifier is wrong". It is recorded as evidence a reviewer can weigh,
+    // and it does not touch `finding_count`.
+    if let (Some(expected_error), VerifierDecision::Reject { reason }) = (
+        ground_truth.documented_expected_error(label),
+        &record.core.verifier_decision,
+    ) {
+        if !reason.contains(&expected_error) {
+            notes.push(EvidenceNote {
+                record_index: Some(idx),
+                source: GroundTruthSource::Documentation,
+                kind: "documented_message_drift".to_string(),
+                aspect: "reject_reason".to_string(),
+                expected: expected_error,
+                observed: reason.clone(),
+                detail: format!(
+                    "{label}: rejected as documented, but the verifier's message differs                      from the one Documentation/bpf/verifier.rst prints — evidence of                      documentation drift, NOT a verifier divergence"
+                ),
+            });
+        }
     }
     true
 }

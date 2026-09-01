@@ -285,6 +285,7 @@ mod tests {
                 finding(Some(1), "tnum_malformed"),
                 finding(None, "period_level_thing"),
             ],
+            notes: Vec::new(),
             summary: DiffSummary { record_count: 2, finding_count: 2, ..Default::default() },
         };
         contract::write_artifact(
