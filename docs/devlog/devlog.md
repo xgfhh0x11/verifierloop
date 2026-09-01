@@ -300,10 +300,9 @@ assembly/provenance/artifact mantığıyla kuruldu.
 
 **Metrik şeması (donduruldu, serde'li)**
 - **CORE** (`metrics::core`): `VerifierDecision` (Accept | Reject{reason}),
-  `register_evolution: Vec<RegSnapshot{ insn_idx, regs: Vec<RegState{ reg,
-  reg_type, tnum{value,mask}, umin/umax/smin/smax }> }>`, `Processed{
-  insn_processed, states_processed }`, `Option<JitInterpDiff>`, `CoverageDelta{
-  new_bb, exec_n }`, `Vec<HelperArgViolation>`. `reg_type` ve reject `reason`
+  `register_evolution: Vec<RegSnapshot{ insn_idx, regs: Vec<RegState{ reg, reg_type, tnum{value,mask}, umin/umax/smin/smax }> }>`,
+  `Processed{ insn_processed, states_processed }`, `Option<JitInterpDiff>`,
+  `CoverageDelta{ new_bb, exec_n }`, `Vec<HelperArgViolation>`. `reg_type` ve reject `reason`
   **verbatim String** (sürüm-drift'ine dayanıklı, ham gözlemi bozmama ilkesi).
 - **DERIVED**: `efficiency_per_exec: Option<f64>` (REPORT-ONLY), `record_count`.
 - **COUNTERFACTUAL**: `enabled: bool` (opt-in, default OFF), `alternatives`.
@@ -383,8 +382,8 @@ tam Rust↔Python dosya-contract sınırını çalıştırır.
   (gerçek subprocess: `python3 -m verifierloop_analysis --period-dir <dir>`).
   `run(period, analyzer)` → analyzer'ı çağırır, `ANOMALY_SCORES` artifact'ını
   contract üzerinden geri okur.
-- **`AnomalyScores` payload'ı**: `{ exec_count, scored: [{index, score, reasons}],
-  summary: {record_count, flagged, max_score}, method }`.
+- **`AnomalyScores` payload'ı**:
+  `{ exec_count, scored: [{index, score, reasons}], summary: {record_count, flagged, max_score}, method }`.
 - **Python scoring baseline** (`baseline-hard-signals-v0`): şeffaf, kural tabanlı
   hard-signal'lar — JIT↔interp sapması (retval/data_out) → 0.95; helper arg_type
   ihlali → 0.85; temiz → 0.0. Eğitim verisi gerektirmez, deterministik.
@@ -462,12 +461,13 @@ için): (Q1) baseline kapsamı = **intrinsik invariant + enjekte oracle**, (Q2)
   `StaticGroundTruth` (in-memory helper-proto tablosu; reference oracle). Dört
   submodule loader'ı (`verifier_c`/`verifier_rst`/`helper_proto`/`patch_diff`) TODO
   kaldı; `helper_proto::HelperProtoModel` gerçek bir `(helper,arg)->arg_type` tablosu.
-- **`DIFF_FINDINGS` payload'ı (donduruldu, serde):** `DiffFindings { exec_count,
-  findings: Vec<DivergenceFinding>, summary }`; `DivergenceFinding { record_index:
-  Option<u64>, source, kind, aspect, expected, observed, detail }`;
+- **`DIFF_FINDINGS` payload'ı (donduruldu, serde):**
+  `DiffFindings { exec_count, findings: Vec<DivergenceFinding>, summary }`;
+  `DivergenceFinding { record_index: Option<u64>, source, kind, aspect, expected, observed, detail }`;
   `GroundTruthSource` enum (verifier_c/documentation/helper_proto/patch_diff/
-  **logical_invariant**, snake_case); `DiffSummary { record_count, finding_count,
-  by_source }`. `kind`/`aspect`/`expected`/`observed` = verbatim String.
+  **logical_invariant**, snake_case);
+  `DiffSummary { record_count, finding_count, by_source }`.
+  `kind`/`aspect`/`expected`/`observed` = verbatim String.
 - **`run(period, metrics, ground_truth)`** — yalnız NORMALIZED okur, ANOMALY_SCORES'a
   BAKMAZ; findings toplar, `by_source` sayar, `DIFF_FINDINGS`'i contract üzerinden yazar.
 - **Python mirror** `schemas/diff.py` + `schemas/__init__` export.
@@ -553,11 +553,10 @@ okumaz.
   birleştirilir; iki artifact'ta görünen indislerin BİRLEŞİMİ üzerinde çalışır
   (skorsuz ama sapmalı kayıt düşmez). **Sıralama yalnız mevcut score'a göre azalan**
   (eşitlikte record_index artan).
-- **`PERIOD_REPORT` payload'ı (donduruldu, serde):** `PeriodReport { exec_count,
-  generated_unix: Option<u64>, items: Vec<TriageItem>, period_findings:
-  Vec<DivergenceFinding>, summary }`; `TriageItem { record_index, score,
-  score_reasons, divergences }`; `ReportSummary { record_count, flagged,
-  divergence_count, top_score }`.
+- **`PERIOD_REPORT` payload'ı (donduruldu, serde):**
+  `PeriodReport { exec_count, generated_unix: Option<u64>, items: Vec<TriageItem>, period_findings: Vec<DivergenceFinding>, summary }`;
+  `TriageItem { record_index, score, score_reasons, divergences }`;
+  `ReportSummary { record_count, flagged, divergence_count, top_score }`.
 - **`generated_unix` yalnız LABEL** — caller damgalar (report saati kendisi
   OKUMAZ); asla durma kriteri değil.
 - **Python mirror** `schemas/report.py` (diff mirror'ını yeniden kullanır) + export.
@@ -590,8 +589,9 @@ okumaz.
 - `cargo test -p pipeline --offline` → **13/13** (öncekiler + 2 report: join/order/
   summary + PERIOD_REPORT round-trip; timestamp label opsiyonel).
 - Tüm workspace: `cargo test --offline` → **22/22** yeşil.
-- **End-to-end (tam pipeline, gerçek Python)**: `cargo run -p pipeline --example
-  report_demo -- <dir>` → ingest → normalize → score (python3) → diff → report →
+- **End-to-end (tam pipeline, gerçek Python)**:
+  `cargo run -p pipeline --example report_demo -- <dir>` → ingest → normalize →
+  score (python3) → diff → report →
   buggy kayıt (score 0.95, 3 divergence) temiz kaydın (score 0) ÜSTÜNDE sıralandı;
   summary records=2 flagged=1 divergences=3 top_score=0.95 → `period_report.json`.
 - **Cross-language**: Python PERIOD_REPORT'u contract'tan okudu; producer=report,
@@ -634,14 +634,16 @@ dönüştürüldü ve uçtan uca koşuldu.
   (1.47M commit) + tüm blob'lar yerel → **4 ground-truth kaynak dosyası da yerel**
   (verifier.c 21454 satır, verifier.rst, helper proto'lar, cross-version diff'ler).
   HEAD = `5e289c5a` (Linux 7.2.0 bpf-next), `.lab/kernel.rev`'e yazıldı. ~5.4 GB.
-- **`scripts/build-kernel.sh`** — `defconfig + kvm_guest.config + lab fragment +
-  olddefconfig`, sonra `-j24 bzImage`. bzImage 40M, vmlinux 569M, **BTF gömülü**.
+- **`scripts/build-kernel.sh`** —
+  `defconfig + kvm_guest.config + lab fragment + olddefconfig`, sonra
+  `-j24 bzImage`. bzImage 40M, vmlinux 569M, **BTF gömülü**.
 - **`scripts/create-rootfs.sh`** — `debootstrap` Debian bookworm minimal → raw ext4
   (`mkfs.ext4 -d`, **loop-mount YOK** → WSL2'de sağlam). Serial autologin (root),
   sshd + üretilen ed25519 anahtar, DHCP, ve `init=` ile koşan `/root/verify.sh`.
   Image 452M.
-- **`config/qemu/launch-{kvm,tcg}.sh`** — placeholder'dan gerçek/çalışır: `panic=1
-  oops=panic nokaslr`, ssh port-forward, `-no-reboot`, `-snapshot` (disposable).
+- **`config/qemu/launch-{kvm,tcg}.sh`** — placeholder'dan gerçek/çalışır:
+  `panic=1 oops=panic nokaslr`, ssh port-forward, `-no-reboot`, `-snapshot`
+  (disposable).
 - **`scripts/boot-vm.sh`** (KVM/TCG dispatch) + **`scripts/verify-vm.sh`** (otomatik:
   boot → BTF/bpffs/kcov assert → poweroff; KVM başarısızsa TCG'ye düşer).
 - **`justfile`** — `fetch-kernel`/`build-kernel`/`create-rootfs`/`verify-vm`/
@@ -829,8 +831,9 @@ anomalisi** adayı. Bu, döngünün confirmation-bias guardrail'inin parser
 seviyesindeki karşılığıdır. (Hafızaya `parser-golden-fixture-guardrail` olarak yazıldı.)
 
 ### Keşif — syzkaller DEFAULT çıktısı ve veri-kaynağı ayrımı (önemli)
-200 sn'lik kampanyanın diskteki tüm çıktısı: `manager log + workdir/corpus.db
-(+ crashes/)`. **syzkaller tek başına verifier'ın accept/reject + register-state
+200 sn'lik kampanyanın diskteki tüm çıktısı:
+`manager log + workdir/corpus.db (+ crashes/)`.
+**syzkaller tek başına verifier'ın accept/reject + register-state
 evrimini ÜRETMEZ** — o veri kernel'in verifier **log buffer**'ında
 (`BPF_PROG_LOAD .log_level=2`) ve dmesg'de. Sonuç: verifier-semantik CORE
 alanlarının birincil üreticisi **differential harness**'tir; syzkaller'ın işi
@@ -967,8 +970,9 @@ formatını (`===PROG / RESULT / ---LOG--- <verbatim> / ---END---`) `Vec<CoreMet
 çevirir. Çıkarılanlar: **decision** (accept/reject), **reject reason** (verbatim
 String), **register-state evrimi** (per-insn snapshot; `; Rk=...` ve tam-durum
 satırları), **processed** (`insn_processed`, `total_states`). Ayrıca
-**`harness_demo`** example'ı: committed harness sample → `ingest → normalize(VerifierLogParser)
-→ score → diff → report` (root/VM gerektirmez).
+**`harness_demo`** example'ı: committed harness sample →
+`ingest → normalize(VerifierLogParser) → score → diff → report`
+(root/VM gerektirmez).
 
 ### Neden
 Bu, 0011 harness'ini fiilen pipeline'a bağlayan parça (§2b parser). Artık gerçek
@@ -1112,8 +1116,9 @@ compact form değil. Authoritative bpf-next sample 6 programa güncellendi; pars
 full-scalar assertion'larıyla genişletildi; `harness_demo` enriched sample'a çevrildi.
 
 ### Bulgu (önemli) — gerçek scalar formu "chained-value" içeriyor
-Gerçek çıktı (host + bpf-next aynı): `R0=scalar(smin=smin32=0,smax=umax=smax32=umax32=255,
-var_off=(0x0; 0xff))`. Yani **tek sayı birden çok alan adı tarafından paylaşılıyor**
+Gerçek çıktı (host + bpf-next aynı):
+`R0=scalar(smin=smin32=0,smax=umax=smax32=umax32=255, var_off=(0x0; 0xff))`.
+Yani **tek sayı birden çok alan adı tarafından paylaşılıyor**
 (`smax=umax=...=255`). Parser'ın eski field okuması "smax="den sonra sayı bekliyordu,
 ama "umax=" görüyordu → smax'ı **kaçırıyordu**. → **`value_after_key`** ile düzeltildi:
 key'den sonra `word=` zincirlerini atlayıp sondaki sayıya ulaşır. tnum var_off'tan;
@@ -1235,8 +1240,9 @@ kalır. Ve karar nereden geliyor **çıktıda gösterilmeli**.
    (helper, arg_index, observed reg-tipi ailesi). **`expected` YOK** — mimari olarak
    beklenti CORE'a giremez; o ground-truth'a ait. `#[serde(default, skip_serializing_if)]`
    → golden/demolar byte-identical (bozulmadı). Legacy `helper_arg_violations` korundu.
-3. **Parser:** `parse_helper_calls` — un-indented state trace'i biriktirir, `(85) call
-   <helper>#<id>` satırında arg register'larının (R1..R5) reg-tipi ailesini gözlemler.
+3. **Parser:** `parse_helper_calls` — un-indented state trace'i biriktirir,
+   `(85) call <helper>#<id>` satırında arg register'larının (R1..R5) reg-tipi
+   ailesini gözlemler.
    Gerçek veride: arg0=`map_ptr`, arg1=`fp`.
 4. **Ground truth (dosyadan):** `data/groundtruth/helper_protos.tsv` — GERÇEK kernel
    kontratı (`kernel/bpf/helpers.c:55  .arg1_type = ARG_CONST_MAP_PTR` → arg0 reg-tipi
@@ -1310,8 +1316,8 @@ değil. Bu ayrım olmadan rapor **parser-gürültüsü ile gerçek sinyali karı
 Politika hacimden ÖNCE tanımlanmalı.
 
 ### Ne yapıldı — üç-yönlü ayrım
-`RecordParser::parse` artık `ParseOutput { records: Vec<ParsedRecord>, unparsed:
-Vec<UnparsedBlock> }` döndürür:
+`RecordParser::parse` artık
+`ParseOutput { records: Vec<ParsedRecord>, unparsed: Vec<UnparsedBlock> }` döndürür:
 1. **Tam-parse** → normal kayıt, not yok.
 2. **Kısmi-parse** → kayıt + `parse_notes` (düşük güven; tanınmayan reg-tipi, eksik
    `processed`). Hâlâ bir GÖZLEM, anomali değil.
@@ -1482,8 +1488,8 @@ iki şeyi** topladığım ortaya çıktı:
 Yani %26, "parser başarısızlığı" değil "gözlenecek bir şey yoktu". Düzeltme:
 **`UnparsedKind`** eklendi — `NotObserved` (araç verifier çıktısı üretmedi; hacimde
 BEKLENEN) vs **`Unrecognized`** (parser verilen çıktıyı okuyamadı; **asıl metrik**).
-`ParseHealth` buna göre bölündü ve **mutabakat satırı** eklendi (`blocks = records
-+ unparsed`) — 95≠70 artık hata gibi görünmüyor.
+`ParseHealth` buna göre bölündü ve **mutabakat satırı** eklendi
+(`blocks = records + unparsed`) — 95≠70 artık hata gibi görünmüyor.
 
 ```
 BLOCKS   95 = 70 records + 25 unparsed
@@ -1575,6 +1581,7 @@ ya da accept-kapısı sessizce eşleşmeyi bıraksa "temiz rapor" yerine test k�
 replay → VM'de period.
 
 ### İki metrik — yan yana (iki bağımsız yakalama)
+
 | | capture #1 (95 blok) | capture #2 (184 blok) |
 | --- | --- | --- |
 | kayıt | 70 (35 acc / 35 rej) | **151** (72 acc / 79 rej) |
@@ -1593,8 +1600,8 @@ sağlam*, "kol uykuda" değil. Her iki fixture da commit'li; test **ikisinde bir
 
 Notlu kayıtların 8'i "reason not identified" — incelendi: log'larında **yalnız
 `processed 0 insns`** var, yani verifier hiç mesaj basmamış (verinin sınırı, parser'ın
-değil). Not artık errno taşıyor: `reject reason not identified in log (errno=22;
-verifier printed no message)`.
+değil). Not artık errno taşıyor:
+`reject reason not identified in log (errno=22; verifier printed no message)`.
 
 ### Crash'ler — teşhis edildi, BULGU DEĞİL
 Kampanya 2 crash üretti: `int3 in sk_filter_trim_cap`, `int3 in __seccomp_filter`.
@@ -1778,8 +1785,9 @@ helper paydasının aynısı: "0 bulgu / N kontrol" yorumlanabilir olsun diye).
 - **Gerçek bpf-next VM'inde** (in-VM capture, 10 programlı yeni authoritative sample):
   `doc_unreadable_reg` → reject (`R2 !read_ok`), `doc_callee_saved_r6` → accept,
   `doc_bad_ptr_xadd` → reject (`R1 invalid mem access 'scalar'`). **Üçü de dokümana uyuyor.**
-- **Uçtan uca** (`harness_demo`): `ground truth: 274 helper contracts, 3 documented
-  cases (0 stale)` / `CHECKS helper-arg: 1 documented cases: 3` / `divergences=0`.
+- **Uçtan uca** (`harness_demo`):
+  `ground truth: 274 helper contracts, 3 documented cases (0 stale)` /
+  `CHECKS helper-arg: 1 documented cases: 3` / `divergences=0`.
 - **6 kalibrasyon testi** (diğer kolların aldığı iki-yönlü ispatın aynısı):
   uyumda **susar**; çelişkide **bağırır** (expected=reject, observed=accept,
   source=Documentation); **ground truth yokken hiçbir şey demez** (iddia dokümanda,

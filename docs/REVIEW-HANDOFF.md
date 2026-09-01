@@ -7,11 +7,12 @@
 > Reviewer'ın görevi: bu iddiaları kendi eliyle koşup teyit etmek ve
 > **abartılmış/yanlış** olanları işaretlemek.
 >
-> - **Rapor tarihi:** 2026-08-27
+> - **Rapor tarihi:** 2026-08-30 (önceki sürüm: 2026-08-27)
 > - **Repo kökü:** `/home/tylersec/verifierloop` — **git deposu** (branch `main`,
->   8 commit: `bf506f1`…HEAD)
+>   **21 commit**, HEAD `714ddda`)
 > - **Kernel rev (hedef):** `5e289c5a4a526e870efac0ca658635c47138593a` (`.lab/kernel.rev`)
 > - **Son devlog entry'si:** `0023` — `docs/devlog/devlog.md`
+> - **Test durumu:** `cargo test` → **74 passed, 0 failed** (2026-08-30 teyit edildi)
 
 ---
 
@@ -31,19 +32,33 @@ gerçek bpf-next VM → diffharness (log_level=2) → VmHarnessDriver → run_pe
    → normalize(VerifierLogParser) → score(Python) → diff → report
 ```
 
-**Güncelleme (0018): hacim açıldı.** Artık syzkaller'ın kendi corpus'u (900 sn'lik
-gerçek kampanya) bir shim ile `log_level=2` verifier log'una çevrilip period olarak
-koşuyor: **70 kayıt, 20 farklı gerçek reject metni, 0 divergence** (✔ V8).
+**Hacim açık (0018–0020).** syzkaller'ın kendi corpus'u bir shim ile `log_level=2`
+verifier log'una çevrilip period olarak koşuyor. İki kampanya **commit'li regresyon
+fixture'ı** olarak sabitlendi (95 ve 184 blok): **70 ve 151 kayıt**, **20 ve 44 farklı
+gerçek reject metni**, her ikisinde de **0 divergence** (✔ V8/V10).
+
+**Üç dedektör kolu canlı (0021–0023).** Beş ground-truth kaynağının **üçü çalışıyor**
+(intrinsic invariant'lar; ağaçtan **auto-extract edilen 274 helper kontratı / 194
+helper**; `verifier.rst`'ten **3 alıntı-çapalı** dokümante vaka), **biri kısmi**
+(patch-diff: bulgu değil **kanıt** üretir), **biri stub** (`verifier.c`
+state-transition). Üçü de gerçek yolda **kalibre**: temizde susar, enjekte
+tutarsızlıkta bağırır.
+
+**Ölçülen sayılar:** parser kör nokta oranı **%0** (0/70 ve 0/151 — iki bağımsız
+yakalamada), koşu başına **~101 helper kontrolü**, **0 false positive**, **74 test**
+yeşil.
 
 **Reviewer'ın en çok şüpheyle bakması gereken nokta:** hacim **gerçek bir verifier
-bug'ı üretmedi** — beklenen sonuç (gerçek kernel + coverage-güdümlü corpus), ve
-dedektörün her iki kolu kalibre olduğu için bu "sağır" değil "temiz" okunur. Ayrıca
-hacmin ilk çıkardığı şey **5 parser kör noktasıydı**, verifier bug'ı değil — hepsi
-parse-health'e düştü, sinyale karışmadı, düzeltildi ve regresyona sabitlendi.
-**Güncelleme (0019):** hacmin "%26 unparsed" sayısı ölçüldü — gerçek parser kör
-nokta oranı **%0** (25'in tamamı "verifier hiç çalışmadı"), ve **helper kolu
-uyandırıldı** (dilim 8 helper'a genişledi: %45 kapsam, 45 fiili kontrol, 0 false
-positive). Bkz ✔ V9.
+bug'ı üretmedi** — beklenen sonuç (gerçek kernel + coverage-güdümlü corpus). Üç kol da
+kalibre ve parser kör noktaları **ayrı kanalda** raporlandığı için bu "sağır" değil
+"temiz" okunur. Hacmin ilk çıkardığı şey de verifier bug'ı değil **5 parser kör
+noktasıydı**; hepsi parse-health'e düştü, sinyale karışmadı, düzeltildi ve regresyona
+sabitlendi.
+
+**En yakın kazanım (2026-08-30 ölçüldü, ✔ V14):** `verifier.rst`'in "Understanding
+eBPF verifier messages" bölümü **işlenmemiş bir damar** — 11 örnek program, hepsi
+reddedilmesi gereken, hepsi harness'in makro formatında, altısı hacmin hiç üretmediği
+hata sınıfında.
 
 ---
 
@@ -96,7 +111,7 @@ ingest ✅ → normalize ✅ → score ✅ → diff ✅ → report ✅ → (huma
 | **ingest** | native çıktıyı DEĞİŞTİRMEDEN topla | toplama+indeks+hash | — |
 | **normalize** | ham → CORE şeması | **golden fixture** anchor + **2 gerçek parser** (aşağı) | zenginleştirme |
 | **score** | Rust→Python anomaly scoring | `baseline-hard-signals-v0` | istatistiksel |
-| **diff** | documented-vs-observed | intrinsic invariant'lar (tnum/bounds/JIT-interp) + helper oracle | dış loader'lar (verifier.c/rst/patch) |
+| **diff** | documented-vs-observed | intrinsic invariant'lar + helper `bpf_func_proto` (274 kontrat) + documented behaviour (3 vaka) + patch-diff kanıtı | `verifier.c` loader (kaynak 1) |
 | **report** | score ⋈ diff → triyaj | join + sıralama | — |
 | **`VerifierLogParser`** | harness çıktısı → CoreMetrics | decision, reject reason (verbatim), register-state, processed | full `scalar(...)` gerçek veride test edildi (0014); pointer/helper reg tipleri henüz yok |
 | **`VmHarnessDriver`** | VM'de harness koş, exec→N | `FuzzDriver` impl, `ScriptRunner`, `FakeRunner` test | syzkaller-driven execs |
@@ -224,6 +239,7 @@ $ cargo run -q -p pipeline --example parse_report -- crates/pipeline/tests/fixtu
   BLOCKS   184 = 151 records + 33 unparsed
     UNRECOGNIZED (parser blind-spots) : 0/151 = 0.0%
 ```
+
 | | capture #1 (95) | capture #2 (184) |
 |---|---|---|
 | kör nokta oranı | 0/70 = **%0** | 0/151 = **%0** |
@@ -296,6 +312,54 @@ gerekçesi sanılıyordu — *makul ama yanlış* veri; gerçek gerekçe
 `R1 type=fp expected=map_ptr` idi). Kaynakta doğrulandı (`states.c:174`), düzeltildi,
 regresyon testi eklendi.
 
+**(V14) KAYNAK 2'NİN DAMARI ÖLÇÜLDÜ — prose tükendi, örnek bölümü işlenmedi (2026-08-30)**
+```
+$ grep -c '^Error::' .lab/bpf-next/Documentation/bpf/verifier.rst
+11
+$ grep -n -iE "will be rejected|is a correct program|the verifier will reject" \
+      .lab/bpf-next/Documentation/bpf/verifier.rst
+7 aday satır  (3'ü 0022'de kodlandı)
+```
+`verifier.rst` 560 satır ve içinde **iki ayrı damar** var; ikisi çok farklı değerde:
+
+- **Prose iddiaları (0022'de kodlanan damar) — tükenmek üzere.** Dokümanın açıkça
+  davranış iddia ettiği 7 aday cümleden **3'ü zaten kodlu**; geriye ~4 kalıyor, biri de
+  `'secure' mode` koşullu. `OPEN-ITEMS.md`'nin "birkaç düzine yüksek-değerli invariant"
+  hedefi bu damardan **karşılanamaz** — o beklenti düzeltilmeli.
+- **"Understanding eBPF verifier messages" bölümü (satır 353–560) — işlenmemiş.**
+  **11 örnek geçersiz program**, her biri **tam beklenen hata metniyle**:
+  `unreachable insn 1`, `R2 !read_ok`, `invalid stack off=8 size=8`,
+  `invalid indirect read from stack off -8+0 size 8`,
+  `fd 0 is not pointing to valid bpf_map`, `R0 invalid mem access 'map_value_or_null'`,
+  `misaligned access off 4 size 8`, `R0 invalid mem access 'imm'`,
+  `Unreleased reference id=1` …
+
+**Bu damar prose'dan üç nedenle güçlü:**
+1. Programlar zaten `BPF_MOV64_REG(...)` **makro formunda** — `harness/diffharness.c`
+   ile birebir aynı format, çeviri yargısı yok. (Mevcut 3 vaka pseudo-asm'den elle
+   çevrilmişti; o çeviri gözden geçirilmesi gereken bir yargıydı.)
+2. Beklenti accept/reject değil, **tam hata metni** — çok daha sıkı bir kontrat.
+3. **11'inin hepsi reddedilmesi gereken program** → verifier'ın *sağlamlık* (soundness)
+   yönünü test ediyorlar. Biri **accept** alırsa bu doğrudan gerçek bir soundness
+   bug'ıdır; projenin aradığı en yüksek değerli sinyal budur.
+
+**Hacim bu yüzeye ulaşmadı (ölçüldü).** 279 bloklu iki commit'li yakalamada dokümante
+hata metinlerinden yalnız **2'si** göründü: `!read_ok` (3 kez) ve
+`is not pointing to valid bpf_map` (9 kez). Diğer **6 sınıf hiç görülmedi**
+(`unreachable insn`, `invalid stack off`, `invalid indirect read from stack`,
+`invalid mem access`, `misaligned access`, `Unreleased reference id` — hepsi 0).
+Görülen 2'si bu bölümün **bayat olmadığını** gösterir (OI-6 endişesini bu damar için
+zayıflatır); görülmeyen 6'sı ise syzkaller corpus'unun ulaşamadığı **yeni tespit
+yüzeyidir**.
+
+**Vaka başına maliyet (ölçüldü):** `harness/diffharness.c:150-187` deseni — vaka başına
+~8 satır C (insn dizisi + bir `run_one` çağrısı) + `verifier_rst.rs` içindeki
+`DOCUMENTED_CASES` tablosunda ~6 satır Rust.
+
+**Reviewer bunu şöyle sorgulamalı:** "11 vakanın tam hata metnini beklemek, dokümanın
+351 commit geride olduğu bir yerde çok mu iddialı?" — evet, bu yüzden §6'daki tasarım
+şartı: **karar** ile **mesaj** ayrı ağırlıkta.
+
 ---
 
 ## 5. Lab ortamı + kritik ortam gerçekleri
@@ -307,26 +371,50 @@ regresyon testi eklendi.
 | syzkaller | `.lab/syzkaller/bin/*` + `manager.cfg` | derli; TCG'de KCOV-güdümlü fuzzing 0009'da kanıtlı |
 | Harness binary | `harness/diffharness` (gitignore) | static; VM'de değişmeden koşar |
 
-**KVM DURUMU (önemli, probe edildi 2026-08-26):** `/dev/kvm` node'u **var** (muhtemelen
+**KVM DURUMU (önemli; 2026-08-26, 08-28 ve 08-30'da tekrar probe edildi):** `/dev/kvm` node'u **var** (muhtemelen
 kullanıcının BIOS update'i) **ama** `qemu -enable-kvm` hâlâ `No such device` →
 nested-virt donanım katmanı kapalı → **her şey TCG** (yavaş). Kullanıcı Windows 11
-geçişinden sonra KVM'i açmayı planlıyor. Period=exec-count olduğu için loop mantığı
-etkilenmez, sadece duvar-saati.
+geçişinden sonra KVM'i açmayı planlıyor. Son probe (2026-08-30): `/dev/kvm` node'u var
+ama `grep -c -E '(vmx|svm)' /proc/cpuinfo` = **0** → CPU sanallaştırma bayrakları hiç
+görünmüyor. Period=exec-count olduğu için loop mantığı etkilenmez, sadece duvar-saati.
 
 ---
 
 ## 6. Açık uçlar / sıradaki iş (dosya:satır)
 
-1. **OI-2** — syzkaller crash/coverage'ını pipeline'a bağla (crash'ler hâlâ veri yolu
-   DIŞINDA, elle okunuyor). **OI-3** — 5 ground-truth kaynağından 3'ü hâlâ stub
-   (`verifier.c`/`verifier.rst`/patch-diff). **OI-1** — KVM açılınca crash'leri tekrar
-   test et. Tam liste: `docs/OPEN-ITEMS.md`.
-2. **Daha zengin harness corpus'u** (`harness/diffharness.c`) — pointer aritmetiği,
-   helper çağrıları, map erişimi → gerçek helper `arg_type` + register-state sinyali.
-3. **Dış ground-truth loader'ları** — `crates/pipeline/src/groundtruth/*.rs`
-   (verifier.c/rst/patch; `.lab/bpf-next` yerel).
-4. **`vmctl`** Rust wrapper (script yerine); **interpreter kernel** modu (JIT↔interp,
-   ALWAYS_ON nedeniyle ayrı kernel gerekir); **istatistiksel scoring** (`python/.../scoring.py`).
+**Ground-truth kaynaklarının güncel durumu (0021–0023 sonrası):**
+
+| # | Kaynak | Durum | Dosya |
+|---|---|---|---|
+| 5 | Klasik mantıksal analiz (intrinsic tnum/bounds/JIT-interp) | ✅ canlı, kalibre | `diff.rs` |
+| 3 | Helper `bpf_func_proto` | ✅ canlı — 274 kontrat / 194 helper | `groundtruth/helper_proto.rs` |
+| 2 | Dokümante davranış (`verifier.rst`) | ✅ canlı — **yalnız 3 vaka** | `groundtruth/verifier_rst.rs` |
+| 4 | patch-diff | 🟡 **kısmi** — kanıt üretir, bulgu üretmez | `groundtruth/patch_diff.rs` |
+| 1 | `verifier.c` state-transition | ❌ **stub** (17 satır, `todo!()`) | `groundtruth/verifier_c.rs` |
+
+**Sıradaki iş — ölçülmüş önceliklendirme (gerekçe: ✔ V14):**
+
+1. **`verifier.rst` örnek bölümünü kodla — 11 vaka.** En yüksek getiri/maliyet oranı:
+   3 → 14 vaka, syzkaller'ın hiç üretmediği 6 hata sınıfı, ve ilk kez verifier'ın
+   **sağlamlık (soundness)** yönü test ediliyor.
+   **Tasarım şartı — karar ile mesaj ayrı ağırlıkta:** `expected=reject` iken
+   `observed=accept` → **divergence** (bağır). Karar doğru ama hata metni farklı →
+   **not/kanıt**, hüküm değil; çünkü doküman 351 verifier commit'i geride (OI-6) ve
+   mesaj metinleri sürüm-drift'ine açık. Bu, `patch_diff`'te zaten uygulanan
+   "kanıt ver, hüküm verme" disiplininin aynısıdır.
+2. **Kaynak 1 için pilot** — tüm `verifier.c` değil, **tek bir geçiş ailesi**
+   (ör. `check_alu_op` bounds güncellemesi) mekanik olarak çıkarılabilir mi? Amaç,
+   5. kaynağın fizibilitesini tamamına yatırım yapmadan öğrenmek.
+3. **OI-2** — syzkaller crash/coverage'ını pipeline'a bağla. Kanal gerçek, ama şu anki
+   içeriği 2 crash ve ikisi de TCG-artefaktı şüphesi altında (OI-1) → KVM açılana kadar
+   düşük öncelik, aksi halde kanal çoğunlukla gürültü besler.
+4. **Altyapı borcu:** `vmctl` Rust wrapper (script yerine); **interpreter kernel** modu
+   (JIT↔interp; `CONFIG_BPF_JIT_ALWAYS_ON=y` nedeniyle ayrı kernel gerekir);
+   **istatistiksel scoring** (`python/.../scoring.py`); daha zengin harness corpus'u
+   (pointer aritmetiği, map erişimi).
+
+**OI-1** (crash artefaktı hipotezi) KVM açılana kadar **falsifiable ama test edilemez**.
+Tam liste ve gerekçeler: `docs/OPEN-ITEMS.md`.
 
 ---
 
@@ -429,18 +517,23 @@ sorgulamalı.
 
 ## 9. Tek cümlelik doğrulanabilir durum ifadesi
 
-> "verifierloop'un **beş-stage'li pipeline'ı** ve **loop'u**, kendi derlediğimiz
-> bpf-next kernel'inden gelen **gerçek verifier verisiyle uçtan uca canlı koşuyor**;
-> **hacim açık**: syzkaller'ın kendi corpus'u (900 sn gerçek kampanya) bir shim ile
-> `log_level=2` verifier log'una çevrilip period olarak koşuyor (`syz_period`:
-> 70 kayıt, **20 farklı gerçek reject metni**, 0 divergence; 52 test geçer).
-> Düzeltme-sonrası **parser kör nokta oranı %0** (0/70; kalan 25 blok "verifier hiç
-> çalışmadı") ve **helper kolu uyanık** (8 helper'lık `bpf_func_proto` dilimi,
-> %45 kapsam, 0 false positive).
-> Dedektörün **her iki kolu** (intrinsic tnum + file-loaded `bpf_func_proto`) gerçek
-> yolda kalibre, ve **parser kör noktaları ayrı kanalda** raporlanıyor (hacmin
-> çıkardığı 5 kör nokta düzeltildi). **Eksik olan**: proto dilimini hacimde gözlenen
-> `bpf_func_proto` **auto-extraction** (dilim curated), `verifier.c`/`verifier.rst`/
-> patch-diff loader'ları, JIT↔interp cross-kernel modu ve **daha uzun hacim**;
-> **KVM host-side bloklu, TCG çalışır**; **gerçek bir verifier bug'ı henüz yüzeye
-> çıkmadı** (beklenen)."
+> "verifierloop'un beş-stage'li pipeline'ı ve loop'u, kendi derlediğimiz bpf-next
+> kernel'inden gelen **gerçek verifier verisiyle uçtan uca canlı koşuyor**; hacim açık
+> (syzkaller corpus'u → shim → `log_level=2` → period) ve iki kampanya **commit'li
+> regresyon fixture'ı** olarak sabitlendi (95 ve 184 blok).
+> Beş ground-truth kaynağının **üçü canlı** (intrinsic invariant'lar; ağaçtan
+> **auto-extract edilen** 274 helper kontratı / 194 helper; `verifier.rst`'ten
+> **3 alıntı-çapalı** dokümante vaka), **biri kısmi** (patch-diff: bulgu değil kanıt
+> üretir), **biri stub** (`verifier.c` state-transition).
+> Ölçülen sayılar: **parser kör nokta oranı %0** (0/70 ve 0/151), koşu başına
+> **~101 helper kontrolü**, **0 false positive**, **74 test** yeşil.
+> Üç dedektör kolu da gerçek yolda **kalibre** (temizde susar, enjekte tutarsızlıkta
+> bağırır) ve parser kör noktaları **ayrı kanalda** raporlanıyor — bu yüzden
+> `divergences=0` *temiz* okunur, *sağır* değil.
+> **Gerçek bir verifier bug'ı henüz yüzeye çıkmadı** (beklenen).
+> **Eksik olan:** kaynak 1 (`verifier.c`) stub; kaynak 2'de yalnız 3 vaka; kaynak 4
+> kısmi (iki-revizyon gözlemi gerekiyor); JIT↔interp cross-kernel modu; istatistiksel
+> scoring; ve **KVM host-side bloklu → her şey TCG'de**.
+> **En yakın kazanım (ölçüldü, ✔ V14):** `verifier.rst`'in 'Understanding eBPF verifier
+> messages' bölümündeki **11 örnek program** — hepsi reddedilmesi gereken, hepsi
+> harness'in makro formatında, altısı hacmin hiç üretmediği hata sınıfında."
