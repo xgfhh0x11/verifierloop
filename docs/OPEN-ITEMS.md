@@ -229,9 +229,8 @@ both volume captures.)*
   fits in one 2^32 block — and a ctx `u32` load always does. What actually reaches
   the region is `mix#hi`: shift the unknown bits into the UPPER half, then narrow only
   the lower one. Yield is still only ~18% of registers that print a 32-bit view.
-- **Still not reached:** register-to-register ALU operands (a different verifier path
-  from the immediate forms), multi-branch and looping control flow, pointer
-  arithmetic, and `BPF_LD_IMM64` 64-bit constants.
+- **Still not reached:** multi-branch and looping control flow, pointer
+  arithmetic, and `BPF_LD_IMM64` 64-bit constants. (register-register operands: DONE 2026-09-01.)
 - **What:** `diffharness --gen` enumerates `11 alu x 11 compare x {64,32}-bit` = 242
   programs, and that cross-product IS covered. But every one of them is the same
   8-instruction skeleton: one shaping op, one branch, one op per path, immediate
@@ -247,7 +246,7 @@ both volume captures.)*
   result about ONE program shape. Reading it as "the verifier's range tracking is
   sound" would be exactly the over-reading this file exists to prevent.
 - **Next increment (highest value first):** multi-branch / looping flow, then
-  multi-branch flow. (Mixed-width and `movsx` were the previous two and are done.)
+  pointer arithmetic. (reg-reg, mixed-width and `movsx` are done.)
 
 ---
 
