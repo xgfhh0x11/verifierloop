@@ -219,7 +219,7 @@ both volume captures.)*
 ## OI-9 — The targeted family covers one program SHAPE, not the input space
 
 - **Status:** OPEN, **NARROWED 2026-09-01 by devlog 0026.** The 32<->64 half is done;
-  what is listed below under "still not reached" is what remains.
+  what is listed below under "still not reached" is what remains. Register-register operands are now DONE (2026-09-01): the reg-reg leg (`--gen-rr`, 242 programs, all accepted) scores tnum_bounds_checked=**2453** — the largest denominator of any family (single-width 1497, mixed >1500) — with 0/2453 divergences and 0 parser blind-spots; pinned in `crates/pipeline/tests/register_register_calibration.rs`. reg-reg is a different axis from 32<->64 (reg32_checked=0).
 - **Raised:** 2026-09-01 (devlog 0025)
 - **Closed half (0026):** mixed-width programs now exist — four sub-families, 396
   programs (`mix#64-32`, `mix#32-64`, `mix#movsx*`, `mix#hi`), and the 32<->64
@@ -246,7 +246,7 @@ both volume captures.)*
 - **Why it matters:** "0 findings out of 1497 checks" is a real result, but it is a
   result about ONE program shape. Reading it as "the verifier's range tracking is
   sound" would be exactly the over-reading this file exists to prevent.
-- **Next increment (highest value first):** register-register operands, then
+- **Next increment (highest value first):** multi-branch / looping flow, then
   multi-branch flow. (Mixed-width and `movsx` were the previous two and are done.)
 
 ---

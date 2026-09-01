@@ -60,6 +60,21 @@
 #define BPF_JMP32_IMM(OP, DST, IMM, OFF)                                       \
     ((struct bpf_insn){.code = BPF_JMP32 | BPF_OP(OP) | BPF_K,                 \
                        .dst_reg = DST, .src_reg = 0, .off = OFF, .imm = IMM})
+// Register-to-register (BPF_X) forms — the classic macros above are all immediate
+// (BPF_K). OI-9's next increment needs these: two registers, each carrying its own
+// abstract state, meeting in one op (a different verifier path from the imm forms).
+#define BPF_ALU64_REG(OP, DST, SRC)                                            \
+    ((struct bpf_insn){.code = BPF_ALU64 | BPF_OP(OP) | BPF_X,                 \
+                       .dst_reg = DST, .src_reg = SRC, .off = 0, .imm = 0})
+#define BPF_ALU32_REG(OP, DST, SRC)                                            \
+    ((struct bpf_insn){.code = BPF_ALU | BPF_OP(OP) | BPF_X,                   \
+                       .dst_reg = DST, .src_reg = SRC, .off = 0, .imm = 0})
+#define BPF_JMP_REG(OP, DST, SRC, OFF)                                         \
+    ((struct bpf_insn){.code = BPF_JMP | BPF_OP(OP) | BPF_X,                   \
+                       .dst_reg = DST, .src_reg = SRC, .off = OFF, .imm = 0})
+#define BPF_JMP32_REG(OP, DST, SRC, OFF)                                       \
+    ((struct bpf_insn){.code = BPF_JMP32 | BPF_OP(OP) | BPF_X,                 \
+                       .dst_reg = DST, .src_reg = SRC, .off = OFF, .imm = 0})
 #define BPF_JMP_A(OFF)                                                         \
     ((struct bpf_insn){.code = BPF_JMP | BPF_JA,                               \
                        .dst_reg = 0, .src_reg = 0, .off = OFF, .imm = 0})
@@ -691,6 +706,74 @@ static void run_mixed_family(void) {
             run_upper_half(alu_i, cmp_i, index++);
 }
 
+// ===========================================================================
+// REGISTER-TO-REGISTER FAMILY (OI-9 next increment) — the classic --gen family
+// combines a ranged register with a CONSTANT (BPF_K). The verifier takes a
+// DIFFERENT path when both operands are registers carrying their own abstract
+// state: scalar_min_max_* / reg_bounds_sync over two non-const scalars, and a
+// reg-reg branch that back-propagates the narrowing onto BOTH registers. That path
+// is historically the densest range-bug surface and the imm family never touches it.
+//
+// Two INDEPENDENT unknowns (separate ctx loads at r1+0 and r1+4) so the op is a
+// genuine two-range combination, not a linked-reg tautology (mirrors the
+// constant-tautology exclusion in the denominator). Both are shaped before they
+// meet, so each carries partially-known bits AND a narrowed range — exactly the
+// state the intrinsic tnum-vs-bounds leg needs to fire.
+//
+//   0: r0 = *(u32*)(r1+0)     unknown A
+//   1: r6 = *(u32*)(r1+4)     unknown B (independent of A)
+//   2: r6 <op> imm1           shape B (still non-constant)
+//   3: r0 <op> imm1           shape A
+//   4: if r0 <cmp> r6 goto 7  REG-REG compare -> narrows BOTH, differently per path
+//   5: r0 <op> r6             REG-REG alu on the not-taken (fall-through) state
+//   6: goto 8
+//   7: r0 <op> r6             REG-REG alu on the taken state (same op, narrowed inputs)
+//   8: r0 &= 0xffff           bound the return value
+//   9: exit                   insn 8 MERGES the two reg-reg-combined states
+//
+// Bonus surfaces the imm family cannot reach: div/mod by a register whose range may
+// include 0, and variable-amount shifts (shift by a register).
+// ===========================================================================
+static void run_generated_rr(int alu_i, int cmp_i, int w32, int index) {
+    const struct gen_alu *a = &GEN_ALU[alu_i];
+    const struct gen_cmp *c = &GEN_CMP[cmp_i];
+
+    struct bpf_insn insns[10];
+    insns[0] = BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1, 0);
+    insns[1] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_1, 4);
+    if (w32) {
+        insns[2] = BPF_ALU32_IMM(a->op, BPF_REG_6, a->imm1);
+        insns[3] = BPF_ALU32_IMM(a->op, BPF_REG_0, a->imm1);
+        insns[4] = BPF_JMP32_REG(c->op, BPF_REG_0, BPF_REG_6, 2);
+        insns[5] = BPF_ALU32_REG(a->op, BPF_REG_0, BPF_REG_6);
+        insns[7] = BPF_ALU32_REG(a->op, BPF_REG_0, BPF_REG_6);
+    } else {
+        insns[2] = BPF_ALU64_IMM(a->op, BPF_REG_6, a->imm1);
+        insns[3] = BPF_ALU64_IMM(a->op, BPF_REG_0, a->imm1);
+        insns[4] = BPF_JMP_REG(c->op, BPF_REG_0, BPF_REG_6, 2);
+        insns[5] = BPF_ALU64_REG(a->op, BPF_REG_0, BPF_REG_6);
+        insns[7] = BPF_ALU64_REG(a->op, BPF_REG_0, BPF_REG_6);
+    }
+    insns[6] = BPF_JMP_A(1);
+    insns[8] = BPF_ALU64_IMM(BPF_AND, BPF_REG_0, 0xffff);
+    insns[9] = BPF_EXIT_INSN();
+
+    char name[64];
+    snprintf(name, sizeof(name), "genrr#w%s.%s.%s#%03d",
+             w32 ? "32" : "64", a->name, c->name, index);
+    run_one(name, insns, 10);
+}
+
+// Every alu x compare x width, once each — same enumeration shape as --gen so a
+// finding is reproducible from its label alone.
+static void run_generated_rr_family(void) {
+    int index = 0;
+    for (int w32 = 0; w32 < 2; w32++)
+        for (int alu_i = 0; alu_i < GEN_ALU_N; alu_i++)
+            for (int cmp_i = 0; cmp_i < GEN_CMP_N; cmp_i++)
+                run_generated_rr(alu_i, cmp_i, w32, index++);
+}
+
 int main(int argc, char **argv) {
     // Two data sources, kept apart on purpose (different provenance):
     //   (no args) the fixed authoritative program set, pinned by tests
@@ -701,6 +784,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-mix") == 0) {
         run_mixed_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-rr") == 0) {
+        run_generated_rr_family();
         return 0;
     }
 
