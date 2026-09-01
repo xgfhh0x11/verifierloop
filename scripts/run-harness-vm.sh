@@ -48,9 +48,16 @@ sync
 cleanup
 trap - EXIT
 
-# 3. boot (TCG), init = harness wrapper, capture serial console
-echo "[harness-vm] booting (tcg), timeout ${TIMEOUT}s ..."
-ACCEL=tcg \
+# 3. boot, init = harness wrapper, capture serial console.
+# ACCEL is auto-detected: KVM when the host can actually give it to us, TCG
+# otherwise. Both run the SAME self-built bpf-next kernel, so the verifier log a
+# program produces must not depend on which one ran it — accelerator choice is a
+# throughput decision, never a semantic one. Override with ACCEL=tcg to compare.
+if [ -z "${ACCEL:-}" ]; then
+  if [ -w /dev/kvm ]; then ACCEL=kvm; else ACCEL=tcg; fi
+fi
+echo "[harness-vm] booting (${ACCEL}), timeout ${TIMEOUT}s ..."
+ACCEL="$ACCEL" \
 APPEND="console=ttyS0 root=/dev/vda rw panic=1 oops=panic init=/root/run-harness.sh" \
   timeout "$TIMEOUT" "$REPO_ROOT/scripts/boot-vm.sh" >"$SERIAL" 2>&1 || true
 

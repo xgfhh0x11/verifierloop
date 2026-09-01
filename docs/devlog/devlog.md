@@ -2325,3 +2325,86 @@ eklemek değiştirmez. Karışık aile **353**.
 - **OI-9 kalanı:** register-register operandlar ve çok-dallı akış.
 - **İki-revizyon differential** (reviewer sırasında 2.) — oracle olarak başka bir kernel.
 - KVM: **Win11 gerçek ön koşul** (reviewer düzeltmesi; Win10'da nested-virt yok).
+
+## 0027 — Win11/KVM'in nakde çevrilmesi ve seri konsolun sessizce bozduğu satırlar
+
+- **Tarih:** 2026-09-01
+- **Durum:** Tamamlandı. Reviewer önceliği 3 (KVM) bir bağımlılık olmaktan çıkıp
+  **aksiyona** dönüştü; yol boyunca **sessiz bir parser bozulması** bulundu, kaynakta
+  düzeltildi ve etkisi geriye dönük ölçüldü.
+- **Alan:** `scripts/run-harness-vm.sh` (accelerator otomatik seçimi),
+  `verifier_log.rs` (`console_timestamp_at`, `repair_console_interleaving`, yeni not),
+  3 yeni test.
+- **İlgili:** 0025, 0026, `oracle × input` kuralı, OI-10 (yeni).
+
+### 0. Önce ön koşul: KVM gerçekten açıldı
+Kullanıcı host'u Windows 11'e taşıdı. 0026'daki not ("WSL2 nested virt Win11'e özgü")
+doğrulandı: `vmx` 0 → 24, `kvm_intel` yüklü, `/dev/kvm` yazılabilir,
+`scripts/boot-vm.sh` kendi kurduğumuz bpf-next'i (`7.2.0-g5e289c5a4a52`) ~1.9s'de
+login prompt'a getiriyor. `run-harness-vm.sh` artık accelerator'ı otomatik seçiyor
+(`ACCEL=tcg` eski yolu zorluyor).
+
+### 1. Hız — ve bir beklenti düzeltmesi
+| | KVM | TCG |
+| --- | --- | --- |
+| `--gen` (242 program) | 6.7s | 17.6s |
+| `--gen-mix` (396 program) | 10.8s | — |
+| medyan `load_ns` | 348 429 | 6 827 080 |
+
+**Devlog/hafızadaki "TCG'de ~5 dk" notu yanlıştı** — gerçekte 17.6s. Duvar saati
+kazancı 45x değil **2.6x**; dürüst rakam verifier yüklemesinde **~20x**. Aradaki fark
+şu: bu koşular kısa ve boot-dominant, dolayısıyla KVM'in asıl getirisi harness'ta
+değil, **saatlerce koşan syzkaller'da**.
+
+### 2. Accelerator semantik bir seçim değil — varsayılmadı, ölçüldü
+242 programın tamamı iki accelerator altında `load_ns` normalize edildiğinde
+**byte-identical** verifier çıktısı üretiyor. Bu, KVM'e geçişin ölçümleri
+karşılaştırılabilir bıraktığının kanıtı.
+
+### 3. Asıl bulgu: seri konsol satırın ORTASINA yazıyor
+Harness çıktısı VM'in seri konsolundan yakalanıyor — ama kernel de aynı konsola
+yazıyor. Bir printk satırın **ortasına** düşebiliyor. Gerçek koşudan, harfiyen:
+
+```text
+processed 10 insns (limit 1000000) max_states_per_i[    2.301324] clocksource: ...
+nsn 0 total_states 1 peak_states 1 mark_read 0
+```
+
+`parse_processed` için bu **sessiz** bir bozulma: `processed ` hâlâ eşleşiyor, yani
+`insn_processed` doğru okunuyor, ama `total_states` artık o satırda değil ve
+`unwrap_or(0)` gerçek `total_states 1`'i **0** olarak kaydediyor. Ne bir not, ne bir
+`unparsed` bloğu. Ölçülen kanıt:
+
+```text
+CLEAN: insn_processed=10 states_processed=1   unparsed=0
+SPLIT: insn_processed=10 states_processed=0   unparsed=0
+```
+
+Bu tam olarak projenin en çok korunduğu sınıf: **verifier gözlemi kılığında bir
+parser hatası** — 0026'nın 10 sahte bulgusuyla aynı aile.
+
+### 4. Düzeltme: onar, ama sessizce onarma
+`repair_console_interleaving` blok RESULT/log'a ayrılmadan **önce** çalışıyor (printk
+`RESULT` satırının ortasına da düşebilir). Tam satırlık konsol çıktısı atılıyor;
+ortaya düşen printk'te önek korunup devam satırıyla birleştiriliyor. İki gözlenen
+şekil de aynı kuralla çözülüyor — satır sonuna düşen printk'te "devam", orijinal
+satırın kendi (boş) kalanı oluyor.
+
+Zaman damgası kalıbı bilerek dar: printk `[%5lu.%06lu]` basıyor, bu yüzden **tam altı**
+ondalık hane şart. `[0.5]`, `[12.34]`, `[1.23456789]` eşleşmiyor — verifier metnini
+yeme riski test altında.
+
+Ve kritik olan: onarılan kayıt bir **not** taşıyor
+(`repaired N console-interleaved line(s)`). Kaydedilmeyen bir onarım, sadece daha
+sessiz bir bozulmadır.
+
+### 5. Geçmiş sonuçlar etkilendi mi? — ölçüldü, hayır
+Commit'li yedi yakalama taranınca 7 araya girme bulundu; altısı zararsız tam satır.
+**Biri gerçek bir mid-line splice** (`syz-replay-184.log:5094`). Düzeltme öncesi ve
+sonrası CORE metrikleri (885 kayıt, 6 dosya) **birebir aynı** — çünkü o splice
+girintili, parser'ın zaten atladığı bir satıra denk gelmiş. Yani geçmiş
+"0 divergence" sonuçları ayakta; ama bu **tasarım değil, şans** oldu ve bunun kayda
+geçmesi gerekiyor (OI-10).
+
+**Testler:** 104 → **107**.
+

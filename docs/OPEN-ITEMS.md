@@ -251,6 +251,34 @@ both volume captures.)*
 
 ---
 
+## OI-10 — The capture transport is shared with the kernel, and the repair is a mitigation
+
+- **Opened:** 2026-09-01 (devlog 0027).
+- **What:** the harness and syzreplay both capture their output over the VM's serial
+  console (`console=ttyS0`), which the kernel also writes to. A printk can land in
+  the MIDDLE of a verifier line. `repair_console_interleaving` now mends this and
+  NOTES it, and three tests pin the behaviour against verbatim real captures.
+- **Why this stays open:** the repair rests on an ASSUMPTION about how the
+  interleaving looks — that the printk carries its own newline and the original
+  line's remainder resumes on the next one. Both shapes observed so far obey it. A
+  printk emitted without a trailing newline, or two CPUs interleaving into the same
+  line, would not, and the repair would then mis-join rather than mend. It is a
+  mitigation for a lossy transport, not a guarantee.
+- **The real fix** is to stop sharing the transport: give the harness its own
+  channel (a dedicated virtio-serial port, or write the output to a file inside the
+  rootfs and pull it off the image afterwards) so kernel messages cannot reach it at
+  all. Then the repair becomes a belt-and-braces check instead of a load-bearing one.
+- **Measured impact so far (why this is not urgent):** across seven committed
+  captures there are 7 interleavings; 6 are whole console lines (harmless) and 1 is
+  a real mid-line splice (`syz-replay-184.log:5094`). CORE metrics over 885 records
+  are BYTE-IDENTICAL before and after the fix — the one real splice happened to land
+  on an indented line the parser already skips. Past results stand, but **by luck,
+  not by design**, which is precisely why the transport should not stay shared.
+- **Frequency scales with runs:** KVM (devlog 0027) makes runs cheap, so the absolute
+  number of interleavings will grow even though the rate does not.
+
+---
+
 ## Standing rule — a detector leg without a denominator is not measurable
 
 - **Established:** 2026-09-01 (devlog 0025), the hard way.

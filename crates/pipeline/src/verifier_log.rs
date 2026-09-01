@@ -22,6 +22,8 @@
 //! UNCHANGED-AT-SOURCE: this reads bytes and never mutates them; shaping into the
 //! schema is interpretation, done here in `normalize` and nowhere earlier.
 
+use std::borrow::Cow;
+
 use crate::normalize::{ParseOutput, ParsedRecord, RecordParser, UnparsedBlock, UnparsedKind};
 use metrics::core::{
     CoreMetrics, CoverageDelta, HelperArgObservation, Processed, RegSnapshot, RegState, Tnum,
@@ -76,11 +78,13 @@ fn split_blocks(text: &str) -> Vec<String> {
 /// may still carry per-record `notes` for partially-unrecognized content.
 fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
     let label = block_label(block);
+    let raw: Vec<&str> = block.lines().collect();
+    let (repaired, console_splices) = repair_console_interleaving(&raw);
     let mut result_line: Option<&str> = None;
     let mut in_log = false;
     let mut log: Vec<&str> = Vec::new();
 
-    for line in block.lines() {
+    for line in repaired.iter().map(|l| l.as_ref()) {
         if line.starts_with("RESULT ") {
             result_line = Some(line);
         } else if line.starts_with("---LOG---") {
@@ -162,6 +166,11 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
     }
     if !log.iter().any(|l| l.trim_start().starts_with("processed ")) {
         notes.push("missing 'processed' counters".to_string());
+    }
+    if console_splices > 0 {
+        notes.push(format!(
+            "repaired {console_splices} console-interleaved line(s) (kernel printk spliced into the serial capture)"
+        ));
     }
     for fam in unrecognized_reg_families(&core) {
         notes.push(format!("unrecognized reg-type form: {fam}"));
@@ -294,6 +303,101 @@ fn strip_glued_summary(t: &str) -> &str {
         }
     }
     t
+}
+
+/// Byte index of a kernel console timestamp (`[<spaces><secs>.<6 digits>]`) in
+/// `line`, or `None`. printk formats these as `[%5lu.%06lu]`, so demanding exactly
+/// six fractional digits keeps this from firing on verifier text.
+fn console_timestamp_at(line: &str) -> Option<usize> {
+    let b = line.as_bytes();
+    for (i, _) in line.match_indices('[') {
+        let mut j = i + 1;
+        while j < b.len() && b[j] == b' ' {
+            j += 1;
+        }
+        let secs = j;
+        while j < b.len() && b[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j == secs || j >= b.len() || b[j] != b'.' {
+            continue;
+        }
+        j += 1;
+        let frac = j;
+        while j < b.len() && b[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j - frac == 6 && j < b.len() && b[j] == b']' {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// The harness output is captured off the VM's serial console, which the kernel
+/// also writes to. A printk can land in the MIDDLE of a line: the console gets the
+/// line's prefix, then the whole dmesg line, then the original line resumes on the
+/// next one. Both shapes were observed on real bpf-next runs (2026-09-01):
+///
+/// ```text
+/// processed 10 insns (limit 1000000) max_states_per_i[    2.301324] clocksource: ...
+/// nsn 0 total_states 1 peak_states 1 mark_read 0
+/// ```
+///
+/// Left alone this is SILENT corruption, the failure mode this project guards
+/// against hardest: `processed ` still matches, so `parse_processed` reads
+/// `insn_processed` correctly and never sees `total_states` — `unwrap_or(0)` then
+/// records a real `total_states 1` as `0`, and nothing is flagged. It is a parser
+/// bug that would present as a verifier observation.
+///
+/// Rejoin the split line and drop whole console lines. Returns the repaired lines
+/// and how many splices were mended, so the caller can NOTE it rather than hide it.
+fn repair_console_interleaving<'a>(lines: &[&'a str]) -> (Vec<Cow<'a, str>>, usize) {
+    if !lines.iter().any(|l| console_timestamp_at(l).is_some()) {
+        return (lines.iter().copied().map(Cow::Borrowed).collect(), 0);
+    }
+    let mut out: Vec<Cow<'a, str>> = Vec::with_capacity(lines.len());
+    let mut repairs = 0usize;
+    let mut i = 0usize;
+    while i < lines.len() {
+        let line = lines[i];
+        match console_timestamp_at(line) {
+            // A whole console line between two verifier lines: not verifier output.
+            Some(0) => i += 1,
+            // A console line spliced into this one: keep the prefix, drop the
+            // injected text, glue on the continuation that follows it. The
+            // continuation may itself be split, so keep consuming until it is not.
+            Some(cut) => {
+                let mut joined = line[..cut].to_string();
+                let mut j = i + 1;
+                loop {
+                    while j < lines.len() && console_timestamp_at(lines[j]) == Some(0) {
+                        j += 1;
+                    }
+                    if j >= lines.len() {
+                        break;
+                    }
+                    let next = lines[j];
+                    j += 1;
+                    match console_timestamp_at(next) {
+                        Some(c) => joined.push_str(&next[..c]),
+                        None => {
+                            joined.push_str(next);
+                            break;
+                        }
+                    }
+                }
+                out.push(Cow::Owned(joined));
+                repairs += 1;
+                i = j;
+            }
+            None => {
+                out.push(Cow::Borrowed(line));
+                i += 1;
+            }
+        }
+    }
+    (out, repairs)
 }
 
 /// `processed N insns ... total_states T ...` -> insn_processed = N, states = T.
@@ -1163,5 +1267,113 @@ processed 13 insns (limit 1000000) total_states 1 peak_states 1
                 }
             }
         }
+    }
+
+    // Kernel printk spliced into the serial capture (devlog: the Win11/KVM cash-in,
+    // 2026-09-01). Both shapes below are VERBATIM from real bpf-next runs. This is
+    // the parser-not-verifier guardrail: before the repair, the split summary line
+    // silently reported `total_states 1` as `0` with NO note and NO unparsed block,
+    // which is exactly a parser bug wearing a verifier observation's clothes.
+    #[test]
+    fn console_interleaving_is_repaired_and_recorded() {
+        // Captured at gen-kvm.log:1593 — the printk lands mid-token, inside
+        // `max_states_per_insn`, so `total_states` ends up on the next line.
+        const SPLIT_SUMMARY: &str = "\
+===PROG p type=socket_filter ===
+RESULT decision=accept fd=3 errno=0 load_ns=100
+---LOG---
+0: R1=ctx() R10=fp0
+0: (b7) r0 = 0                        ; R0=0
+1: (95) exit
+processed 10 insns (limit 1000000) max_states_per_i[    2.301324] clocksource: Watchdog remote CPU 1 read timed out
+nsn 0 total_states 1 peak_states 1 mark_read 0
+---END---
+";
+        let out = VerifierLogParser.parse("diffharness", SPLIT_SUMMARY.as_bytes());
+        assert_eq!(out.records.len(), 1);
+        assert!(out.unparsed.is_empty());
+        let rec = &out.records[0];
+        assert_eq!(rec.core.processed.insn_processed, 10);
+        assert_eq!(
+            rec.core.processed.states_processed, 1,
+            "total_states must survive the splice — silently reading 0 here is the bug"
+        );
+        assert!(
+            rec.notes.iter().any(|n| n.contains("console-interleaved")),
+            "a repair that is not recorded is just quieter corruption: {:?}",
+            rec.notes
+        );
+
+        // Captured at gen-tcg.log:8829 — the printk lands at the END of a register
+        // line, so the continuation is the original line's own (empty) remainder.
+        const SPLIT_TAIL: &str = "\
+===PROG p type=socket_filter ===
+RESULT decision=accept fd=3 errno=0 load_ns=100
+---LOG---
+0: R1=ctx() R10=fp0
+0: (61) r0 = *(u32 *)(r1 +0)          ; R0=scalar(smin=0,smax=umax=0xffffffff,var_off=(0x0; 0xffffffff)) R1=ctx()[   16.053446] random: crng init done
+
+1: (95) exit
+processed 2 insns (limit 1000000) total_states 0 peak_states 0
+---END---
+";
+        const CLEAN_TAIL: &str = "\
+===PROG p type=socket_filter ===
+RESULT decision=accept fd=3 errno=0 load_ns=100
+---LOG---
+0: R1=ctx() R10=fp0
+0: (61) r0 = *(u32 *)(r1 +0)          ; R0=scalar(smin=0,smax=umax=0xffffffff,var_off=(0x0; 0xffffffff)) R1=ctx()
+1: (95) exit
+processed 2 insns (limit 1000000) total_states 0 peak_states 0
+---END---
+";
+        let dirty = VerifierLogParser.parse("diffharness", SPLIT_TAIL.as_bytes());
+        let clean = VerifierLogParser.parse("diffharness", CLEAN_TAIL.as_bytes());
+        assert_eq!(
+            dirty.records[0].core.register_evolution, clean.records[0].core.register_evolution,
+            "repaired capture must yield the SAME register states as an uninterrupted one"
+        );
+        assert!(dirty.records[0]
+            .notes
+            .iter()
+            .any(|n| n.contains("console-interleaved")));
+        assert!(
+            clean.records[0].notes.is_empty(),
+            "clean input must not be annotated"
+        );
+    }
+
+    // A console line that lands BETWEEN two verifier lines corrupts nothing; it is
+    // simply not verifier output and must be dropped without a repair note.
+    #[test]
+    fn whole_console_line_is_dropped_not_spliced() {
+        const C: &str = "\
+===PROG p type=socket_filter ===
+RESULT decision=accept fd=3 errno=0 load_ns=100
+---LOG---
+0: R1=ctx() R10=fp0
+[    2.301324] clocksource: Watchdog remote CPU 1 read timed out
+0: (b7) r0 = 0                        ; R0=0
+1: (95) exit
+processed 2 insns (limit 1000000) total_states 3 peak_states 0
+---END---
+";
+        let out = VerifierLogParser.parse("diffharness", C.as_bytes());
+        assert_eq!(out.records[0].core.processed.states_processed, 3);
+        assert_eq!(out.records[0].core.register_evolution.len(), 2);
+        assert!(out.records[0].notes.is_empty());
+    }
+
+    // The timestamp shape must be narrow enough that verifier text is never eaten.
+    #[test]
+    fn console_timestamp_does_not_match_verifier_text() {
+        assert_eq!(console_timestamp_at("0: (b7) r0 = 0     ; R0=0"), None);
+        assert_eq!(console_timestamp_at("R2=map_value(map=m,ks=4,vs=8)"), None);
+        assert_eq!(
+            console_timestamp_at("value [0.5] and [12.34] and [1.23456789]"),
+            None
+        );
+        assert_eq!(console_timestamp_at("[    2.301324] real"), Some(0));
+        assert_eq!(console_timestamp_at("tail[12345.000001] real"), Some(4));
     }
 }
