@@ -32,6 +32,7 @@
 #include <linux/bpf.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -50,6 +51,18 @@
 #define BPF_JMP_IMM(OP, DST, IMM, OFF)                                         \
     ((struct bpf_insn){.code = BPF_JMP | BPF_OP(OP) | BPF_K,                   \
                        .dst_reg = DST, .src_reg = 0, .off = OFF, .imm = IMM})
+// 32-bit (subregister) forms. The verifier tracks u32_min/u32_max separately from
+// the 64-bit bounds and must keep the two views in sync; these are the insns that
+// force that sync to happen.
+#define BPF_ALU32_IMM(OP, DST, IMM)                                            \
+    ((struct bpf_insn){.code = BPF_ALU | BPF_OP(OP) | BPF_K,                   \
+                       .dst_reg = DST, .src_reg = 0, .off = 0, .imm = IMM})
+#define BPF_JMP32_IMM(OP, DST, IMM, OFF)                                       \
+    ((struct bpf_insn){.code = BPF_JMP32 | BPF_OP(OP) | BPF_K,                 \
+                       .dst_reg = DST, .src_reg = 0, .off = OFF, .imm = IMM})
+#define BPF_JMP_A(OFF)                                                         \
+    ((struct bpf_insn){.code = BPF_JMP | BPF_JA,                               \
+                       .dst_reg = 0, .src_reg = 0, .off = OFF, .imm = 0})
 #define BPF_LDX_MEM(SIZE, DST, SRC, OFF)                                       \
     ((struct bpf_insn){.code = BPF_LDX | BPF_SIZE(SIZE) | BPF_MEM,             \
                        .dst_reg = DST, .src_reg = SRC, .off = OFF, .imm = 0})
@@ -408,7 +421,147 @@ static void run_documented_message_cases(void) {
                BPF_PROG_TYPE_SCHED_CLS, "sched_cls", 0);
 }
 
-int main(void) {
+// ===========================================================================
+// TARGETED GENERATION (devlog 0025) — aim the input budget, do not sprinkle it.
+//
+// Reviewer's diagnosis (2026-09-01): bug hunting = oracle x input. The oracle side
+// has three calibrated legs; the input side is ~241 programs total because KVM is
+// blocked and everything runs on TCG. Random volume cannot fix that at this scale —
+// 279 blocks of syzkaller corpus never produced six of the error classes eleven
+// hand-written programs produced in one run. So the input budget gets AIMED.
+//
+// WHAT IT IS AIMED AT, and why exactly this: the ONE detector leg that needs no
+// external ground truth is the intrinsic-invariant leg — it checks the verifier
+// against ITSELF (tnum well-formedness, bound ordering, and tnum-vs-bounds
+// agreement). That leg can only fire on registers whose abstract state is actually
+// interesting: partially-known bits AND narrowed bounds at the same time. Programs
+// like that do not appear by accident in a syscall fuzzer's corpus; they have to be
+// constructed. This generator constructs them, and nothing else.
+//
+// NOT RANDOM, ENUMERATIVE. With a few hundred executions to spend, sampling a space
+// wastes the budget. Every (alu op x compare x width) combination is emitted exactly
+// once, so the cross-product is COVERED rather than sampled, and program N is the
+// same program on every run — a finding is reproducible from its label alone.
+//
+// The skeleton is fixed and every part of it is load-bearing:
+//
+//   0: r0 = *(u32 *)(r1 + 0)   unknown scalar from ctx -> full 32-bit range
+//   1: <alu op1>               shapes the tnum (and/or/xor/shifts) or the bounds
+//                              (add/sub/mul/div/mod) -- the two are tracked by
+//                              DIFFERENT verifier code paths
+//   2: if r0 <cmp> imm goto 5  narrows bounds on both branches; back-propagating a
+//                              comparison into the tnum is where the two trackers
+//                              must agree
+//   3: <alu op2>               arithmetic on the narrowed value (not-taken path)
+//   4: goto 6
+//   5: <alu op2'>              arithmetic on the OTHER narrowing (taken path)
+//   6: r0 &= 0xffff            bound the return value
+//   7: exit                    -> insn 6 is a MERGE point: two different abstract
+//                              states join, which is where a range desync would show
+//
+// A 32-bit variant of each program uses BPF_ALU32/BPF_JMP32, because the verifier
+// keeps u32_min/u32_max separately from the 64-bit bounds and has to reconcile them.
+// That reconciliation is historically the densest source of verifier range bugs.
+// ===========================================================================
+
+struct gen_alu {
+    const char *name;
+    int op;
+    int imm1;   // shaping immediate
+    int imm2;   // not-taken path immediate
+    int imm3;   // taken path immediate
+};
+
+// Mixed on purpose: bitwise ops move the tnum and leave the bounds to be deduced;
+// arithmetic ops move the bounds and leave the tnum to be deduced. The interesting
+// states come from chaining one kind after the other.
+static const struct gen_alu GEN_ALU[] = {
+    {"and",  BPF_AND,  0x0f0f, 0x00ff, 0xff00},
+    {"or",   BPF_OR,   0x00f0, 0x0003, 0x1000},
+    {"xor",  BPF_XOR,  0xff00, 0x0f0f, 0x00f0},
+    {"lsh",  BPF_LSH,       5,      3,      9},
+    {"rsh",  BPF_RSH,       3,      7,      2},
+    {"arsh", BPF_ARSH,      7,      2,     11},
+    {"add",  BPF_ADD,   0x100,   0x40,   -17},
+    {"sub",  BPF_SUB,    0x40,     23,   -64},
+    {"mul",  BPF_MUL,      12,      3,      7},
+    {"div",  BPF_DIV,       7,      3,      5},
+    {"mod",  BPF_MOD,       9,     16,      6},
+};
+
+// Every compare form, signed and unsigned, plus JSET (the only one that narrows
+// BITS rather than a range — so it is the compare most likely to disagree with the
+// bounds tracker).
+struct gen_cmp {
+    const char *name;
+    int op;
+    int imm;
+};
+static const struct gen_cmp GEN_CMP[] = {
+    {"jeq",  BPF_JEQ,   64},
+    {"jne",  BPF_JNE,   64},
+    {"jgt",  BPF_JGT,  100},
+    {"jge",  BPF_JGE,  100},
+    {"jlt",  BPF_JLT,  100},
+    {"jle",  BPF_JLE,  100},
+    {"jsgt", BPF_JSGT,  -5},
+    {"jsge", BPF_JSGE,  -5},
+    {"jslt", BPF_JSLT,  -5},
+    {"jsle", BPF_JSLE,  -5},
+    {"jset", BPF_JSET, 0x10},
+};
+
+#define GEN_ALU_N ((int)(sizeof(GEN_ALU) / sizeof(GEN_ALU[0])))
+#define GEN_CMP_N ((int)(sizeof(GEN_CMP) / sizeof(GEN_CMP[0])))
+
+// Emit one program of the family. `w32` selects the subregister variant.
+static void run_generated(int alu_i, int cmp_i, int w32, int index) {
+    const struct gen_alu *a = &GEN_ALU[alu_i];
+    const struct gen_cmp *c = &GEN_CMP[cmp_i];
+
+    struct bpf_insn insns[8];
+    insns[0] = BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1, 0);
+    if (w32) {
+        insns[1] = BPF_ALU32_IMM(a->op, BPF_REG_0, a->imm1);
+        insns[2] = BPF_JMP32_IMM(c->op, BPF_REG_0, c->imm, 2);
+        insns[3] = BPF_ALU32_IMM(a->op, BPF_REG_0, a->imm2);
+        insns[5] = BPF_ALU32_IMM(a->op, BPF_REG_0, a->imm3);
+    } else {
+        insns[1] = BPF_ALU64_IMM(a->op, BPF_REG_0, a->imm1);
+        insns[2] = BPF_JMP_IMM(c->op, BPF_REG_0, c->imm, 2);
+        insns[3] = BPF_ALU64_IMM(a->op, BPF_REG_0, a->imm2);
+        insns[5] = BPF_ALU64_IMM(a->op, BPF_REG_0, a->imm3);
+    }
+    insns[4] = BPF_JMP_A(1);
+    insns[6] = BPF_ALU64_IMM(BPF_AND, BPF_REG_0, 0xffff);
+    insns[7] = BPF_EXIT_INSN();
+
+    // The label IS the recipe: it names the exact program, so any finding can be
+    // rebuilt from the report without consulting a seed or a corpus file.
+    char name[64];
+    snprintf(name, sizeof(name), "gen#w%s.%s.%s#%03d",
+             w32 ? "32" : "64", a->name, c->name, index);
+    run_one(name, insns, 8);
+}
+
+// The whole enumerated family: every alu x compare x width, once each.
+static void run_generated_family(void) {
+    int index = 0;
+    for (int w32 = 0; w32 < 2; w32++)
+        for (int alu_i = 0; alu_i < GEN_ALU_N; alu_i++)
+            for (int cmp_i = 0; cmp_i < GEN_CMP_N; cmp_i++)
+                run_generated(alu_i, cmp_i, w32, index++);
+}
+
+int main(int argc, char **argv) {
+    // Two data sources, kept apart on purpose (different provenance):
+    //   (no args) the fixed authoritative program set, pinned by tests
+    //   --gen     the enumerated targeted family (devlog 0025)
+    if (argc > 1 && strcmp(argv[1], "--gen") == 0) {
+        run_generated_family();
+        return 0;
+    }
+
     // Program A: clean, minimal accepted prog — `return 0`.
     struct bpf_insn prog_return0[] = {
         BPF_MOV64_IMM(BPF_REG_0, 0),

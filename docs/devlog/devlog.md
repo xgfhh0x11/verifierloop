@@ -49,6 +49,7 @@ Her entry'nin sabit bir formatı vardır:
 | 0022 | **Üçüncü dedektör kolu**: documented-behavior (verifier.rst) — alıntı-çapalı, drift-tespitli | Tamamlandı (3 vaka canlı; kalibre) |
 | 0023 | **patch-diff (kaynak 4)**: doküman-vs-kod bayatlık kanıtı + SCC parser kör noktası | Tamamlandı (doküman 351 commit geride) |
 | 0024 | **`verifier.rst` mesaj bölümü**: 11 örnek program → ilk SAĞLAMLIK ölçümü + `notes` (kanıt) kanalı | Tamamlandı (13 vaka; 12/12 karar uyuştu; 1 vaka kaynakta doğrulanmış önkoşulla superseded) |
+| 0025 | **Hedefli üretim** (242 enumerative program) + intrinsic kolun eksik paydası | Tamamlandı (syzkaller hacmi: 0 kontrol edilebilir gözlem; hedefli: 1497) |
 
 ### Pipeline durumu (özet)
 
@@ -2039,3 +2040,148 @@ Doküman üç yerde bir şeyi söylemiyor; her biri harness'te ilgili vakanın y
   bounds) mekanik olarak çıkarılabilir mi?
 - Kalan ~4 prose iddiasını kodla (düşük getiri, ucuz).
 - **OI-2** — KVM açılana kadar düşük öncelik.
+
+---
+
+## 0025 — Hedefli üretim: input bütçesini nişan almak + intrinsic kolun eksik paydası
+
+- **Tarih:** 2026-09-01
+- **Durum:** Tamamlandı — ilk hedefli period koştu (242 program, gerçek bpf-next VM).
+  Yan ürün olarak **projenin kendi ölçüm boşluğu** bulundu ve kapatıldı.
+- **Alan:** `harness/diffharness.c` (`--gen` enumerative üretici), `diff.rs`
+  (`tnum_bounds_checkable` + `tnum_bounds_checked` paydası), yeni
+  `examples/signal_density.rs`, `scripts/run-harness-vm.sh` (`HARNESS_ARGS`),
+  yeni fixture + `tests/targeted_generation.rs`.
+- **İlgili:** Reviewer hükmü (2026-09-01), 0015 (intrinsic kolun kalibrasyonu),
+  0018–0020 (hacim), 0024.
+
+### Neden bu iş — reviewer'ın teşhisi
+*Bug avı = oracle × input.* Oracle tarafı üç kalibre kolla güçlüydü; input ~241
+programda takılıydı (KVM bloklu, her şey TCG'de). Ve planlanan bir sonraki iş
+(kaynak 1 pilotu) **yine oracle büyütüyordu** — yani "hiç bug bulamayan daha mükemmel
+bir dedektör" üretme riski. Sıra input tarafına geçti; ama "daha çok program" değil,
+**doğru programlar**.
+
+### Nereye nişan alındı, ve neden tam oraya
+Beş kaynaktan **yalnız biri dış ground-truth istemiyor**: intrinsic invariant kolu —
+verifier'ı *kendisine* karşı kontrol eder (tnum iyi-biçimliliği, sınır sıralaması,
+tnum↔bounds uyumu). Yani o kola input vermek, yeni oracle yazmadan doğrudan mevcut
+oracle'ı çarpar. Ama o kol ancak **soyut durumu ilginç** register'larda ateşleyebilir:
+aynı anda **kısmen-bilinen bitler** VE **daraltılmış sınırlar**. Böyle durumlar bir
+syscall fuzzer'ının corpus'unda kazara oluşmaz; **inşa edilmeleri gerekir**.
+
+### Rastgele değil, ENUMERATIVE
+Birkaç yüz execution'lık bütçede bir uzayı örneklemek israftır. Üretici,
+`11 alu op × 11 karşılaştırma × {64-bit, 32-bit}` = **242 programın her birini
+tam bir kez** basıyor. Sonuç: uzay **örneklenmiyor, kapsanıyor**; program N her
+koşuda aynı program; ve **etiket tarifin kendisi** (`gen#w64.and.jlt#004`) — bir bulgu
+rapordan, seed'e ya da corpus dosyasına bakmadan yeniden inşa edilebilir.
+
+İskeletin her parçası yük taşıyor:
+```
+0: r0 = *(u32 *)(r1 + 0)   ctx'ten bilinmeyen skaler
+1: <alu op1>               tnum'u (and/or/xor/shift) YA DA sınırları (add/sub/mul/div/mod)
+                           oynatır — ikisi FARKLI verifier kod yollarında izlenir
+2: if r0 <cmp> imm goto 5  iki dalda da sınırları daraltır; karşılaştırmayı tnum'a
+                           geri yaymak, iki izleyicinin anlaşmak zorunda olduğu yer
+3: <alu op2>               daralmış değer üzerinde aritmetik (düşen dal)
+4: goto 6
+5: <alu op2'>              öteki daralma üzerinde aritmetik (atlayan dal)
+6: r0 &= 0xffff            ← BİRLEŞME noktası: iki farklı soyut durum burada birleşir
+7: exit
+```
+32-bit varyant `BPF_ALU32`/`BPF_JMP32` kullanıyor, çünkü verifier `u32_min/u32_max`'ı
+64-bit sınırlardan ayrı tutup ikisini uzlaştırmak zorunda — tarihsel olarak verifier
+range bug'larının en yoğun kaynağı.
+
+### ASIL BULGU — intrinsic kolun paydası hiç yoktu, ve payda 0'dı
+0016'dan beri helper kolu paydasını, 0022'den beri dokümante kol paydasını
+raporluyoruz. **Intrinsic kol hiç raporlamıyordu.** Ölçünce ortaya çıkan şey şu —
+commit'li syzkaller hacminde, **ham metin seviyesinde**:
+
+| | syz-replay-184 (184 blok) | gen-targeted-242 (242 blok) |
+| --- | --- | --- |
+| `var_off=` geçişi | **0** | 1623 |
+| `umin=` geçişi | **0** | 378 |
+| `smin=` geçişi | **1** | 1655 |
+| tnum↔bounds kontrol edilebilir gözlem | **0** | **1497** |
+| kayıt başına | **0.00** | **6.19** |
+| en az bir kontrol edilebilir kaydı olan | **%0** | **%100** |
+
+Yani: projenin **ilk yazdığı (0006) ve en iyi kalibre ettiği (0015)** dedektör kolu,
+279 bloklu "hacim" boyunca **incelenecek tek bir soyut durum bile görmedi**. O kolun
+"0 divergence"ı, diğer kolların "0 bulgu / 101 kontrol"üyle aynı görünüyordu ama
+**0 bulgu / 0 kontrol**tü — kanıtın yokluğu, yokluğun kanıtı değil.
+
+Bu, projenin kendi payda disiplininin **kendisine uygulanmamış** olmasıydı.
+`DiffSummary.tnum_bounds_checked` eklendi; `parse_report` payda 0 ise bunu **açıkça
+uyarı olarak** basıyor.
+
+### Paydanın kendisi de dürüst olmak zorundaydı
+İlk yazdığım predicate `R0=13` gibi **sabitleri** de sayıyordu ve syzkaller'a
+2.36/kayıt gibi sahte bir skor veriyordu. Yanlıştı: bir sabit için parser hem tnum'u
+hem sınırları **AYNI token'dan** türetir, yani kontrol 13'ü 13 ile karşılaştırır —
+tautoloji, ne olursa olsun ateşleyemez. Bunu paydaya saymak, tam da bu alanın
+engellemek için var olduğu hatayı işlemek olurdu. Predicate sabitleri dışlıyor,
+non-scalar placeholder'ları dışlıyor, ve bilerek **eksik sayıyor** (`var_off=(0xd; 0x0)`
+ayırt edilemiyor) — eksik saymak "0 bulgu"yu olduğundan **zayıf** gösterir, yani
+yanılmanın güvenli yönü.
+
+### Ölçüm — gerçek bpf-next VM'inde
+```
+$ HARNESS_ARGS=--gen TIMEOUT=600 ./scripts/run-harness-vm.sh
+[harness-vm] captured 242 program block(s)
+
+RECORDS  242 (accept 242 / reject 0)
+SIGNAL   divergences=0  flagged=0  top_score=0
+CHECKS   helper-arg: 0 comparisons | tnum-vs-bounds: 1497 checkable register
+         observations | documented cases: 0
+BLOCKS   242 = 242 records + 0 unparsed
+  UNRECOGNIZED (parser blind-spots) : 0/242 = 0.0%
+```
+- **242/242 accept** — kasıtlı: reddedilen program az durum bastırır; buradaki amaç
+  reddettirmek değil, **maksimum soyut durum** üretmek.
+- **1497 kontrol, 0 bulgu.** Bu ilk kez *anlamlı* bir temizlik: kol artık kör değil,
+  bakıyor ve bir şey görmüyor.
+- **0 parser kör noktası** — beş yeni durum şekli (32-bit karşılaştırmalar, arsh,
+  div/mod, dal birleşmeleri) parser'ı bozmadı.
+
+### Doğrulama
+- **8 yeni test** (`targeted_generation.rs`): hedefli corpus paydayı >1000 yapar;
+  **syzkaller corpus'u tam 0 yapar** (bulgu teste sabitlendi — parser değişip bu sayı
+  oynarsa yüksek sesle kırılsın); corpus tam parse edilir; 242 etiketin hepsi tekil
+  ve tarif taşır; ve predicate testleri: **sabit tautolojidir**, fully-unknown
+  ateşleyemez, pointer placeholder'ı sayılmaz, kısmen-bilinen+daraltılmış sayılır.
+- Full suite **82 → 90 passed**, 0 failed.
+- Yeni ölçüm aracı `signal_density` dedektörle **aynı predicate'i** çağırıyor
+  (`pipeline::diff::tnum_bounds_checkable`) — corpus metriği ile dedektör "kontrol
+  edilebilir" tanımında sessizce ayrışamaz.
+
+### Dürüst sınırlar
+- **Bulgu yok.** 1497 kontrol, 0 divergence. Beklenen (kernel doğru), ama artık
+  "0 out of 0" değil.
+- **Tek iskelet.** Aile alu×cmp çarpımını kapsıyor ama tek bir program şekli
+  üzerinden: 8 insn, tek dal, yalnız immediate operand. Yok olanlar: register-register
+  ops, çok-dallı/döngülü akış, pointer aritmetiği, **aynı programda 32-bit ve 64-bit
+  karışımı**, sign-extension (movsx), 64-bit immediate. Sonuncu ikisi bilinen verifier
+  bug bölgeleri → sıradaki artış orası (OI-9).
+- **Metrik bir vekildir.** Yüksek "kontrol edilebilir gözlem" sayısı bug bulma gücünü
+  garanti etmez; yalnız *ateşleme ihtimalinin sıfır olmadığını* garanti eder.
+- 242 program hâlâ küçük bir sayı. Hedefleme, hacim eksikliğini telafi eder ama
+  ortadan kaldırmaz; KVM açılınca ikisi çarpılır.
+
+### Dokunulan dosyalar
+- `harness/diffharness.c` (`--gen`, `GEN_ALU`/`GEN_CMP` tabloları, ALU32/JMP32/JA makroları)
+- `crates/pipeline/src/diff.rs` (`tnum_bounds_checkable`, `tnum_bounds_checked`)
+- `crates/pipeline/examples/signal_density.rs` (yeni), `examples/parse_report.rs`
+- `crates/pipeline/tests/fixtures/volume/gen-targeted-242.log` (yeni fixture, in-VM)
+- `crates/pipeline/tests/targeted_generation.rs` (yeni, 8 test)
+- `scripts/run-harness-vm.sh` (`HARNESS_ARGS`)
+- `python/src/verifierloop_analysis/schemas/diff.py` (mirror)
+
+### Sonraki adımlar
+- **Aileyi genişlet (OI-9):** aynı programda 32/64 karışımı, movsx, register-register
+  ops, çok-dallı akış. En yüksek getiri: 32↔64 senkronu.
+- **İki-revizyon differential** (reviewer sırasında 2.) — oracle olarak doküman değil
+  başka bir kernel.
+- KVM (3.) — donanım; açılınca hedefleme × hacim.

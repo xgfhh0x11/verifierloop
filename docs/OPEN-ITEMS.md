@@ -211,6 +211,47 @@ both volume captures.)*
 
 ---
 
+## OI-9 — The targeted family covers one program SHAPE, not the input space
+
+- **Status:** OPEN (this is the next planned increment, not a defect)
+- **Raised:** 2026-09-01 (devlog 0025)
+- **What:** `diffharness --gen` enumerates `11 alu x 11 compare x {64,32}-bit` = 242
+  programs, and that cross-product IS covered. But every one of them is the same
+  8-instruction skeleton: one shaping op, one branch, one op per path, immediate
+  operands only.
+- **What it therefore does NOT reach:** register-to-register ALU (the immediate
+  forms take a different verifier path from the register forms), multi-branch and
+  looping control flow, pointer arithmetic, sign-extension moves (`movsx`), 64-bit
+  immediates, and — most importantly — **32-bit and 64-bit operations mixed inside
+  one program**. Each generated program is purely one width, so the reconciliation
+  between `u32_min/u32_max` and the 64-bit bounds is exercised only across programs,
+  never within one.
+- **Why it matters:** "0 findings out of 1497 checks" is a real result, but it is a
+  result about ONE program shape. Reading it as "the verifier's range tracking is
+  sound" would be exactly the over-reading this file exists to prevent.
+- **Next increment (highest value first):** mixed-width programs, then `movsx`, then
+  register-register operands. The 32<->64 sync is historically the densest source of
+  verifier range bugs, and it is the thing the current family structurally cannot hit.
+
+---
+
+## Standing rule — a detector leg without a denominator is not measurable
+
+- **Established:** 2026-09-01 (devlog 0025), the hard way.
+- Sources 2 and 3 had reported denominators since 0022/0016. The **intrinsic leg
+  never did**, and that hid the single most important fact about the corpus: across
+  279 blocks of committed syzkaller volume the capture contains **zero** `var_off=`
+  and **zero** `umin=`, so that leg had literally nothing to examine. Its
+  "0 divergences" looked identical to the other legs' "0 out of 101" while being
+  "0 out of 0".
+- **The rule:** every leg reports how many times it was actually GIVEN something to
+  check, and the denominator must exclude comparisons that cannot fail (see
+  `diff::tnum_bounds_checkable` — a constant's tnum and bounds come from the same
+  parsed token, so comparing them is a tautology and must not be counted).
+- **Applies to source 1** when its pilot lands: no leg ships without its denominator.
+
+---
+
 ## Coverage note — source 2's ceiling, MEASURED (corrected 2026-09-01)
 
 Source 2 now encodes **13** documented claims (12 checked + 1 superseded). Unlike

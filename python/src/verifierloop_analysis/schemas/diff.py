@@ -71,6 +71,9 @@ class DiffSummary:
     documented_cases_checked: int = 0
     helper_args_checked: int = 0
     note_count: int = 0
+    # The intrinsic leg's denominator (0025). Measured: the committed syzkaller
+    # volume scores 0 here, so that leg's "0 findings" was 0 out of 0.
+    tnum_bounds_checked: int = 0
 
 
 @dataclass

@@ -7,12 +7,12 @@
 > Reviewer'ın görevi: bu iddiaları kendi eliyle koşup teyit etmek ve
 > **abartılmış/yanlış** olanları işaretlemek.
 >
-> - **Rapor tarihi:** 2026-09-01 (önceki sürümler: 2026-08-30, 2026-08-27)
+> - **Rapor tarihi:** 2026-09-01 (0025 sonrası; önceki sürümler: 2026-08-30, 2026-08-27)
 > - **Repo kökü:** `/home/tylersec/verifierloop` — **git deposu** (branch `main`,
 >   **22 commit**, HEAD `f6a763c`)
 > - **Kernel rev (hedef):** `5e289c5a4a526e870efac0ca658635c47138593a` (`.lab/kernel.rev`)
-> - **Son devlog entry'si:** `0024` — `docs/devlog/devlog.md`
-> - **Test durumu:** `cargo test` → **82 passed, 0 failed** (2026-09-01 teyit edildi)
+> - **Son devlog entry'si:** `0025` — `docs/devlog/devlog.md`
+> - **Test durumu:** `cargo test` → **90 passed, 0 failed** (2026-09-01 teyit edildi)
 
 ---
 
@@ -50,9 +50,17 @@ gereken — harness'e kodlandı ve gerçek bpf-next VM'inde koşuldu: **12 vakan
 de karar dokümanla uyuştu (divergences=0)**. Bu, döngünün ilk kez "verifier
 reddetmesi gerekeni reddediyor mu" eksenini ölçmesi.
 
-**Ölçülen sayılar:** parser kör nokta oranı **%0** (0/70, 0/151 ve 0/20 — üç bağımsız
-yakalamada), koşu başına **~101 helper kontrolü**, **12 dokümante vaka kontrolü**,
-**0 false positive**, **82 test** yeşil.
+**Input tarafı nişan aldı (0025).** Reviewer'ın teşhisi (*bug avı = oracle × input*)
+üzerine sıra input'a geçti: `11 alu × 11 karşılaştırma × {64,32}-bit` = **242
+enumerative program**, gerçek bpf-next VM'inde. Ve bu ölçüm **projenin kendi boşluğunu**
+açığa çıkardı: commit'li syzkaller hacminde `var_off=` **0 kez** geçiyor — yani
+intrinsic invariant kolu (projenin ilk ve en iyi kalibre kolu) 279 blok boyunca
+**incelenecek tek bir soyut durum görmedi**. "0 divergence"ı **0 bulgu / 0 kontrol**tü.
+Hedefli corpus'ta aynı sayı **1497 kontrol / 0 bulgu** (✔ V16).
+
+**Ölçülen sayılar:** parser kör nokta oranı **%0** (0/70, 0/151, 0/20 ve 0/242 — dört
+bağımsız yakalamada), koşu başına **~101 helper kontrolü**, **12 dokümante vaka
+kontrolü**, **1497 tnum↔bounds kontrolü**, **0 false positive**, **90 test** yeşil.
 
 **Reviewer'ın en çok şüpheyle bakması gereken nokta:** hacim **gerçek bir verifier
 bug'ı üretmedi** — beklenen sonuç (gerçek kernel + coverage-güdümlü corpus). Üç kol da
@@ -418,6 +426,44 @@ düşülür. Ayrıca **OI-8**: 11 programın 3 yerinde doküman bir şeyi söyle
 value_size, program tipi/flag) ve harness seçmek zorunda kaldı — ilk `doc_msg_*`
 bulgusunda **ilk şüpheli o yargılardır**, verifier değil.
 
+**(V16) HEDEFLİ ÜRETİM — ve intrinsic kolun paydası hiç yoktu (2026-09-01)**
+```
+$ cargo run -q -p pipeline --example signal_density -- \
+    crates/pipeline/tests/fixtures/volume/syz-replay-184.log \
+    crates/pipeline/tests/fixtures/volume/gen-targeted-242.log
+
+capture                    blocks records   regs  partial narrowed  cross  cross/rec  %recs
+syz-replay-184.log            184     151    944        0      920      0      0.00    0.0%
+gen-targeted-242.log          242     242   2512     1499     2481   1497      6.19  100.0%
+```
+Ham metin seviyesinde de aynı: syz-replay-184'te `var_off=` **0 kez**, `umin=`
+**0 kez** geçiyor; hedefli yakalamada 1623 ve 378.
+
+**Bunun anlamı — projenin kendi ölçüm boşluğu.** Helper kolu (0016) ve dokümante kol
+(0022) paydalarını raporluyordu; **intrinsic kol raporlamıyordu**. Ölçünce çıkan
+sonuç: projenin ilk yazdığı (0006) ve en iyi kalibre ettiği (0015) dedektör kolu,
+279 bloklu hacim boyunca **incelenecek tek bir soyut durum bile görmedi**. O kolun
+"0 divergence"ı, diğerlerinin "0 bulgu / 101 kontrol"üyle aynı okunuyordu ama
+**0 bulgu / 0 kontrol**tü. `DiffSummary.tnum_bounds_checked` eklendi ve `parse_report`
+payda 0 olduğunda bunu açık uyarı olarak basıyor.
+
+**Payda da dürüst olmak zorundaydı.** İlk predicate sabitleri (`R0=13`) sayıyor ve
+syzkaller'a sahte bir 2.36/kayıt skoru veriyordu; yanlıştı, çünkü sabit için tnum ve
+sınırlar **aynı token'dan** türetiliyor → kontrol tautoloji. Sabitler, non-scalar
+placeholder'lar ve fully-unknown tnum'lar dışlandı; predicate bilerek **eksik sayıyor**
+(yanılmanın güvenli yönü).
+
+**Hedefli ailenin kendisi:** `11 alu × 11 karşılaştırma × {64,32}-bit` = **242 program,
+her biri tam bir kez** — rastgele örnekleme değil, **kapsama**. Etiket tarifin kendisi
+(`gen#w64.and.jlt#004`), yani bulgu rapordan yeniden inşa edilebilir. Gerçek bpf-next
+VM'inde: **242/242 accept, 0 parser kör noktası, 1497 kontrol, 0 divergence.**
+
+**Reviewer bunu şöyle sorgulamalı:** "1497 kontrol / 0 bulgu artık anlamlı bir temizlik
+mi?" — evet, ama **tek bir program şekli için**. Aile alu×cmp çarpımını kapsıyor;
+kapsamadığı şey **aynı programda 32/64 karışımı**, movsx, register-register operand ve
+çok-dallı akış (**OI-9**). 32↔64 senkronu tarihsel olarak verifier range bug'larının en
+yoğun bölgesi ve mevcut aile oraya yapısal olarak **ulaşamıyor**.
+
 ---
 
 ## 5. Lab ortamı + kritik ortam gerçekleri
@@ -450,13 +496,40 @@ görünmüyor. Period=exec-count olduğu için loop mantığı etkilenmez, sadec
 | 4 | patch-diff | 🟡 **kısmi** — kanıt üretir, bulgu üretmez | `groundtruth/patch_diff.rs` |
 | 1 | `verifier.c` state-transition | ❌ **stub** (17 satır, `todo!()`) | `groundtruth/verifier_c.rs` |
 
-**Sıradaki iş — ölçülmüş önceliklendirme (gerekçe: ✔ V15):**
+> **REVIEWER HÜKMÜ (2026-09-01) — öncelik sırası değişti.** Teşhis: *bug avı =
+> oracle × input*. Oracle tarafı üç kalibre kolla güçlü, ama **input ~241 programda
+> takılı** (TCG; KVM host-side bloklu) → çarpım sıfıra yakın. Ve bu listenin eski
+> 1. maddesi (kaynak 1 pilotu) **yine oracle büyütüyordu**, yani dengesizliği
+> artırıyordu: "hiç bug bulamayan daha mükemmel bir dedektör". Yeni sıra:
+> **(1) hedefli program üretimi** — kontrolde olan, kanıtı gelmiş (0024'te elle
+> yazılmış 12 program, 279 bloklu syzkaller hacminin üretemediği 6 hata sınıfını
+> çıkardı), TCG'de bile işleyen tek yüksek-getirili yol;
+> **(2) iki-revizyon differential** (kaynak 4'ün gerçek hâli, V13'ün açık bıraktığı kapı);
+> **(3) KVM** — donanım bağımlılığı, aksiyon değil; input açılınca oracle hazır bekliyor.
+> Kaynak 1 pilotu değerli ama **sırası geriye alındı**.
+
+**Sıradaki iş — reviewer sırası (2026-09-01):**
+
+0. ~~**Hedefli program üretimi**~~ — **YAPILDI (0025, ✔ V16).** 242 enumerative
+   program; intrinsic kolun paydası 0 → 1497. **Devamı OI-9:** aile tek bir program
+   şeklini kapsıyor; eksik olan **aynı programda 32/64 karışımı**, movsx,
+   register-register operand, çok-dallı akış. 32↔64 senkronu verifier range
+   bug'larının en yoğun bölgesi ve mevcut aile oraya yapısal olarak ulaşamıyor —
+   **sıradaki iş bu.** Eski gerekçe: rastgele corpus yerine verifier'ın
+   **soyut alanının zor kenarlarına** nişan alan enumerative üretim. Gerekçe: sınırlı
+   input bütçesini rastgeleye değil, halihazırda **kalibre olan** intrinsic
+   invariant kolunun (tnum/bounds/32-64 senkronu) ateşleyebileceği yere yoğunlaştırmak
+   — yani yeni ground-truth gerektirmeyen, doğrudan mevcut oracle'ı çarpan yol.
+   Ölçülecek şey: **execution başına sinyal yoğunluğu** (syzkaller hacmiyle karşılaştırmalı).
+
+**Eski ölçülmüş sıralama (gerekçe: ✔ V15), reviewer sırasının altında:**
 
 1. ~~`verifier.rst` örnek bölümünü kodla — 11 vaka.~~ **YAPILDI (0024, ✔ V15).**
    3 → 13 vaka; syzkaller'ın hiç üretmediği 6 hata sınıfı artık üretiliyor; karar ile
    mesaj ayrı ağırlıkta (`notes` kanalı); ilk soundness ölçümü `divergences=0`.
    Kaynak 2'nin tavanı ölçüldü: ~4 prose iddiası kaldı, sonra **doküman bitiyor**.
-2. **Kaynak 1 için pilot (ARTIK SIRADAKİ İŞ)** — tüm `verifier.c` değil, **tek bir geçiş ailesi**
+2. **Kaynak 1 için pilot (REVIEWER TARAFINDAN GERİYE ALINDI, 2026-09-01)** — tüm
+   `verifier.c` değil, **tek bir geçiş ailesi**
    (ör. `check_alu_op` bounds güncellemesi) mekanik olarak çıkarılabilir mi? Amaç,
    5. kaynağın fizibilitesini tamamına yatırım yapmadan öğrenmek.
 3. **OI-2** — syzkaller crash/coverage'ını pipeline'a bağla. Kanal gerçek, ama şu anki
@@ -478,7 +551,7 @@ Tam liste ve gerekçeler: `docs/OPEN-ITEMS.md`.
 
 Hafif (VM/root gerekmez):
 - **R1** `cargo build` → Finished. ✔ V1
-- **R2** `cargo test` → **82 passed, 0 failed**. ✔ V1
+- **R2** `cargo test` → **90 passed, 0 failed**. ✔ V1
 - **R3** `just check-python` (ya da elle import) → `python import OK`.
 - **R4** `cargo run -q -p pipeline --example report_demo -- /tmp/vl1` → `top_score=0.95`. ✔ V2
 - **R5** `cargo run -q -p pipeline --example harness_demo -- /tmp/vl2` → 6 gerçek kayıt (3 ranged-scalar dahil), 0 anomali. ✔ V3
@@ -520,6 +593,16 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
   susturulan vakanın gerekçesi ekrana basılır. ✔ V15
 - **R23** (ağır) `TIMEOUT=300 ./scripts/run-harness-vm.sh /tmp/out.log` →
   "captured 20 program block(s)"; `harness/samples/bpf-next-sample.txt` ile karşılaştır. ✔ V15
+- **R24** `cargo run -q -p pipeline --example signal_density -- crates/pipeline/tests/fixtures/volume/*.log`
+  → syzkaller yakalamalarında `cross=0`, hedefli yakalamada `cross≈1497`. ✔ V16
+- **R25** `cargo run -q -p pipeline --example parse_report -- crates/pipeline/tests/fixtures/volume/syz-replay-184.log`
+  → `tnum-vs-bounds: 0 checkable` + açık ZERO uyarısı basılmalı. ✔ V16
+- **R26** `cargo test -p pipeline --test targeted_generation` → **8 passed**; kritik
+  ikisi: syzkaller corpus'u paydayı **tam 0** yapar, ve **sabit bir tautolojidir**
+  (paydaya sayılmaz). ✔ V16
+- **R27** (ağır) `HARNESS_ARGS=--gen TIMEOUT=600 ./scripts/run-harness-vm.sh /tmp/gen.log`
+  → "captured 242 program block(s)"; `crates/pipeline/tests/fixtures/volume/gen-targeted-242.log`
+  ile karşılaştır. ✔ V16
 
 **Crash'ler hakkında (0020) — bulgu olarak SAYILMADI:** 30 dk'lık kampanya 2 crash
 üretti (`int3 in sk_filter_trim_cap`, `int3 in __seccomp_filter`). Teşhis: her ikisinin
@@ -591,9 +674,9 @@ sorgulamalı.
 > **auto-extract edilen** 274 helper kontratı / 194 helper; `verifier.rst`'ten
 > **13 alıntı-çapalı** dokümante vaka), **biri kısmi** (patch-diff: bulgu değil kanıt
 > üretir), **biri stub** (`verifier.c` state-transition).
-> Ölçülen sayılar: **parser kör nokta oranı %0** (0/70, 0/151 ve 0/20), koşu başına
-> **~101 helper kontrolü** ve **12 dokümante vaka kontrolü**, **0 false positive**,
-> **82 test** yeşil.
+> Ölçülen sayılar: **parser kör nokta oranı %0** (0/70, 0/151, 0/20 ve 0/242), koşu
+> başına **~101 helper kontrolü**, **12 dokümante vaka kontrolü** ve **1497
+> tnum↔bounds kontrolü**, **0 false positive**, **90 test** yeşil.
 > Üç dedektör kolu da gerçek yolda **kalibre** (temizde susar, enjekte tutarsızlıkta
 > bağırır) ve parser kör noktaları **ayrı kanalda** raporlanıyor — bu yüzden
 > `divergences=0` *temiz* okunur, *sağır* değil.
@@ -607,5 +690,10 @@ sorgulamalı.
 > tavanı ölçüldü (~17 vaka, ~4 kaldı); kaynak 4 kısmi (iki-revizyon gözlemi
 > gerekiyor); JIT↔interp cross-kernel modu; istatistiksel scoring; ve **KVM host-side
 > bloklu → her şey TCG'de**.
-> **Sıradaki iş:** kaynak 1 için **tek geçiş ailesi pilotu** (ör. `check_alu_op`
-> bounds) — tamamına yatırım yapmadan fizibiliteyi ölçmek."
+> **Input tarafı da ölçüldü (0025):** commit'li syzkaller hacmi intrinsic invariant
+> koluna **tek bir kontrol edilebilir gözlem bile vermiyor** (`var_off=` 0 kez);
+> hedefli 242-programlık enumerative aile **1497 kontrol** veriyor, hâlâ 0 bulgu ile.
+> Yani o kolun eski 'temiz'i **0 out of 0**'dı, artık 0 out of 1497.
+> **Sıradaki iş:** hedefli aileyi **32/64 karışık** programlara genişletmek (OI-9) —
+> verifier range bug'larının tarihsel olarak en yoğun bölgesi ve mevcut ailenin
+> yapısal olarak ulaşamadığı yer."

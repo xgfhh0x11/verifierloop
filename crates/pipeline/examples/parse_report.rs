@@ -41,7 +41,7 @@ fn main() {
         Ok(p) => StaticGroundTruth::with_helper_proto(p),
         Err(_) => StaticGroundTruth::default(),
     };
-    diff::run(&period, &norm, &gt).expect("diff");
+    let dif = diff::run(&period, &norm, &gt).expect("diff");
     let rep = report::run(&period, None).expect("report");
 
     let accepts = norm
@@ -64,9 +64,22 @@ fn main() {
     // The denominator: 0 findings out of MANY checks is evidence; 0 out of ZERO
     // checks is an idle detector leg. Print it so the two can never be confused.
     println!(
-        "CHECKS   helper-arg comparisons actually performed: {}   (0 findings out of {} checks)",
-        rep.summary.helper_args_checked, rep.summary.helper_args_checked
+        "CHECKS   helper-arg: {} comparisons   |   tnum-vs-bounds: {} checkable register\n\
+         \x20        observations   |   documented cases: {}",
+        rep.summary.helper_args_checked,
+        dif.summary.tnum_bounds_checked,
+        dif.summary.documented_cases_checked
     );
+    // The intrinsic leg's denominator is the one that was missing until 0025, and
+    // its absence hid the real state of the corpus: the committed syzkaller volume
+    // scores ZERO here, so that leg's "0 findings" was 0 out of 0.
+    if dif.summary.tnum_bounds_checked == 0 {
+        println!(
+            "         ^ ZERO: this corpus never gives the tnum-vs-bounds check anything to\n\
+             \x20          check. Its \"0 divergences\" is an absence of evidence, not evidence\n\
+             \x20          of absence."
+        );
+    }
     let ph = rep.parse_health;
     println!(
         "BLOCKS   {} = {} records + {} unparsed",

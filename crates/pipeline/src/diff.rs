@@ -21,7 +21,7 @@
 use crate::groundtruth::GroundTruth;
 use crate::normalize::{MetricRecord, NormalizedMetrics};
 use contract::{Artifact, PeriodPaths, Producer};
-use metrics::core::{Tnum, VerifierDecision};
+use metrics::core::{RegState, Tnum, VerifierDecision};
 use serde::{Deserialize, Serialize};
 
 /// Which ground-truth pillar a divergence was found against.
@@ -148,6 +148,18 @@ pub struct DiffSummary {
     /// folded into it: evidence is not a verdict.
     #[serde(default)]
     pub note_count: u64,
+    /// Register observations the tnum-vs-bounds check could actually EVALUATE —
+    /// the intrinsic leg's missing denominator.
+    ///
+    /// Sources 2 and 3 have reported their denominators since 0016/0022, but the
+    /// intrinsic leg never did, and that hid something: measured 2026-09-01, the
+    /// entire committed syzkaller volume (221 records) contains **zero** such
+    /// observations, because its programs never produce a partially-known scalar.
+    /// So this leg's "0 findings" was 0 out of 0 — no evidence at all — while
+    /// reading exactly like the other legs' 0 out of many. Reported now so that can
+    /// never happen silently again.
+    #[serde(default)]
+    pub tnum_bounds_checked: u64,
 }
 
 /// The DIFF_FINDINGS payload for a period.
@@ -210,10 +222,11 @@ pub fn run(
     let mut helper_args_observed = 0u64;
     let mut helper_args_checked = 0u64;
     let mut documented_cases_checked = 0u64;
+    let mut tnum_bounds_checked = 0u64;
     for (idx, record) in metrics.records.iter().enumerate() {
         let idx = idx as u64;
         helper_args_observed += record.core.helper_arg_observations.len() as u64;
-        check_logical_invariants(idx, record, &mut findings);
+        check_logical_invariants(idx, record, &mut findings, &mut tnum_bounds_checked);
         check_helper_proto(idx, record, ground_truth, &mut findings);
         check_helper_observations(
             idx,
@@ -239,6 +252,7 @@ pub fn run(
         helper_args_checked,
         documented_cases_checked,
         note_count: notes.len() as u64,
+        tnum_bounds_checked,
     };
 
     let out = DiffFindings {
@@ -259,10 +273,18 @@ pub fn run(
 
 /// Intrinsic "classic logical analysis": invariants that must hold for a sound
 /// verifier, checkable straight from CORE with no external source.
-fn check_logical_invariants(idx: u64, record: &MetricRecord, out: &mut Vec<DivergenceFinding>) {
+fn check_logical_invariants(
+    idx: u64,
+    record: &MetricRecord,
+    out: &mut Vec<DivergenceFinding>,
+    checkable: &mut u64,
+) {
     for snap in &record.core.register_evolution {
         for reg in &snap.regs {
             let where_ = format!("insn {} r{} ({})", snap.insn_idx, reg.reg, reg.reg_type);
+            if tnum_bounds_checkable(reg) {
+                *checkable += 1;
+            }
 
             // tnum well-formedness: known bits (value) and unknown bits (mask) must
             // be disjoint. A bit that is both known-1 and unknown is a corrupt tnum.
@@ -507,6 +529,38 @@ fn check_documented_behavior(
         }
     }
     true
+}
+
+/// Whether the tnum-vs-bounds consistency check has INDEPENDENT information about
+/// this register — i.e. whether it could possibly fire.
+///
+/// Three exclusions, each of which would otherwise inflate the denominator with
+/// something that can never produce a finding:
+///
+/// 1. **Non-scalar registers.** The parser stores placeholder zeros for pointer /
+///    ctx / fp registers (see `build_regstate`). Those are filler, not observations.
+/// 2. **A fully-unknown tnum, or un-narrowed bounds.** The check fires when the
+///    tnum's span and the bound range are DISJOINT. A fully-unknown tnum spans
+///    everything and an un-narrowed range contains everything, so either one alone
+///    makes the intersection non-empty by construction.
+/// 3. **Constants — and this one is subtle.** For `R0=13` the parser derives BOTH
+///    the tnum (`{13, mask 0}`) and the bounds (`umin=umax=13`) from the SAME token.
+///    Comparing them therefore compares a value with itself: the check is a
+///    tautology there and cannot fail no matter what the verifier does. Counting
+///    those would manufacture a denominator out of nothing — which is precisely the
+///    error this field exists to prevent. So a register only counts when the
+///    verifier printed a genuinely partial `var_off=` alongside real bounds, making
+///    the two trackers independently observed.
+///
+/// The predicate deliberately UNDER-counts (a `var_off=(0xd; 0x0)` printed next to
+/// bounds is independent information but is indistinguishable from a const once
+/// parsed). Under-counting makes "0 findings" read weaker than it is, which is the
+/// safe direction to be wrong in.
+pub fn tnum_bounds_checkable(reg: &RegState) -> bool {
+    reg.reg_type == "scalar"
+        && reg.tnum.mask != 0
+        && reg.tnum.mask.count_ones() < 64
+        && (reg.umin > 0 || reg.umax < u64::MAX)
 }
 
 /// The unsigned range a tnum can represent: `[value, value | mask]` (unknown bits

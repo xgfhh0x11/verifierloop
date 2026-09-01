@@ -7,12 +7,18 @@
 # log format on our self-built kernel.
 #
 #   scripts/run-harness-vm.sh [OUTFILE]      # default OUTFILE: .lab/harness-out.log
+#
+# HARNESS_ARGS passes arguments through to the in-VM harness. The two data sources
+# are kept apart on purpose (different provenance, different pinned fixtures):
+#   HARNESS_ARGS=          the fixed authoritative program set (20 programs)
+#   HARNESS_ARGS=--gen     the enumerated targeted family (devlog 0025)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAB="${LAB:-$REPO_ROOT/.lab}"
 ROOTFS="${ROOTFS:-$LAB/images/rootfs.img}"
 OUT="${1:-$LAB/harness-out.log}"
+HARNESS_ARGS="${HARNESS_ARGS:-}"
 SERIAL="$LAB/harness-serial.log"
 TIMEOUT="${TIMEOUT:-180}"
 
@@ -28,12 +34,12 @@ cleanup() { mountpoint -q "$MNT" 2>/dev/null && umount "$MNT" || true; rmdir "$M
 trap cleanup EXIT
 mount -o loop "$ROOTFS" "$MNT"
 install -m755 "$BIN" "$MNT/root/diffharness"
-cat > "$MNT/root/run-harness.sh" <<'EOS'
+cat > "$MNT/root/run-harness.sh" <<EOS
 #!/bin/sh
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
 echo "===HARNESS-BEGIN==="
-/root/diffharness
+/root/diffharness $HARNESS_ARGS
 echo "===HARNESS-END==="
 poweroff -f 2>/dev/null || { echo 1 > /proc/sys/kernel/sysrq 2>/dev/null; echo o > /proc/sysrq-trigger; }
 EOS
