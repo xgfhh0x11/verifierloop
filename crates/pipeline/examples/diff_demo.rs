@@ -47,6 +47,7 @@ impl RecordParser for DemoParser {
                             umax: 255,
                             smin: 0,
                             smax: 255,
+                            ..Default::default()
                         }],
                     }],
                     processed: Processed {

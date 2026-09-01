@@ -24,6 +24,8 @@ use metrics::core::{RegState, Tnum};
 const TARGETED: &str = include_str!("fixtures/volume/gen-targeted-242.log");
 /// The larger of the two syzkaller volume captures, for the contrast.
 const SYZ: &str = include_str!("fixtures/volume/syz-replay-184.log");
+/// The mixed-width family (devlog 0026), aimed at the 32<->64 reconciliation.
+const MIXED: &str = include_str!("fixtures/volume/gen-mixed-396.log");
 
 fn run_diff(text: &str, tag: &str) -> (normalize::NormalizedMetrics, diff::DiffFindings) {
     let dir = std::env::temp_dir().join(format!("vl-gen-{}-{}", std::process::id(), tag));
@@ -119,6 +121,7 @@ fn reg(reg_type: &str, value: u64, mask: u64, umin: u64, umax: u64) -> RegState 
         umax,
         smin: 0,
         smax: 0,
+        ..Default::default()
     }
 }
 
@@ -151,4 +154,71 @@ fn a_partially_known_scalar_with_real_bounds_is_the_thing_that_counts() {
     // shape where they can be caught disagreeing.
     assert!(diff::tnum_bounds_checkable(&reg("scalar", 0, 0xff, 0, 255)));
     assert!(diff::tnum_bounds_checkable(&reg("scalar", 0x100, 0xff, 256, 511)));
+}
+
+// ---------------------------------------------------------------------------
+// The mixed-width family (devlog 0026) — OI-9's blind spot, closed and pinned.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn single_width_programs_cannot_reach_the_32_to_64_region_at_all() {
+    // OI-9's claim, as a number. The 0025 family printed a 32-bit view on over a
+    // thousand registers, and not ONE of them said anything the 64-bit view did not:
+    // when the two agree the verifier collapses them into a single token
+    // (`umax=umax32=255`), and a value cannot be caught disagreeing with itself.
+    // No amount of MORE single-width programs changes this — it is structural.
+    let (_, out) = run_diff(TARGETED, "sw32");
+    assert_eq!(
+        out.summary.reg32_checked, 0,
+        "the single-width family must score zero on the 32<->64 denominator"
+    );
+}
+
+#[test]
+fn mixing_widths_inside_one_program_does_reach_it() {
+    let (norm, out) = run_diff(MIXED, "mixed");
+    assert_eq!(norm.records.len(), 396, "four enumerated sub-families");
+    assert!(
+        out.summary.reg32_checked > 100,
+        "mixed-width programs must actually force the two views apart; got {}",
+        out.summary.reg32_checked
+    );
+    // The 64-bit leg keeps working too — this corpus is a superset in signal, not a
+    // trade.
+    assert!(out.summary.tnum_bounds_checked > 1500, "{}", out.summary.tnum_bounds_checked);
+    assert_eq!(out.summary.finding_count, 0, "{:?}", out.findings);
+}
+
+#[test]
+fn the_mixed_corpus_is_fully_parsed() {
+    // movsx, 32-bit compares and upper-half shifts print state shapes the parser had
+    // never seen before 0026 — including the hex-printed negative s32 that produced
+    // ten bogus findings on the first run.
+    let (norm, _) = run_diff(MIXED, "mixparse");
+    let unrecognized = norm
+        .unparsed
+        .iter()
+        .filter(|u| u.kind == UnparsedKind::Unrecognized)
+        .count();
+    assert_eq!(unrecognized, 0, "parser blind-spots in the mixed corpus");
+}
+
+#[test]
+fn all_four_sub_families_are_present_and_uniquely_labelled() {
+    let (norm, _) = run_diff(MIXED, "mixlabels");
+    let labels: Vec<&str> = norm
+        .records
+        .iter()
+        .filter_map(|r| r.source_label.as_deref())
+        .collect();
+    for prefix in ["mix#64-32.", "mix#32-64.", "mix#movsx", "mix#hi."] {
+        assert!(
+            labels.iter().any(|l| l.starts_with(prefix)),
+            "sub-family {prefix} missing"
+        );
+    }
+    let mut sorted = labels.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), 396, "no two programs share a label");
 }

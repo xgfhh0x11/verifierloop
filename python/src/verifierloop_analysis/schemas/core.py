@@ -26,6 +26,15 @@ class RegState:
     umax: int
     smin: int
     smax: int
+    # The 32-bit subregister view. The verifier tracks a scalar twice and must keep
+    # the two reconciled; a disagreement BETWEEN them is a bug class neither view
+    # shows alone. None = the verifier omitted the field, which per
+    # kernel/bpf/log.c:print_scalar_ranges() means it sits at its extreme — the
+    # consumer resolves that, the parser only records the silence.
+    u32_min: Optional[int] = None
+    u32_max: Optional[int] = None
+    s32_min: Optional[int] = None
+    s32_max: Optional[int] = None
 
 
 @dataclass

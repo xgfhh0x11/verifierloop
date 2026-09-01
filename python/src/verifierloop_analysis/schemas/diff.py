@@ -74,6 +74,9 @@ class DiffSummary:
     # The intrinsic leg's denominator (0025). Measured: the committed syzkaller
     # volume scores 0 here, so that leg's "0 findings" was 0 out of 0.
     tnum_bounds_checked: int = 0
+    # The 32<->64 denominator (0026). A corpus of single-width programs scores 0
+    # here however large it gets — the verifier prints the two views as one token.
+    reg32_checked: int = 0
 
 
 @dataclass

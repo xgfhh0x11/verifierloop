@@ -553,12 +553,154 @@ static void run_generated_family(void) {
                 run_generated(alu_i, cmp_i, w32, index++);
 }
 
+// ===========================================================================
+// MIXED-WIDTH FAMILY (devlog 0026) — aimed at the 32<->64 reconciliation.
+//
+// OI-9 named the blind spot the first family had by construction: every program in
+// it was purely 64-bit or purely 32-bit, so the verifier's two views of a scalar
+// always agreed and it printed them as ONE shared token (`umax=umax32=255`). Two
+// views that are literally the same token cannot be caught disagreeing — measured:
+// the 242-program family scored 0 on the 32<->64 denominator.
+//
+// The verifier keeps u32_min/u32_max/s32_min/s32_max separately from the 64-bit
+// bounds and reconciles them in reg_bounds_sync() (__reg32_deduce_bounds /
+// __reg64_deduce_bounds). Historically that reconciliation is the densest source of
+// verifier range bugs. To reach it, the two views have to be forced APART inside one
+// program, which needs a width CHANGE mid-program:
+//
+//   * a 32-bit ALU op writes the low half and ZEROES the upper half, so whatever
+//     64-bit knowledge existed is discarded and must be rebuilt from the 32-bit view
+//   * a 32-bit compare narrows only the 32-bit view, and the 64-bit view has to be
+//     re-derived from it (and vice versa for a 64-bit compare after a 32-bit op)
+//   * a sign-extending move (movsx) propagates the low half's sign into the upper
+//     half, which is the one operation that ties the two views together arithmetically
+//
+// Three sub-families, each enumerated in full:
+//   64->32  : shape 64-bit, then 32-bit op, then 32-bit compare   (121 programs)
+//   32->64  : shape 32-bit, then 64-bit op, then 64-bit compare   (121 programs)
+//   movsx   : shape 32-bit, sign-extend from 8/16/32, then signed
+//             64-bit compare                                       (33 programs)
+// ===========================================================================
+
+// Sign-extending move, `r0 = (sN)r0`. Not in the classic macro set because it
+// postdates it: BPF_MOV with a non-zero off is movsx (N = 8, 16 or 32).
+#define BPF_MOVSX64_REG(DST, SRC, SZ)                                          \
+    ((struct bpf_insn){.code = BPF_ALU64 | BPF_MOV | BPF_X,                    \
+                       .dst_reg = DST, .src_reg = SRC, .off = SZ, .imm = 0})
+
+// One program of the 64->32 or 32->64 sub-family. `wide_first` selects which view
+// gets shaped first; the compare always follows the SECOND op's width, so the
+// narrowing lands on the view the preceding op did not just rebuild.
+static void run_mixed(int alu_i, int cmp_i, int wide_first, int index) {
+    const struct gen_alu *a = &GEN_ALU[alu_i];
+    const struct gen_cmp *c = &GEN_CMP[cmp_i];
+
+    struct bpf_insn insns[9];
+    insns[0] = BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1, 0);
+    if (wide_first) {
+        insns[1] = BPF_ALU64_IMM(a->op, BPF_REG_0, a->imm1);
+        insns[2] = BPF_ALU32_IMM(a->op, BPF_REG_0, a->imm2);
+        insns[3] = BPF_JMP32_IMM(c->op, BPF_REG_0, c->imm, 2);
+        insns[4] = BPF_ALU64_IMM(a->op, BPF_REG_0, a->imm3);
+        insns[6] = BPF_ALU64_IMM(a->op, BPF_REG_0, a->imm2);
+    } else {
+        insns[1] = BPF_ALU32_IMM(a->op, BPF_REG_0, a->imm1);
+        insns[2] = BPF_ALU64_IMM(a->op, BPF_REG_0, a->imm2);
+        insns[3] = BPF_JMP_IMM(c->op, BPF_REG_0, c->imm, 2);
+        insns[4] = BPF_ALU32_IMM(a->op, BPF_REG_0, a->imm3);
+        insns[6] = BPF_ALU32_IMM(a->op, BPF_REG_0, a->imm2);
+    }
+    insns[5] = BPF_JMP_A(1);
+    insns[7] = BPF_ALU64_IMM(BPF_AND, BPF_REG_0, 0xffff);
+    insns[8] = BPF_EXIT_INSN();
+
+    char name[64];
+    snprintf(name, sizeof(name), "mix#%s.%s.%s#%03d",
+             wide_first ? "64-32" : "32-64", a->name, c->name, index);
+    run_one(name, insns, 9);
+}
+
+// One program of the movsx sub-family: shape the low bits, sign-extend them into
+// the upper half, then compare SIGNED 64-bit — the compare's outcome now depends on
+// bits the 32-bit view produced.
+static void run_movsx(int sz, int cmp_i, int index) {
+    const struct gen_cmp *c = &GEN_CMP[cmp_i];
+
+    struct bpf_insn insns[9];
+    insns[0] = BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1, 0);
+    insns[1] = BPF_ALU32_IMM(BPF_OR, BPF_REG_0, 0x80);   // make the sign bits reachable
+    insns[2] = BPF_MOVSX64_REG(BPF_REG_0, BPF_REG_0, sz);
+    insns[3] = BPF_JMP_IMM(c->op, BPF_REG_0, c->imm, 2);
+    insns[4] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_0, 7);
+    insns[5] = BPF_JMP_A(1);
+    insns[6] = BPF_ALU64_IMM(BPF_SUB, BPF_REG_0, 3);
+    insns[7] = BPF_ALU64_IMM(BPF_AND, BPF_REG_0, 0xffff);
+    insns[8] = BPF_EXIT_INSN();
+
+    char name[64];
+    snprintf(name, sizeof(name), "mix#movsx%d.%s#%03d", sz, c->name, index);
+    run_one(name, insns, 9);
+}
+
+// The shape that actually forces the two views apart on a well-synced verifier:
+// shift the unknown bits into the UPPER half, then narrow only the LOWER one.
+//
+// Measured first, then written (0026): the 64->32 / 32->64 orderings above scored
+// 152 independent views on the older host kernel but only 4 on bpf-next, because
+// bpf-next's deduction reconciles the two views almost perfectly whenever the value
+// fits in one 2^32 block — and a ctx u32 load always does. `r0 <<= 32` breaks that:
+// the 64-bit range then spans many blocks (so the 64-bit endpoints constrain the low
+// half not at all) while a 32-bit compare still pins the low half exactly. That is
+// precisely the state where the two views must be independently maintained.
+//
+// Note a BPF property that rules out the obvious alternative: every 32-bit ALU op
+// zero-extends into the upper half, so the low half cannot be edited while keeping
+// the upper half unknown. The shaping has to be 64-bit; only the COMPARE is 32-bit.
+static void run_upper_half(int alu_i, int cmp_i, int index) {
+    const struct gen_alu *a = &GEN_ALU[alu_i];
+    const struct gen_cmp *c = &GEN_CMP[cmp_i];
+
+    struct bpf_insn insns[9];
+    insns[0] = BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1, 0);
+    insns[1] = BPF_ALU64_IMM(BPF_LSH, BPF_REG_0, 32);   // unknown bits -> upper half
+    insns[2] = BPF_ALU64_IMM(a->op, BPF_REG_0, a->imm1);
+    insns[3] = BPF_JMP32_IMM(c->op, BPF_REG_0, c->imm, 2);
+    insns[4] = BPF_ALU64_IMM(a->op, BPF_REG_0, a->imm2);
+    insns[5] = BPF_JMP_A(1);
+    insns[6] = BPF_ALU64_IMM(a->op, BPF_REG_0, a->imm3);
+    insns[7] = BPF_ALU64_IMM(BPF_AND, BPF_REG_0, 0xffff);
+    insns[8] = BPF_EXIT_INSN();
+
+    char name[64];
+    snprintf(name, sizeof(name), "mix#hi.%s.%s#%03d", a->name, c->name, index);
+    run_one(name, insns, 9);
+}
+
+static void run_mixed_family(void) {
+    int index = 0;
+    for (int wide_first = 1; wide_first >= 0; wide_first--)
+        for (int alu_i = 0; alu_i < GEN_ALU_N; alu_i++)
+            for (int cmp_i = 0; cmp_i < GEN_CMP_N; cmp_i++)
+                run_mixed(alu_i, cmp_i, wide_first, index++);
+    static const int SIZES[] = {8, 16, 32};
+    for (int i = 0; i < 3; i++)
+        for (int cmp_i = 0; cmp_i < GEN_CMP_N; cmp_i++)
+            run_movsx(SIZES[i], cmp_i, index++);
+    for (int alu_i = 0; alu_i < GEN_ALU_N; alu_i++)
+        for (int cmp_i = 0; cmp_i < GEN_CMP_N; cmp_i++)
+            run_upper_half(alu_i, cmp_i, index++);
+}
+
 int main(int argc, char **argv) {
     // Two data sources, kept apart on purpose (different provenance):
     //   (no args) the fixed authoritative program set, pinned by tests
     //   --gen     the enumerated targeted family (devlog 0025)
     if (argc > 1 && strcmp(argv[1], "--gen") == 0) {
         run_generated_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-mix") == 0) {
+        run_mixed_family();
         return 0;
     }
 

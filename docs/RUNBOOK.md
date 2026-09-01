@@ -171,7 +171,14 @@ ACCEL=tcg ./scripts/boot-vm.sh    # disposable VM, seri konsol (KVM yok, TCG kul
 KVM ~10–20x daha hızlı olurdu; ama loop mantığı **period = exec-count** olduğu için
 sadece duvar-saati etkilenir, sonuçlar değil.
 
-**KVM'i açmayı denemek (host-side, senin yapman gereken):**
+**ÖNEMLİ (reviewer düzeltmesi, 2026-09-01):** WSL2 için **nested virtualization
+Windows 11'e özgü** — Windows 10'da çalışmıyor. Daha önceki "Win10'da da olabilir"
+beklentisi **yanlıştı ve geri alındı**. Yani aşağıdaki adımlar Win10'da hiçbir zaman
+başarılı olmayacak; **Win11'e geçiş KVM için gerçek bir ön koşuldur**, opsiyonel bir
+ayar değil. Geçiş yedekleme planı: `wsl --export`, git remote'a push, ve kurulumda
+"Keep personal files and apps".
+
+**KVM'i açmayı denemek (host-side, senin yapman gereken — Win11 gerekir):**
 1. Windows'ta `wsl --shutdown`, sonra WSL'i yeniden aç.
 2. WSL içinde test et:
    ```bash

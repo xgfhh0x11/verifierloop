@@ -70,6 +70,10 @@ fn main() {
         dif.summary.tnum_bounds_checked,
         dif.summary.documented_cases_checked
     );
+    println!(
+        "         32<->64 subregister views carrying independent information: {}",
+        dif.summary.reg32_checked
+    );
     // The intrinsic leg's denominator is the one that was missing until 0025, and
     // its absence hid the real state of the corpus: the committed syzkaller volume
     // scores ZERO here, so that leg's "0 findings" was 0 out of 0.

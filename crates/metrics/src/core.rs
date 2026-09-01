@@ -32,7 +32,12 @@ pub struct Tnum {
 }
 
 /// One register's abstract state at a point in verification.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The verifier tracks a scalar TWICE: as a full 64-bit value and as its 32-bit
+/// subregister, and it must keep the two views reconciled (`__reg32_deduce_bounds`
+/// / `__reg64_deduce_bounds`). Both views are recorded here because a disagreement
+/// BETWEEN them is a bug class neither view can show on its own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegState {
     /// Register number (0..=10).
     pub reg: u8,
@@ -48,6 +53,23 @@ pub struct RegState {
     pub smin: i64,
     /// Signed max bound.
     pub smax: i64,
+    /// 32-bit unsigned min, when the verifier printed a 32-bit view.
+    ///
+    /// `None` means the verifier did NOT print one — which is not the same as zero,
+    /// and the difference matters: an absent view is nothing to check, a present
+    /// zero is an observation. Serialized only when present, so artifacts written
+    /// before the 32-bit view existed stay byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub u32_min: Option<u64>,
+    /// 32-bit unsigned max, when printed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub u32_max: Option<u64>,
+    /// 32-bit signed min, when printed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub s32_min: Option<i64>,
+    /// 32-bit signed max, when printed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub s32_max: Option<i64>,
 }
 
 /// Registers of interest at one instruction index — a snapshot in the evolution.

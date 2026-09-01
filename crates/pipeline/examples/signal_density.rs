@@ -37,6 +37,11 @@ struct Density {
     records_with_cross: usize,
     /// Distinct branch merges the verifier had to perform (`total_states`).
     states: u64,
+    /// Registers where the verifier printed ANY 32-bit field at all.
+    has32: usize,
+    /// Of those, the ones carrying information independent of the 64-bit view —
+    /// the 32<->64 denominator (`diff::reg32_checkable`).
+    cross32: usize,
 }
 
 fn measure(path: &PathBuf) -> Density {
@@ -68,6 +73,16 @@ fn measure(path: &PathBuf) -> Density {
                     d.cross_domain += 1;
                     cross_here += 1;
                 }
+                if r.u32_min.is_some()
+                    || r.u32_max.is_some()
+                    || r.s32_min.is_some()
+                    || r.s32_max.is_some()
+                {
+                    d.has32 += 1;
+                }
+                if pipeline::diff::reg32_checkable(r) {
+                    d.cross32 += 1;
+                }
             }
         }
         if cross_here > 0 {
@@ -82,8 +97,8 @@ fn main() {
     assert!(!paths.is_empty(), "usage: signal_density <capture> [<capture> ...]");
 
     println!(
-        "{:<30} {:>7} {:>7} {:>7} {:>8} {:>9} {:>7} {:>10} {:>7}",
-        "capture", "blocks", "records", "regs", "partial", "narrowed", "cross", "cross/rec", "%recs"
+        "{:<30} {:>7} {:>7} {:>7} {:>8} {:>7} {:>9} {:>8} {:>9}",
+        "capture", "blocks", "records", "regs", "partial", "cross", "cross/rec", "32-view", "32-chk"
     );
     println!("{}", "-".repeat(106));
     for p in &paths {
@@ -99,10 +114,11 @@ fn main() {
         } else {
             0.0
         };
+        let _ = pct;
         println!(
-            "{:<30} {:>7} {:>7} {:>7} {:>8} {:>9} {:>7} {:>10.2} {:>6.1}%",
+            "{:<30} {:>7} {:>7} {:>7} {:>8} {:>7} {:>9.2} {:>8} {:>9}",
             name, d.blocks, d.records, d.reg_observations, d.partial_tnum,
-            d.narrowed_bounds, d.cross_domain, per_rec, pct
+            d.cross_domain, per_rec, d.has32, d.cross32
         );
     }
     println!();
@@ -110,4 +126,8 @@ fn main() {
     println!("        bounds — the only shape the intrinsic tnum-vs-bounds check can fire on.");
     println!("cross/rec = chances at a finding bought per execution. THIS is the number the");
     println!("        input budget should be spent to maximise.");
+    println!("32-view = registers where the verifier printed a 32-bit field at all.");
+    println!("32-chk  = of those, the ones whose 32-bit view says something the 64-bit view");
+    println!("        does not — the only shape a 32<->64 desync can show in. A corpus of");
+    println!("        single-width programs scores 0 here however large it gets.");
 }

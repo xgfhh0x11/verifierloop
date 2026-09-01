@@ -160,6 +160,15 @@ pub struct DiffSummary {
     /// never happen silently again.
     #[serde(default)]
     pub tnum_bounds_checked: u64,
+    /// Register observations where the 32-bit subregister view carried INDEPENDENT
+    /// information about the 64-bit one — the denominator for the 32<->64 checks.
+    ///
+    /// Same discipline as `tnum_bounds_checked`: the verifier often prints the two
+    /// views as one shared token (`umax=umax32=255`), and comparing a value with
+    /// itself cannot fail. Only observations where the two views actually SAY
+    /// something different are counted.
+    #[serde(default)]
+    pub reg32_checked: u64,
 }
 
 /// The DIFF_FINDINGS payload for a period.
@@ -223,10 +232,12 @@ pub fn run(
     let mut helper_args_checked = 0u64;
     let mut documented_cases_checked = 0u64;
     let mut tnum_bounds_checked = 0u64;
+    let mut reg32_checked = 0u64;
     for (idx, record) in metrics.records.iter().enumerate() {
         let idx = idx as u64;
         helper_args_observed += record.core.helper_arg_observations.len() as u64;
         check_logical_invariants(idx, record, &mut findings, &mut tnum_bounds_checked);
+        check_subregister_invariants(idx, record, &mut findings, &mut reg32_checked);
         check_helper_proto(idx, record, ground_truth, &mut findings);
         check_helper_observations(
             idx,
@@ -253,6 +264,7 @@ pub fn run(
         documented_cases_checked,
         note_count: notes.len() as u64,
         tnum_bounds_checked,
+        reg32_checked,
     };
 
     let out = DiffFindings {
@@ -531,6 +543,149 @@ fn check_documented_behavior(
     true
 }
 
+/// Whether the 32-bit view of this register is INDEPENDENT information.
+///
+/// The verifier prints the two views collapsed into one token whenever they agree
+/// (`smax=umax=smax32=umax32=255`), so a register whose 32-bit endpoints simply
+/// equal the low half of its 64-bit endpoints tells us nothing new — comparing them
+/// compares a value with itself, the same tautology `tnum_bounds_checkable` excludes
+/// for constants. It only becomes a check when the two views diverge, or when the
+/// 64-bit range spans more than one 2^32 block (there the 32-bit view constrains
+/// something the 64-bit endpoints alone do not).
+pub fn reg32_checkable(reg: &RegState) -> bool {
+    if reg.reg_type != "scalar" {
+        return false;
+    }
+    let (lo32, hi32) = reg32_unsigned(reg);
+    // A full 32-bit range says nothing and can contradict nothing.
+    if lo32 == 0 && hi32 == u32::MAX as u64 {
+        return false;
+    }
+    lo32 != (reg.umin & 0xffff_ffff)
+        || hi32 != (reg.umax & 0xffff_ffff)
+        || (reg.umin >> 32) != (reg.umax >> 32)
+}
+
+/// The 32-bit unsigned range, resolving an omitted bound to its extreme.
+///
+/// `kernel/bpf/log.c:print_scalar_ranges()` omits a bound that sits at its extreme,
+/// so an absent `umin32=` means 0 and an absent `umax32=` means `U32_MAX`. The
+/// PARSER keeps the silence (`None`); the interpretation lives here, next to the
+/// check that depends on it.
+fn reg32_unsigned(reg: &RegState) -> (u64, u64) {
+    (
+        reg.u32_min.unwrap_or(0),
+        reg.u32_max.unwrap_or(u32::MAX as u64),
+    )
+}
+
+/// Intrinsic checks on the 32-bit subregister view (devlog 0026).
+///
+/// The verifier tracks a scalar twice — as a 64-bit value and as its 32-bit
+/// subregister — and `reg_bounds_sync()` has to keep the two reconciled. A
+/// disagreement between them is a soundness-relevant bug class neither view can
+/// reveal alone, and historically the densest one in the verifier's range tracking.
+///
+/// Every check below is an OVER-APPROXIMATION INTERSECTION: each tracker
+/// independently over-approximates the same non-empty set of reachable values, so
+/// any two of them must intersect. An empty intersection is a contradiction the
+/// verifier produced against itself — no external ground truth needed.
+fn check_subregister_invariants(
+    idx: u64,
+    record: &MetricRecord,
+    out: &mut Vec<DivergenceFinding>,
+    checked: &mut u64,
+) {
+    for snap in &record.core.register_evolution {
+        for reg in &snap.regs {
+            if reg.reg_type != "scalar" {
+                continue;
+            }
+            let (u32min, u32max) = reg32_unsigned(reg);
+            let where_ = format!("insn {} r{} ({})", snap.insn_idx, reg.reg, reg.reg_type);
+
+            // (A) Ordering. An inverted 32-bit range denotes the empty set — a
+            // contradiction on its own, independent of the 64-bit view.
+            if u32min > u32max {
+                out.push(DivergenceFinding {
+                    record_index: Some(idx),
+                    source: GroundTruthSource::LogicalInvariant,
+                    kind: "u32_bounds_inverted".to_string(),
+                    aspect: "bounds32".to_string(),
+                    expected: "u32_min <= u32_max".to_string(),
+                    observed: format!("u32_min={u32min} u32_max={u32max}"),
+                    detail: format!("{where_}: inverted 32-bit unsigned range"),
+                });
+            }
+            // Omitted signed bounds resolve to the extremes, which can never be
+            // inverted — so this fires only on values the verifier actually printed.
+            let s32min = reg.s32_min.unwrap_or(i32::MIN as i64);
+            let s32max = reg.s32_max.unwrap_or(i32::MAX as i64);
+            {
+                let (a, b) = (s32min, s32max);
+                if a > b {
+                    out.push(DivergenceFinding {
+                        record_index: Some(idx),
+                        source: GroundTruthSource::LogicalInvariant,
+                        kind: "s32_bounds_inverted".to_string(),
+                        aspect: "bounds32".to_string(),
+                        expected: "s32_min <= s32_max".to_string(),
+                        observed: format!("s32_min={a} s32_max={b}"),
+                        detail: format!("{where_}: inverted 32-bit signed range"),
+                    });
+                }
+            }
+
+            if !reg32_checkable(reg) {
+                continue;
+            }
+            *checked += 1;
+
+            // (B) The tnum's low 32 bits vs the 32-bit range: both describe the same
+            // set of reachable low halves, from different trackers.
+            let tlo = reg.tnum.value & 0xffff_ffff;
+            let thi = (reg.tnum.value | reg.tnum.mask) & 0xffff_ffff;
+            if thi < u32min || tlo > u32max {
+                out.push(DivergenceFinding {
+                    record_index: Some(idx),
+                    source: GroundTruthSource::LogicalInvariant,
+                    kind: "tnum32_bounds_inconsistent".to_string(),
+                    aspect: "bounds32".to_string(),
+                    expected: "tnum low-32 span intersects [u32_min, u32_max]".to_string(),
+                    observed: format!("tnum32_span=[{tlo},{thi}] u32=[{u32min},{u32max}]"),
+                    detail: format!("{where_}: tnum and 32-bit bounds disjoint"),
+                });
+            }
+
+            // (C) 64-bit range vs 32-bit range. Sound ONLY while the 64-bit range is
+            // confined to one 2^32 block: then every value shares an upper half and
+            // its low half must fall in the window the 64-bit endpoints cut. Across
+            // a block boundary the low half wraps and the 64-bit endpoints constrain
+            // nothing, so the check is SKIPPED there rather than guessed.
+            if (reg.umin >> 32) == (reg.umax >> 32) {
+                let wlo = reg.umin & 0xffff_ffff;
+                let whi = reg.umax & 0xffff_ffff;
+                if whi < u32min || wlo > u32max {
+                    out.push(DivergenceFinding {
+                        record_index: Some(idx),
+                        source: GroundTruthSource::LogicalInvariant,
+                        kind: "reg32_reg64_inconsistent".to_string(),
+                        aspect: "bounds32".to_string(),
+                        expected: "64-bit low-half window intersects [u32_min, u32_max]"
+                            .to_string(),
+                        observed: format!(
+                            "low_half_window=[{wlo},{whi}] u32=[{u32min},{u32max}] \
+                             (umin={} umax={})",
+                            reg.umin, reg.umax
+                        ),
+                        detail: format!("{where_}: 32-bit and 64-bit views disagree"),
+                    });
+                }
+            }
+        }
+    }
+}
+
 /// Whether the tnum-vs-bounds consistency check has INDEPENDENT information about
 /// this register — i.e. whether it could possibly fire.
 ///
@@ -625,6 +780,7 @@ mod tests {
             umax: 255,
             smin: 0,
             smax: 255,
+            ..Default::default()
         }
     }
 

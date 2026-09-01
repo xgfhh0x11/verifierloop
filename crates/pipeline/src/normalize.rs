@@ -177,6 +177,7 @@ impl RecordParser for ReferenceParser {
                             umax: 255,
                             smin: 0,
                             smax: 255,
+                            ..Default::default()
                         }],
                     }],
                     processed: Processed { insn_processed: 12, states_processed: 3 },

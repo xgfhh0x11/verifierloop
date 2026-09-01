@@ -445,6 +445,8 @@ fn build_regstate(reg: u8, expr: &str) -> RegState {
             umax: u,
             smin: i,
             smax: i,
+            // A bare const carries no separate 32-bit view in the log.
+            ..Default::default()
         };
     }
     // (b) scalar(...) with optional bounds / var_off.
@@ -458,6 +460,16 @@ fn build_regstate(reg: u8, expr: &str) -> RegState {
             umax: field_u64(expr, "umax=").unwrap_or(u64::MAX),
             smin: field_i64(expr, "smin=").unwrap_or(i64::MIN),
             smax: field_i64(expr, "smax=").unwrap_or(i64::MAX),
+            // The 32-bit view is OPTIONAL because the kernel OMITS a bound that
+            // sits at its extreme (log.c: `omit` when smin32 == S32_MIN, umax32 ==
+            // U32_MAX, ...). `None` therefore means "the verifier said nothing here",
+            // and the consumer — not the parser — decides that this is the same as
+            // "at the extreme". Substituting the extreme here would turn a silence
+            // into an observation.
+            u32_min: field_u64(expr, "umin32="),
+            u32_max: field_u64(expr, "umax32="),
+            s32_min: field_s32(expr, "smin32="),
+            s32_max: field_s32(expr, "smax32="),
         };
     }
     // (c) pointer / ctx / fp / map_value / etc. — verbatim type prefix.
@@ -470,6 +482,7 @@ fn build_regstate(reg: u8, expr: &str) -> RegState {
         umax: 0,
         smin: 0,
         smax: 0,
+        ..Default::default()
     }
 }
 
@@ -556,6 +569,30 @@ fn field_u64(s: &str, key: &str) -> Option<u64> {
 fn field_i64(s: &str, key: &str) -> Option<i64> {
     let (_, i) = parse_const_int(value_after_key(s, key)?)?;
     Some(i)
+}
+
+/// Parse a 32-bit SIGNED bound (`smin32=` / `smax32=`), which the kernel prints by
+/// a rule the 64-bit fields do not share.
+///
+/// `kernel/bpf/log.c:print_scalar_ranges()` states it outright: signed values are
+/// printed as decimals when they read naturally, otherwise in hex — and
+/// "we avoid sign extension if we choose to print values in hex". So
+/// `smin32=0x80000010` is the raw `(u32)` bit pattern of a NEGATIVE number
+/// (-2147483632), not the positive integer it reads as. Parsing it as a plain
+/// integer yields a value outside the i32 domain entirely, which then looks exactly
+/// like the verifier reporting an inverted range.
+///
+/// Decimal forms are already sign-correct and pass through untouched.
+fn field_s32(s: &str, key: &str) -> Option<i64> {
+    let tok = value_after_key(s, key)?;
+    let is_hex = tok.starts_with("0x") || tok.starts_with("0X") || tok.starts_with("-0x");
+    let (u, i) = parse_const_int(tok)?;
+    if is_hex {
+        // Reinterpret the printed 32-bit pattern as i32, then widen.
+        Some((u as u32) as i32 as i64)
+    } else {
+        Some(i)
+    }
 }
 
 /// Parse the leading unsigned integer immediately after `key` in `s`.
@@ -754,6 +791,41 @@ processed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
             }
         );
         assert_eq!(c.processed.insn_processed, 1);
+    }
+
+    #[test]
+    fn extracts_the_32_bit_subregister_view() {
+        let r = parse_reg_token("R0=scalar(umin=256,umax=511,umin32=1000,umax32=2000)")
+            .expect("reg parses");
+        assert_eq!((r.umin, r.umax), (256, 511));
+        assert_eq!((r.u32_min, r.u32_max), (Some(1000), Some(2000)));
+        // Omitted fields stay None: the kernel drops a bound sitting at its extreme
+        // (log.c), and turning that silence into a number here would invent an
+        // observation the verifier never made.
+        assert_eq!((r.s32_min, r.s32_max), (None, None));
+    }
+
+    #[test]
+    fn a_hex_printed_s32_is_read_as_a_32_bit_signed_value() {
+        // kernel/bpf/log.c:print_scalar_ranges() prints signed bounds in hex WITHOUT
+        // sign extension, so `smin32=0x80000010` is the raw u32 pattern of
+        // -2147483632. Reading it as a plain integer yields +2147483664 — outside the
+        // i32 domain entirely — which then looks exactly like an inverted range.
+        // That mistake produced ten bogus findings on the first real capture (0026).
+        let r = parse_reg_token(
+            "R0=scalar(smin=umin=256,smax=umax=0x1000000ff,smin32=0x80000010,var_off=(0x10; 0x1ffffffef))",
+        )
+        .expect("reg parses");
+        assert_eq!(r.s32_min, Some(-2_147_483_632));
+        // The 64-bit fields keep two's-complement semantics on the full width.
+        assert_eq!(r.smax, 0x1_000_000_ff);
+    }
+
+    #[test]
+    fn a_decimal_negative_s32_passes_through_unchanged() {
+        let r = parse_reg_token("R0=scalar(umin=0,umax=100,smin32=-5,smax32=-4)")
+            .expect("reg parses");
+        assert_eq!((r.s32_min, r.s32_max), (Some(-5), Some(-4)));
     }
 
     #[test]

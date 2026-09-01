@@ -15,6 +15,11 @@ Closed items are removed from here and their resolution recorded in the devlog.
 - **Blocked by:** KVM unavailable on this host (probed 2026-08-28: `/dev/kvm` exists
   but `-enable-kvm` → `No such device`, and `grep -c '(vmx|svm)' /proc/cpuinfo` = **0**,
   i.e. the CPU virtualization flags are not exposed at all).
+  **Correction (reviewer, 2026-09-01):** WSL2 nested virtualization is **Windows
+  11-specific** and does not work on Windows 10. An earlier expectation that it might
+  work on Win10 was wrong and is retracted. So the Win11 migration is a genuine
+  PRECONDITION for KVM, not an optional tweak — which also means this item cannot be
+  settled by any amount of work inside the repo.
 
 **What happened.** A 30-minute syzkaller campaign produced two crashes:
 `int3 in sk_filter_trim_cap` and `int3 in __seccomp_filter`
@@ -213,8 +218,20 @@ both volume captures.)*
 
 ## OI-9 — The targeted family covers one program SHAPE, not the input space
 
-- **Status:** OPEN (this is the next planned increment, not a defect)
+- **Status:** OPEN, **NARROWED 2026-09-01 by devlog 0026.** The 32<->64 half is done;
+  what is listed below under "still not reached" is what remains.
 - **Raised:** 2026-09-01 (devlog 0025)
+- **Closed half (0026):** mixed-width programs now exist — four sub-families, 396
+  programs (`mix#64-32`, `mix#32-64`, `mix#movsx*`, `mix#hi`), and the 32<->64
+  denominator went from **0 to 353** on the real tree. Measured along the way: the
+  obvious version of this (just interleaving widths) scored only **4** on bpf-next,
+  because its deduction reconciles the two views almost perfectly whenever the value
+  fits in one 2^32 block — and a ctx `u32` load always does. What actually reaches
+  the region is `mix#hi`: shift the unknown bits into the UPPER half, then narrow only
+  the lower one. Yield is still only ~18% of registers that print a 32-bit view.
+- **Still not reached:** register-to-register ALU operands (a different verifier path
+  from the immediate forms), multi-branch and looping control flow, pointer
+  arithmetic, and `BPF_LD_IMM64` 64-bit constants.
 - **What:** `diffharness --gen` enumerates `11 alu x 11 compare x {64,32}-bit` = 242
   programs, and that cross-product IS covered. But every one of them is the same
   8-instruction skeleton: one shaping op, one branch, one op per path, immediate
@@ -229,9 +246,8 @@ both volume captures.)*
 - **Why it matters:** "0 findings out of 1497 checks" is a real result, but it is a
   result about ONE program shape. Reading it as "the verifier's range tracking is
   sound" would be exactly the over-reading this file exists to prevent.
-- **Next increment (highest value first):** mixed-width programs, then `movsx`, then
-  register-register operands. The 32<->64 sync is historically the densest source of
-  verifier range bugs, and it is the thing the current family structurally cannot hit.
+- **Next increment (highest value first):** register-register operands, then
+  multi-branch flow. (Mixed-width and `movsx` were the previous two and are done.)
 
 ---
 

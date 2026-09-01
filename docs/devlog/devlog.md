@@ -50,6 +50,7 @@ Her entry'nin sabit bir formatı vardır:
 | 0023 | **patch-diff (kaynak 4)**: doküman-vs-kod bayatlık kanıtı + SCC parser kör noktası | Tamamlandı (doküman 351 commit geride) |
 | 0024 | **`verifier.rst` mesaj bölümü**: 11 örnek program → ilk SAĞLAMLIK ölçümü + `notes` (kanıt) kanalı | Tamamlandı (13 vaka; 12/12 karar uyuştu; 1 vaka kaynakta doğrulanmış önkoşulla superseded) |
 | 0025 | **Hedefli üretim** (242 enumerative program) + intrinsic kolun eksik paydası | Tamamlandı (syzkaller hacmi: 0 kontrol edilebilir gözlem; hedefli: 1497) |
+| 0026 | **32↔64 senkron kolu**: CORE'a 32-bit görünüm + 3 invariant + karışık-genişlik aile (396) | Tamamlandı (32↔64 paydası 0 → 353; yol boyunca 10 sahte bulgu üreten parser hatası düzeltildi) |
 
 ### Pipeline durumu (özet)
 
@@ -2185,3 +2186,142 @@ BLOCKS   242 = 242 records + 0 unparsed
 - **İki-revizyon differential** (reviewer sırasında 2.) — oracle olarak doküman değil
   başka bir kernel.
 - KVM (3.) — donanım; açılınca hedefleme × hacim.
+
+---
+
+## 0026 — 32↔64 senkron bölgesi: parser'ı açmak, kolu kurmak, aileyi oraya sokmak
+
+- **Tarih:** 2026-09-01
+- **Durum:** Tamamlandı — OI-9'un işaret ettiği kör nokta kapandı. Yol boyunca
+  **10 sahte bulgu üreten bir parser hatası** bulundu ve kaynakta doğrulanarak düzeltildi.
+- **Alan:** `metrics/core.rs` (32-bit görünüm CORE'a), `verifier_log.rs`
+  (`field_s32` + çıkarım), `diff.rs` (`check_subregister_invariants`,
+  `reg32_checkable`, `reg32_checked`), `harness/diffharness.c` (`--gen-mix`,
+  4 alt-aile), yeni fixture + `tests/subregister_calibration.rs`.
+- **İlgili:** OI-9, 0025, reviewer önceliklendirmesi.
+
+### Önce engel: nişan alsak da sinyali göremiyorduk
+OI-9 "aileyi 32↔64 bölgesine genişlet" diyordu. Genişletmeden önce ölçtüm:
+verifier o bölgenin verisini **basıyor** — hedefli yakalamada `...32=` içeren
+**1258 satır** — ama **parser onları hiç okumuyordu**. CORE'da `u32_min/u32_max/
+s32_min/s32_max` alanları yoktu. Yani doğru programları üretip **tam da önemli olan
+yarıyı çöpe atacaktık**. 0026 bu yüzden üç parçalı oldu: parser → kol → aile.
+
+### 1. CORE'a 32-bit görünüm (Option olarak, ve bu bilinçli)
+`RegState`'e dört alan eklendi, hepsi `Option`. Sebep `kernel/bpf/log.c`'de:
+`print_scalar_ranges()` bir sınırı **ekstremdeyse basmıyor** (`omit`). Yani "basılmadı"
+ile "sıfır" farklı şeyler. Parser **sessizliği koruyor**; ekstreme çözme işini
+**tüketici** yapıyor (`reg32_unsigned`, yanında gerekçesiyle). `skip_serializing_if`
+sayesinde golden fixture byte-identical kaldı.
+
+### 2. Yeni kol — üç invariant, hepsi aynı ispat şemasında
+Verifier bir skaleri **iki kez** izliyor (64-bit ve 32-bit alt-register) ve
+`reg_bounds_sync()` ikisini uzlaştırmak zorunda. Üç kontrol de **aşırı-yaklaşım
+kesişimi**: her izleyici aynı boş-olmayan erişilebilir değer kümesini bağımsız olarak
+aşırı-yaklaşıyor, öyleyse ikisi **kesişmek zorunda**; boş kesişim = verifier'ın
+kendisiyle çelişmesi. Dış ground-truth gerekmiyor.
+
+| kontrol | ne karşılaştırıyor |
+| --- | --- |
+| `u32_bounds_inverted` / `s32_bounds_inverted` | 32-bit aralığın kendi sıralaması |
+| `tnum32_bounds_inconsistent` | tnum'un alt-32 span'i ↔ `[u32_min, u32_max]` |
+| `reg32_reg64_inconsistent` | 64-bit aralığın alt-yarı penceresi ↔ 32-bit aralık |
+
+Sonuncusu **yalnız 64-bit aralık tek bir 2³² bloğunda kaldığında** sağlam (o zaman
+tüm değerler aynı üst yarıyı paylaşır); blok sınırını aşınca alt yarı sarmalanır ve
+64-bit uçlar hiçbir şey söylemez → kontrol **tahmin etmek yerine atlanıyor**.
+
+Payda (duran kural): `reg32_checked`. Ve payda yine tautoloji ayıklıyor — verifier iki
+görünüm uyuştuğunda onları **tek token** olarak basıyor (`umax=umax32=255`); bir değeri
+kendisiyle karşılaştırmak ateşleyemez, o yüzden sayılmıyor.
+
+### 3. ASIL OLAY — ilk koşu 10 bulgu üretti, hepsi BENİM parser'ımdı
+Yeni kol commit'li 242-programlık yakalamada **divergences=10** verdi. Proje kuralı
+gereği ilk şüpheli verifier değil parser'dı — ve öyleydi:
+```
+s32_min=2147483888  s32_max=-5      <-- "ters aralık"
+ham satır:  smin32=0x80000010
+```
+Gerekçe kaynakta, hem de yorumuyla — `kernel/bpf/log.c:558-567`:
+> *"if we choose to print them in hex format then sign extension is misleading …
+> **So we avoid sign extension if we choose to print values in hex.**"*
+
+Yani hex basılan `smin32` **ham u32 pattern'i**; `0x80000010` = **-2147483632**.
+Düz tamsayı okunduğunda +2147483664 çıkıyor — i32 alanının tamamen dışında — ve bu
+tam olarak "verifier imkânsız bir aralık raporladı" gibi görünüyor. **Makul ama yanlış**
+veri: 0023'ün SCC kör noktasıyla aynı sınıf, en tehlikelisi, çünkü sessizce güven
+vermiyor — **bağırarak yanlış güven veriyor**. `field_s32` eklendi (hex → i32 →
+sign-extend; decimal dokunulmadan geçer), 10 bulgu sıfıra düştü, 3 parser regresyon
+testi yazıldı.
+
+### 4. Aile — ve neden ilk denemem yetmedi
+Dört alt-aile, hepsi enumerative:
+`mix#64-32` (121), `mix#32-64` (121), `mix#movsx8/16/32` (33), `mix#hi` (121) = **396**.
+
+İlk üçünü yazıp ölçtüm: host kernel'de **152** bağımsız görünüm, ama **gerçek
+bpf-next'te sadece 4**. Sebep tahmin değil ölçüm: bpf-next'in deduction'ı, değer tek
+bir 2³² bloğuna sığdığında iki görünümü neredeyse kusursuz uzlaştırıyor — ve ctx'ten
+gelen bir u32 yüklemesi **hep** öyle sığıyor. Yani "karışık genişlik" tek başına yetmiyor.
+
+Gereken şekil: **belirsiz bitleri ÜST yarıya taşı, sonra yalnız ALT yarıyı daralt.**
+`r0 <<= 32` sonrası 64-bit aralık çok sayıda bloğa yayılıyor (64-bit uçlar alt yarıyı
+hiç kısıtlamıyor) ama 32-bit karşılaştırma alt yarıyı tam olarak sabitliyor — iki
+görünümün **bağımsız tutulmak zorunda** olduğu yer tam burası. (BPF'in bir özelliği
+alternatifi kapatıyor: her 32-bit ALU op üst yarıyı **sıfırlar**, yani üst yarı
+belirsiz kalırken alt yarı düzenlenemez; şekillendirme 64-bit olmak zorunda, sadece
+**karşılaştırma** 32-bit.) `mix#hi` bu.
+
+### Ölçüm — gerçek bpf-next VM'inde, üç corpus yan yana
+```
+capture                    blocks records   regs  partial   cross cross/rec  32-view  32-chk
+syz-replay-184.log            184     151    944        0       0      0.00        0       0
+gen-targeted-242.log          242     242   2512     1499    1497      6.19     1138       0
+gen-mixed-396.log             396     396   4340     2488    2167      5.47     1965     353
+```
+```
+RECORDS  396 (accept 396 / reject 0)
+SIGNAL   divergences=0
+CHECKS   tnum-vs-bounds: 2167   |   32<->64 bağımsız görünüm: 353
+BLOCKS   396 = 396 records + 0 unparsed   UNRECOGNIZED: 0/396 = 0.0%
+```
+**OI-9'un iddiası artık bir sayı:** tek-genişlikli aile **1138 register'da** 32-bit
+görünüm bastırdı ve **hiçbiri** bağımsız bilgi taşımadı — yapısal, daha çok program
+eklemek değiştirmez. Karışık aile **353**.
+
+### Doğrulama
+- **7 kalibrasyon testi** (`subregister_calibration.rs`), hepsi **gerçek parser
+  yolunda** (bu kolun ilk koşusu bir parser hatası ürettiği için parser'ı atlayan test
+  işe yaramaz): uyumda susar; tnum↔u32 çelişince bağırır; 32↔64 çelişince bağırır;
+  ters aralıkta bağırır; **64-bit'i tekrarlayan görünüm kontrol sayılmaz**; tam
+  32-bit aralık sayılmaz; **hex-negatif s32 ters aralık DEĞİLDİR** (bugün bulunan
+  hatanın regresyonu).
+- **3 parser birim testi** + **4 corpus testi** (396 kayıt, 4 alt-aile, tekil etiket,
+  0 kör nokta, ve tek-genişlikli ailenin **tam 0** aldığı pinlenmiş).
+- Full suite **90 → 104 passed**, 0 failed.
+
+### Dürüst sınırlar
+- **Bulgu yok.** 2167 + 353 kontrol, 0 divergence.
+- 353/1965 ≈ **%18** — 32-bit görünüm basılan register'ların çoğu hâlâ 64-bit'i
+  tekrarlıyor. bpf-next'in senkronu sıkı; bu iyi haber ama düşük verim demek.
+- Hâlâ kapsanmayan şekiller: **register-register operand** (immediate formundan farklı
+  verifier yolu), çok-dallı/döngülü akış, pointer aritmetiği, `BPF_LD_IMM64` ile
+  64-bit sabitler. OI-9 kapanmadı, **daraltıldı**.
+- Metrik bir vekil olmayı sürdürüyor: yüksek payda ateşleme *ihtimalinin* sıfır
+  olmadığını garanti eder, bug bulma gücünü değil.
+
+### Dokunulan dosyalar
+- `crates/metrics/src/core.rs` (`RegState` + 4 opsiyonel 32-bit alan, `Default`)
+- `crates/pipeline/src/verifier_log.rs` (`field_s32`, çıkarım, +3 test)
+- `crates/pipeline/src/diff.rs` (yeni kol, `reg32_checkable`, `reg32_unsigned`, payda)
+- `harness/diffharness.c` (`--gen-mix`, `run_mixed`/`run_movsx`/`run_upper_half`)
+- `crates/pipeline/tests/fixtures/volume/gen-mixed-396.log` (yeni, in-VM)
+- `crates/pipeline/tests/subregister_calibration.rs` (yeni, 7 test),
+  `tests/targeted_generation.rs` (+4 test)
+- `crates/pipeline/examples/signal_density.rs`, `examples/parse_report.rs`
+- `python/.../schemas/core.py`, `schemas/diff.py` (mirror)
+- `docs/RUNBOOK.md` + `docs/REVIEW-HANDOFF.md` (KVM/Win11 düzeltmesi)
+
+### Sonraki adımlar
+- **OI-9 kalanı:** register-register operandlar ve çok-dallı akış.
+- **İki-revizyon differential** (reviewer sırasında 2.) — oracle olarak başka bir kernel.
+- KVM: **Win11 gerçek ön koşul** (reviewer düzeltmesi; Win10'da nested-virt yok).

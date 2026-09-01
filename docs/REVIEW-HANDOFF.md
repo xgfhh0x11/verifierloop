@@ -11,8 +11,8 @@
 > - **Repo kökü:** `/home/tylersec/verifierloop` — **git deposu** (branch `main`,
 >   **22 commit**, HEAD `f6a763c`)
 > - **Kernel rev (hedef):** `5e289c5a4a526e870efac0ca658635c47138593a` (`.lab/kernel.rev`)
-> - **Son devlog entry'si:** `0025` — `docs/devlog/devlog.md`
-> - **Test durumu:** `cargo test` → **90 passed, 0 failed** (2026-09-01 teyit edildi)
+> - **Son devlog entry'si:** `0026` — `docs/devlog/devlog.md`
+> - **Test durumu:** `cargo test` → **104 passed, 0 failed** (2026-09-01 teyit edildi)
 
 ---
 
@@ -58,9 +58,15 @@ intrinsic invariant kolu (projenin ilk ve en iyi kalibre kolu) 279 blok boyunca
 **incelenecek tek bir soyut durum görmedi**. "0 divergence"ı **0 bulgu / 0 kontrol**tü.
 Hedefli corpus'ta aynı sayı **1497 kontrol / 0 bulgu** (✔ V16).
 
-**Ölçülen sayılar:** parser kör nokta oranı **%0** (0/70, 0/151, 0/20 ve 0/242 — dört
-bağımsız yakalamada), koşu başına **~101 helper kontrolü**, **12 dokümante vaka
-kontrolü**, **1497 tnum↔bounds kontrolü**, **0 false positive**, **90 test** yeşil.
+**32↔64 bölgesi de açıldı (0026).** OI-9'un kör noktası kapandı: karışık-genişlik
+aile (396 program) + CORE'a 32-bit görünüm + 3 yeni invariant. 32↔64 paydası
+**0 → 353**. Yol boyunca **10 sahte bulgu üreten bir parser hatası** bulunup kaynakta
+doğrulanarak düzeltildi (hex basılan `smin32` sign-extend edilmiyor).
+
+**Ölçülen sayılar:** parser kör nokta oranı **%0** (0/70, 0/151, 0/20, 0/242 ve 0/396 —
+beş bağımsız yakalamada), koşu başına **~101 helper kontrolü**, **12 dokümante vaka
+kontrolü**, **2167 tnum↔bounds** ve **353 32↔64** kontrolü, **0 false positive**,
+**104 test** yeşil.
 
 **Reviewer'ın en çok şüpheyle bakması gereken nokta:** hacim **gerçek bir verifier
 bug'ı üretmedi** — beklenen sonuç (gerçek kernel + coverage-güdümlü corpus). Üç kol da
@@ -464,6 +470,38 @@ kapsamadığı şey **aynı programda 32/64 karışımı**, movsx, register-regi
 çok-dallı akış (**OI-9**). 32↔64 senkronu tarihsel olarak verifier range bug'larının en
 yoğun bölgesi ve mevcut aile oraya yapısal olarak **ulaşamıyor**.
 
+**(V17) 32↔64 SENKRON BÖLGESİ AÇILDI — ve bir parser hatası 10 sahte bulgu üretti (2026-09-01)**
+```
+capture                    blocks records   regs  partial   cross cross/rec  32-view  32-chk
+syz-replay-184.log            184     151    944        0       0      0.00        0       0
+gen-targeted-242.log          242     242   2512     1499    1497      6.19     1138       0
+gen-mixed-396.log             396     396   4340     2488    2167      5.47     1965     353
+```
+**Önce engel:** OI-9 "aileyi 32↔64'e genişlet" diyordu, ama ölçünce çıktı ki verifier o
+bölgenin verisini **basıyor** (hedefli yakalamada `...32=` içeren 1258 satır) ve
+**parser hiç okumuyordu**. Doğru programları üretip önemli yarıyı çöpe atacaktık. O
+yüzden 0026 üç parçalı: CORE'a 32-bit görünüm (Option — `log.c` ekstremdeki sınırı
+basmıyor, yani "basılmadı" ≠ "sıfır") → 3 yeni invariant + `reg32_checked` paydası →
+karışık-genişlik aile.
+
+**Ve ilk koşu 10 bulgu üretti — hepsi parser'dı.** `smin32=0x80000010` düz tamsayı
+okununca +2147483664 çıkıyor, yani "ters aralık" gibi görünüyor. `kernel/bpf/log.c:558`
+yorumu birebir söylüyor: *"we avoid sign extension if we choose to print values in
+hex"* → o hex ham u32 pattern'i, gerçek değer **-2147483632**. Bu **makul ama yanlış**
+veri sınıfı (0023'ün SCC'siyle aynı) ve en tehlikelisi: sessizce güven vermiyor,
+**bağırarak yanlış güven veriyor**. `field_s32` ile düzeltildi, 3 regresyon testi eklendi.
+
+**Ve ilk aile tasarımım yetmedi.** `64-32`/`32-64`/`movsx` alt-aileleri host kernel'de
+152 bağımsız görünüm verdi ama **bpf-next'te 4**: bpf-next'in deduction'ı, değer tek bir
+2³² bloğuna sığdığında iki görünümü kusursuz uzlaştırıyor — ve ctx'ten u32 yüklemesi
+hep sığıyor. Gereken şekil `mix#hi`: **belirsiz bitleri ÜST yarıya taşı (`r0 <<= 32`),
+sonra yalnız ALT yarıyı 32-bit karşılaştırmayla daralt.** Sonuç: **353**.
+
+**Reviewer bunu şöyle sorgulamalı:** "353 payda yeterli mi?" — 32-bit görünüm basılan
+1965 register'ın yalnız **%18'i**. bpf-next'in senkronu sıkı; iyi haber ama düşük verim.
+Ve OI-9 **kapanmadı, daraltıldı**: register-register operand, çok-dallı akış, pointer
+aritmetiği ve `BPF_LD_IMM64` hâlâ kapsam dışı.
+
 ---
 
 ## 5. Lab ortamı + kritik ortam gerçekleri
@@ -477,7 +515,11 @@ yoğun bölgesi ve mevcut aile oraya yapısal olarak **ulaşamıyor**.
 
 **KVM DURUMU (önemli; 2026-08-26, 08-28 ve 08-30'da tekrar probe edildi):** `/dev/kvm` node'u **var** (muhtemelen
 kullanıcının BIOS update'i) **ama** `qemu -enable-kvm` hâlâ `No such device` →
-nested-virt donanım katmanı kapalı → **her şey TCG** (yavaş). Kullanıcı Windows 11
+nested-virt donanım katmanı kapalı → **her şey TCG** (yavaş).
+**Düzeltme (reviewer, 2026-09-01):** WSL2 nested-virt **Windows 11'e özgüdür**;
+Windows 10'da çalışmaz. Yani Win11'e geçiş KVM için **gerçek bir ön koşul**, opsiyonel
+bir ayar değil — daha önceki "Win10'da da olur" beklentisi yanlıştı ve geri alındı.
+Kullanıcı Windows 11
 geçişinden sonra KVM'i açmayı planlıyor. Son probe (2026-08-30): `/dev/kvm` node'u var
 ama `grep -c -E '(vmx|svm)' /proc/cpuinfo` = **0** → CPU sanallaştırma bayrakları hiç
 görünmüyor. Period=exec-count olduğu için loop mantığı etkilenmez, sadece duvar-saati.
@@ -510,12 +552,11 @@ görünmüyor. Period=exec-count olduğu için loop mantığı etkilenmez, sadec
 
 **Sıradaki iş — reviewer sırası (2026-09-01):**
 
-0. ~~**Hedefli program üretimi**~~ — **YAPILDI (0025, ✔ V16).** 242 enumerative
-   program; intrinsic kolun paydası 0 → 1497. **Devamı OI-9:** aile tek bir program
-   şeklini kapsıyor; eksik olan **aynı programda 32/64 karışımı**, movsx,
-   register-register operand, çok-dallı akış. 32↔64 senkronu verifier range
-   bug'larının en yoğun bölgesi ve mevcut aile oraya yapısal olarak ulaşamıyor —
-   **sıradaki iş bu.** Eski gerekçe: rastgele corpus yerine verifier'ın
+0. ~~**Hedefli program üretimi**~~ — **YAPILDI (0025 + 0026, ✔ V16/V17).** 242 + 396
+   enumerative program; intrinsic kolun paydası 0 → 2167, ve 32↔64 paydası 0 → 353.
+   **Kalan OI-9:** register-register operand, çok-dallı/döngülü akış, pointer
+   aritmetiği, `BPF_LD_IMM64`. **Sıradaki iş bu** (ucuz, aynı iskelet).
+   Eski gerekçe: rastgele corpus yerine verifier'ın
    **soyut alanının zor kenarlarına** nişan alan enumerative üretim. Gerekçe: sınırlı
    input bütçesini rastgeleye değil, halihazırda **kalibre olan** intrinsic
    invariant kolunun (tnum/bounds/32-64 senkronu) ateşleyebileceği yere yoğunlaştırmak
@@ -551,7 +592,7 @@ Tam liste ve gerekçeler: `docs/OPEN-ITEMS.md`.
 
 Hafif (VM/root gerekmez):
 - **R1** `cargo build` → Finished. ✔ V1
-- **R2** `cargo test` → **90 passed, 0 failed**. ✔ V1
+- **R2** `cargo test` → **104 passed, 0 failed**. ✔ V1
 - **R3** `just check-python` (ya da elle import) → `python import OK`.
 - **R4** `cargo run -q -p pipeline --example report_demo -- /tmp/vl1` → `top_score=0.95`. ✔ V2
 - **R5** `cargo run -q -p pipeline --example harness_demo -- /tmp/vl2` → 6 gerçek kayıt (3 ranged-scalar dahil), 0 anomali. ✔ V3
@@ -603,6 +644,15 @@ Ağır (bpf-next VM boot eder; root + TCG, dakikalar):
 - **R27** (ağır) `HARNESS_ARGS=--gen TIMEOUT=600 ./scripts/run-harness-vm.sh /tmp/gen.log`
   → "captured 242 program block(s)"; `crates/pipeline/tests/fixtures/volume/gen-targeted-242.log`
   ile karşılaştır. ✔ V16
+- **R28** `cargo test -p pipeline --test subregister_calibration` → **7 passed**; kritik
+  üçü: 64-bit'i tekrarlayan görünüm **kontrol sayılmaz**, hex-negatif `s32` **ters aralık
+  değildir**, ve çelişkide **bağırır**. ✔ V17
+- **R29** `cargo run -q -p pipeline --example parse_report -- crates/pipeline/tests/fixtures/volume/gen-mixed-396.log`
+  → `32<->64 ... : 353`, `divergences=0`, `UNRECOGNIZED 0/396`. ✔ V17
+- **R30** `cargo test -p pipeline --test targeted_generation` → **12 passed**; içinde
+  tek-genişlikli ailenin 32↔64 paydasında **tam 0** aldığı pinli (OI-9'un yapısal iddiası). ✔ V17
+- **R31** (ağır) `HARNESS_ARGS=--gen-mix TIMEOUT=900 ./scripts/run-harness-vm.sh /tmp/mix.log`
+  → "captured 396 program block(s)". ✔ V17
 
 **Crash'ler hakkında (0020) — bulgu olarak SAYILMADI:** 30 dk'lık kampanya 2 crash
 üretti (`int3 in sk_filter_trim_cap`, `int3 in __seccomp_filter`). Teşhis: her ikisinin
@@ -694,6 +744,9 @@ sorgulamalı.
 > koluna **tek bir kontrol edilebilir gözlem bile vermiyor** (`var_off=` 0 kez);
 > hedefli 242-programlık enumerative aile **1497 kontrol** veriyor, hâlâ 0 bulgu ile.
 > Yani o kolun eski 'temiz'i **0 out of 0**'dı, artık 0 out of 1497.
-> **Sıradaki iş:** hedefli aileyi **32/64 karışık** programlara genişletmek (OI-9) —
-> verifier range bug'larının tarihsel olarak en yoğun bölgesi ve mevcut ailenin
-> yapısal olarak ulaşamadığı yer."
+> **32↔64 bölgesi de açıldı (0026):** CORE'a 32-bit görünüm, üç yeni invariant ve
+> karışık-genişlik aile (396 program) ile o payda **0 → 353**. Tek-genişlikli ailenin
+> 1138 register'da 32-bit görünüm bastırıp **hiçbirinde** bağımsız bilgi üretmemesi
+> pinlenmiş bir test — OI-9'un yapısal iddiasının kanıtı.
+> **Sıradaki iş:** OI-9'un kalanı — register-register operand ve çok-dallı akış;
+> ardından **iki-revizyon differential** (oracle olarak başka bir kernel)."
