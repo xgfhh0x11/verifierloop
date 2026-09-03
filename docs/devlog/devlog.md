@@ -2408,3 +2408,105 @@ geçmesi gerekiyor (OI-10).
 
 **Testler:** 104 → **107**.
 
+
+## 0028 — Pipeline'ı açmak: F1'i çekirdekten sökmek, binfmt+get_maintainer'ı düzeltmek, iki YENİ zehri ayıklamak — ve OI-1 neden hâlâ kapanmadı
+
+- **Tarih:** 2026-09-03
+- **Durum:** Kısmen tamamlandı. Unblock işi **çalıştı ve kalıcı** (üç zehir kapandı,
+  bir dördüncüsü konteyn edildi); **OI-1 KAPANMADI** — pre-registered temiz-powered
+  bar hiçbir koşuda karşılanmadı, çünkü nested-KVM ortamı sürekli 8-VM yükünde
+  çökmeden uzun kampanya vermiyor.
+- **Alan:** `scripts/gen-syz-config.sh` (`kernel_src`, `disable_syscalls`, `ignores`),
+  `config/kernel/bpf-verifier-lab.config` (`CONFIG_BINFMT_MISC`),
+  `.lab/bpf-next` `kernel/bpf/disasm.c` (F1 guard, lab-patch = upstream yaması, commit'li),
+  `docs/findings/F1-print_bpf_insn-oob/` (patch + SUBMISSION.md), `docs/OPEN-ITEMS.md`
+  (OI-1 güncelleme, OI-11, OI-12).
+- **İlgili:** F1, OI-1, OI-11 (yeni), OI-12 (yeni), 0027, `oracle × input`.
+
+### 0. Neden bu iş — reviewer teşhisi
+KVM 0027'de açıldı ama asıl getirisi (yüksek hacim) config/bug'larla kapalıydı. İki
+şerit — deterministik `--gen` yolu ve syzkaller hacim yolu — kaynak için yarışmıyor;
+OI-9 multi-branch beklemekle bir şey kaybetmez, ama unblock **OI-1'in kritik
+yolunda**: 0027 sonrası retest kendini çökertmişti (63k exec/27 dk), yani "crash yok"
+underpowered bir null'du. KVM'e geçmenin asıl sebebi o testti.
+
+### 1. Config-only unblock — ve düzeltilmiş bir yanlış kol
+- **get_maintainer.pl eksik DEĞİLDİ.** `.lab/bpf-next/scripts/`'te duruyor; config'te
+  `kernel_obj` vardı, `kernel_src` yoktu → syz-manager onu bulamadı. Fix tek satır.
+  **Doğrulandı:** get_maintainer artık F1 yaması için recipient listesi üretiyor.
+- **binfmt_misc: 86 sahte SYZFAIL.** `CONFIG_BINFMT_MISC=y` + `ignores`. **Ölçüldü:**
+  sonraki tüm koşularda binfmt SYZFAIL = 0.
+- **log_level=0 yanlış koldu (düzeltildi).** Capture (`shim.c:73`,`diffharness.c:133`)
+  sabit `log_level=2`; oracle'ın `var_off`/`umin`/`tnum`'u oradan. Log kısmak oracle'ı
+  kör ederdi. Containment imza/patch bazında olmalı.
+
+### 2. F1 churn değil PANİK → lab-patch + rebuild = upstream yaması
+Çekirdek KASAN+UBSAN, fuzz VM'leri `oops=panic`: F1 tetiklenince KASAN raporu VM'i
+öldürüyordu. Suppress reproduction'ı keser, VM ölümünü kesmez. Doğru containment:
+`disasm.c` guard'ı lab-patch + rebuild → F1 bizim çekirdekte hiç ateşlenmez.
+**Rebuild doğrulandı:** BINFMT_MISC/KASAN/UBSAN/KCOV/BTF hepsi `=y`, guard derlendi,
+`.BTF` section mevcut (build script'in "no .BTF" uyarısı `readelf -S` grep'inin dar
+olması, kozmetik). Guard aynen upstream yaması: `Fixes: b9c5d822f677`. Yama +
+recipient + gönderim `SUBMISSION.md`'de; **göndermek insan aksiyonu** (DCO'ya gerçek
+isim). **Ölçüldü:** sonraki tüm koşularda print_bpf_insn crash = 0.
+
+### 3. Ölçüm — ve peş peşe İKİ yeni zehir (her biri OI-1'i bir kez daha void etti)
+Unblock sonrası KVM throughput smoke'ta ~720 exec/s (zehirli 39/s'e karşı ~18x). Ama
+temiz OI-1 nullu için iki katman daha çıktı:
+
+- **3. zehir — PROG_TEST_RUN rcu stall (OI-11).** İlk powered retest (30 dk) çöktü:
+  `rcu detected stall in sys_bpf` → tüm VM'lerde `repeatedly failed` kaskadı, throughput
+  720→70/s. Stall trace net: `bpf_test_timer_continue` (`net/bpf/test_run.c:83`) —
+  yüksek `repeat`li `BPF_PROG_TEST_RUN`, KCOV+KASAN altında 21s eşiğini aşıyor. İki
+  kez hedef-dışı: (1) program YÜRÜTME, verification değil; (2) bilinen instrumentation
+  artifaktı. Fix: `disable_syscalls` (üç TEST_RUN varyantı; `bpf$*TEST_RUN*` glob'u
+  `[FATAL] unknown disabled syscall` ile reddedildi → tam isimler). Bu, input bütçesini
+  verifier'a **nişan alıyor** (`oracle × input`: nişan al, sadece büyütme). Smoke: rcu
+  stall 0.
+
+- **4. zehir — reproduction-starvation (OI-12).** İkinci powered retest (20 dk) YİNE
+  çöktü, ama farklı: ~2 dk sağlıklı (~700/s, tepe 988), sonra **kademeli** düşüş
+  (700→260→120→7/s), son ~10 dk ölü. **rcu stall YOK, kernel crash raporu YOK**
+  (b83ebc/9deb'de OOM/hung-task imzası yok; host memory 18 GB boş). Tetik manager
+  log'unda: 04:24:56 `start reproducing 'SYZFAIL: repeatedly failed to execute the
+  program'` — hemen ardından throughput düştü. syzkaller, reproduce edilemeyen bir
+  executor/infra hatasını reproduce etmeye VM ayırıyor → fuzzing havuzu açlıktan
+  ölüyor (F1 churn'ünün bir kat altı). Fix: o başlığı `ignores`'a ekle. **Ama smoke4
+  gösterdi ki bu yetmez:** `repeatedly failed` reproduction'ı kesildi (0), ama alttaki
+  `lost connection` oranı YÜKSEK kaldı (6 dk'da 16) ve degradation sürdü (851→79/s) —
+  syzkaller bu sefer `lost connection`'ı reproduce etmeye başladı. Bir infra-başlığını
+  ignore etmek reproduction'ı sadece bir sonrakine kaydırıyor. **Kök neden nested-KVM
+  altında yüksek VM-ölüm oranı; tek bir config knob'u değil.** Bu ORTAM-seviyesi bir
+  limit, kod bug'ı değil — bu yüzden whack-a-mole'ü burada durdurdum.
+
+### 4. OI-1 — VERDİCT: hâlâ AÇIK (goalpost taşınmadı)
+Kriter önden konuldu (reviewer notu): int3=0 **ancak** tek bir TEMİZ koşu exec≥150k
+bar'ını geçerse anlamlı; kampanya kendini çökertirse null **void**. Sonuç: hiçbir koşu
+bar'ı temiz geçmedi — her KVM kampanyası er ya da geç çöküyor. **int3 ~0.67M kümülatif
+exec'te (5 kampanya) HİÇ tekrar etmedi** — TCG-artifact hipotezini **DESTEKLER** (ve
+emülasyon-artifact zaten "ispat" değil güçlü-destek sınıfı), ama pre-registered
+temiz-powered bar karşılanmadığı için **OI-1 kapanmıyor**. Bu turda iki kez temiz-değil
+bir koşuda kapatma cazibesine direndim; bu ikincisi.
+
+### 5. Dürüst sınırlar
+- Unblock kalıcı: binfmt/F1/TEST_RUN kapandı, reproduction-starvation konteyn edildi.
+  Deterministik `--gen` yolu bunların hiçbirinden etkilenmez (nested-KVM instability
+  syzkaller hacim yoluna özgü).
+- Açık kalan: nested-KVM (WSL2→KVM→QEMU) 8-VM sürekli yükte temiz uzun kampanya
+  vermiyor. Ucuz sonraki probe'lar (KOŞULMADI): **tek-VM KVM kampanyası** (8-VM
+  contention'ı eler; OI-1'in orijinal partial-discriminator'larından biri de budur),
+  `VMMEM` 2048→4096, `VMCOUNT` 8→4, periyodik VM reboot.
+- F1 upstream'de fix BEKLİYOR (gönderilmedi); bizim taraf sadece lab konteynmentı.
+
+### 6. Dokunulan dosyalar
+`scripts/gen-syz-config.sh`, `config/kernel/bpf-verifier-lab.config`,
+`.lab/bpf-next/kernel/bpf/disasm.c` (lab-patch, commit'li),
+`docs/findings/F1-print_bpf_insn-oob/{0001-*.patch,SUBMISSION.md}`,
+`docs/OPEN-ITEMS.md`.
+
+### 7. Sonraki adımlar (öneri — reviewer kararı)
+(a) **Tek-VM KVM OI-1 probe'u** — en ucuzu, nested-virt contention hipotezini test eder
+ve temiz düşük-hızlı exposure biriktirebilir. (b) Ya da kümülatif int3=0'ı kabul edip
+OI-1'i "destekleniyor; pre-registered bar ORTAM nedeniyle karşılanamadı" notuyla
+düşük-öncelikte açık bırak. (c) **OI-9 multi-branch** deterministik yolda engelsiz —
+nested-KVM instability'sinden bağımsız ilerleyebilir.

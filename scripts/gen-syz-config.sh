@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Generate a real syz-manager config from the lab layout (replaces the
 # config/syzkaller/*.placeholder). QEMU vm type, focused on the eBPF verifier:
-# enable_syscalls is restricted to bpf* (BPF_PROG_LOAD is where the verifier runs).
+# enable_syscalls is restricted to bpf* (BPF_PROG_LOAD is where the verifier runs);
+# disable_syscalls drops bpf$*TEST_RUN* — program EXECUTION, not verification, and a
+# known KCOV+KASAN artifact: a high `repeat` PROG_TEST_RUN loops the program past the
+# 21s RCU-stall threshold (net/bpf/test_run.c bpf_test_timer_continue), wedging VMs.
+# Off-target for the verifier hunt AND a throughput poison. See devlog 0028 / OI-11.
 # syzkaller collects DEFAULT-mode output; normalization is a separate pipeline
 # stage, never at the source.
 #
@@ -52,6 +56,7 @@ cat > "$OUT" <<JSON
   "http": "$HTTP",
   "workdir": "$SYZ/workdir",
   "kernel_obj": "$LAB/build",
+  "kernel_src": "$LAB/bpf-next",
   "image": "$LAB/images/rootfs.img",
   "sshkey": "$LAB/images/vm-id_ed25519",
   "syzkaller": "$SYZ",
@@ -59,6 +64,12 @@ cat > "$OUT" <<JSON
   "sandbox": "none",
   "type": "qemu",
   "enable_syscalls": ["bpf*"],
+  "disable_syscalls": ["bpf\$BPF_PROG_TEST_RUN", "bpf\$BPF_PROG_TEST_RUN_LIVE", "bpf\$auto_BPF_PROG_TEST_RUN"],
+  "ignores": [
+    "SYZFAIL: mount.binfmt_misc. failed",
+    "array-index-out-of-bounds in print_bpf_insn",
+    "SYZFAIL: repeatedly failed to execute the program"
+  ],
   "vm": {
     "count": $VMCOUNT,
     "kernel": "$LAB/build/bzImage",

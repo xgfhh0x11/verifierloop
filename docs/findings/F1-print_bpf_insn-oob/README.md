@@ -4,7 +4,9 @@
 **Found by:** verifierloop (syzkaller under KVM, 2026-09-01)
 **Class:** memory-safety (OOB read), NOT a verifier soundness/logic bug
 **Reachability:** verbose only (`log_level >= 1`); unreachable on the silent `log_level=0` prog-load path
-**Status:** root-caused; deterministic differential repro pending (Tur 2); not yet reported upstream
+**Status:** root-caused; **upstream patch prepared** (`0001-*.patch` + `SUBMISSION.md`),
+send is a human action (DCO real-name + `git send-email`); the **lab kernel now carries
+the guard** (0028) so F1 no longer panics fuzz VMs. Not yet sent upstream.
 
 ---
 

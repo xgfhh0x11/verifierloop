@@ -8,11 +8,23 @@ Closed items are removed from here and their resolution recorded in the devlog.
 
 ---
 
-## OI-1 — Two `int3` crashes: artifact hypothesis is FALSIFIABLE BUT UNTESTED
+## OI-1 — Two `int3` crashes: artifact hypothesis is FALSIFIABLE; KVM-TESTED BUT NULL STILL VOID
 
-- **Status:** OPEN (low priority). *Not* "diagnosed and closed."
+- **Status:** OPEN (low priority). *Not* "diagnosed and closed." **Now KVM-tested but
+  the null is still VOID** — see the 2026-09-03 update.
 - **Raised:** 2026-08-28 (devlog 0020)
-- **Blocked by:** KVM unavailable on this host (probed 2026-08-28: `/dev/kvm` exists
+- **Update (2026-09-03, devlog 0028):** KVM is available (0027) so the block is no
+  longer the accelerator — it is now **pipeline instability**. Across five KVM
+  campaigns this turn, **int3 never recurred** (~0.67M cumulative execs), which
+  *supports* the TCG-artifact hypothesis. BUT the pre-registered criterion (one CLEAN
+  run clearing exec ≥ 150k; a self-crashing campaign voids the null) was **never met**:
+  every campaign eventually self-crashed. Three poisons were fixed (binfmt, F1 panic,
+  `PROG_TEST_RUN` RCU stall = OI-11) and a fourth contained (reproduction-starvation =
+  OI-12), but an underlying elevated VM-death rate under nested KVM degrades every long
+  run. So the int3=0 result is **suggestive, not sufficient**; OI-1 stays open. Cheapest
+  next probe: a **single-VM** KVM campaign (removes 8-VM contention; also one of OI-1's
+  original partial discriminators).
+- **Superseded block (kept for history) — Blocked by:** KVM unavailable on this host (probed 2026-08-28: `/dev/kvm` exists
   but `-enable-kvm` → `No such device`, and `grep -c '(vmx|svm)' /proc/cpuinfo` = **0**,
   i.e. the CPU virtualization flags are not exposed at all).
   **Correction (reviewer, 2026-09-01):** WSL2 nested virtualization is **Windows
@@ -275,6 +287,79 @@ both volume captures.)*
   not by design**, which is precisely why the transport should not stay shared.
 - **Frequency scales with runs:** KVM (devlog 0027) makes runs cheap, so the absolute
   number of interleavings will grow even though the rate does not.
+
+---
+
+## OI-11 — `BPF_PROG_TEST_RUN` high-`repeat` trips the RCU-stall detector under KCOV+KASAN
+
+- **Opened:** 2026-09-03 (devlog 0028), during the OI-1 clean-retest attempt.
+- **Status:** OPEN (contained, not a target bug). Pipeline-side containment applied;
+  the "is it a real DoS" question is left open deliberately.
+- **What:** with `enable_syscalls: ["bpf*"]`, syzkaller reaches
+  `bpf$BPF_PROG_TEST_RUN` and issues it with a large `repeat`. On our KCOV+KASAN
+  kernel every basic block is instrumented (`__sanitizer_cov_trace_pc`), so the
+  program-execution loop (`bpf_test_timer_continue`, `net/bpf/test_run.c:83`, via
+  `bpf_test_run` / `bpf_prog_test_run_skb`, `kernel/bpf/syscall.c:4804`) runs long
+  enough to cross the 21s RCU-stall threshold (`t=21002 jiffies`). syzkaller saves
+  the coverage-raising program to the corpus and replays it on every VM, so ONE
+  such program wedges all 8 VMs → an `INFO: rcu detected stall in sys_bpf` followed
+  by a `SYZFAIL: repeatedly failed to execute the program` cascade; throughput fell
+  ~720 → 70 exec/s. This is what poisoned the 0028 OI-1 retest (see below).
+- **Why it is NOT a target bug, twice over:** (1) `PROG_TEST_RUN` is program
+  EXECUTION, not verification — off the verifier surface the loop hunts; (2) the
+  stall is a well-known KCOV+KASAN instrumentation artifact — the loop reschedules
+  cooperatively, so it is a soft "stall", not a hang, and vanishes on a
+  non-instrumented kernel.
+- **Containment (devlog 0028):** `disable_syscalls: [bpf$BPF_PROG_TEST_RUN,
+  bpf$BPF_PROG_TEST_RUN_LIVE, bpf$auto_BPF_PROG_TEST_RUN]` in
+  `scripts/gen-syz-config.sh`. This AIMS the input budget at the verifier
+  (`oracle × input` rule: aim, don't just enlarge) rather than merely enlarging it.
+  A first `disable_syscalls: ["bpf$*TEST_RUN*"]` glob was rejected
+  (`[FATAL] unknown disabled syscall`) — syzkaller wants recognized names, so the
+  three exact variants are listed.
+- **Left open on purpose:** whether an *uninstrumented* kernel also lets a crafted
+  `repeat`/program make `PROG_TEST_RUN` run unreasonably long (a genuine local DoS)
+  is a separate question this containment does NOT answer — it only removes the
+  artifact from the verifier hunt. Not chased now; not the target class.
+
+---
+## OI-12 — syzkaller reproduction-starvation on executor/infra failures under nested KVM
+
+- **Opened:** 2026-09-03 (devlog 0028), during the OI-1 powered retest.
+- **Status:** OPEN. Containment applied (ignore the infra-failure title so it is not
+  reproduced); efficacy PARTIAL (measured): it stops the `repeatedly failed` reproduction loop
+  (0 afterward), but smoke4 showed reproduction just shifts to `lost connection` and
+  the underlying VM-death rate persists (16 lost-connections in 6 min, throughput
+  851→79 exec/s). The root cause is environment-level, below any single ignore.
+- **What:** after F1 and the PROG_TEST_RUN stall (OI-11) were contained, a 20-min KVM
+  campaign was healthy for ~2 min (~700 exec/s, peak 988) then **progressively
+  degraded** (700→260→120→7 exec/s) and sat dead for its final ~10 min. No int3,
+  **no rcu stall, no kernel crash report** was saved (b83ebc/9deb carry no
+  OOM/hung-task/lockup signature; host memory stayed at 18 GB free). The manager log
+  shows the trigger: at 04:24:56 syzkaller `start reproducing 'SYZFAIL: repeatedly
+  failed to execute the program'`, and throughput fell immediately after. syzkaller
+  dedicates VMs to REPRODUCING an executor/infra failure that is not a reproducible
+  kernel bug; those VMs leave the fuzzing pool, the remaining VMs fail more, more
+  reproduction is queued → a starvation cascade (47 `repeatedly failed` over the run).
+  Same shape as F1's reproduction churn, one layer down.
+- **Why "repeatedly failed to execute" is infra, not a kernel bug:** it is syz-executor
+  in the guest failing to run programs, not a verifier/kernel fault. It never produces
+  a symbolized crash; it is `[suppressed]` for SAVING but was still being REPRODUCED.
+- **Containment (devlog 0028):** add `"SYZFAIL: repeatedly failed to execute the
+  program"` to `ignores` so it is never reproduced (reproduction, not saving, is what
+  starved the pool). Deliberately NOT ignoring `"lost connection to test machine"` —
+  that can signal a real kernel hang and must stay visible; int3 is symbolized
+  separately and is unaffected by these ignores.
+- **The deeper open question:** WHY do executor failures accumulate over ~10 min at
+  all? Leading hypothesis: nested-virt (WSL2→KVM→QEMU) VM instability under sustained
+  8-VM load, and/or slow guest resource accumulation under KASAN in 2 GB guests. The
+  ignore removes the *starvation amplifier*; it does not prove the underlying failure
+  rate is acceptable. Cheap next probes (not yet run): raise `VMMEM` 2048→4096; lower
+  `VMCOUNT` 8→4 to reduce nested-virt contention; enable periodic VM reboots.
+- **Impact on OI-1:** every KVM campaign so far self-crashes before a single
+  CLEAN run clears the pre-registered 150k-exec bar; int3 has NOT recurred across
+  ~0.5M cumulative execs (suggestive of the TCG-artifact hypothesis) but no run met
+  the clean-powered criterion, so OI-1 stays OPEN.
 
 ---
 
