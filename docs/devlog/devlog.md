@@ -2510,3 +2510,70 @@ ve temiz düşük-hızlı exposure biriktirebilir. (b) Ya da kümülatif int3=0'
 OI-1'i "destekleniyor; pre-registered bar ORTAM nedeniyle karşılanamadı" notuyla
 düşük-öncelikte açık bırak. (c) **OI-9 multi-branch** deterministik yolda engelsiz —
 nested-KVM instability'sinden bağımsız ilerleyebilir.
+
+## 0029 — OI-1'in tek-VM verdikti (ortam limiti) + OI-9 çok-dallı aile (`--gen-mb`)
+
+- **Tarih:** 2026-09-03
+- **Durum:** Tamamlandı. İki iş, hard-stop'lu: (1) OI-1 için tek-VM KVM probe'u —
+  önden kayıtlı tek koşu, kapandı → **OI-1 açık kalıyor, ortam nedeniyle** (fix-and-rerun
+  YOK); (2) OI-9 çok-dallı/çok-birleşme ailesi eklendi, ölçüldü, pinlendi.
+- **Alan:** `harness/diffharness.c` (`--gen-mb` ailesi),
+  `crates/pipeline/tests/multi_branch_calibration.rs` (+fixture
+  `gen-multibranch-242.log`), `docs/OPEN-ITEMS.md` (OI-1, OI-9).
+- **İlgili:** OI-1, OI-9, OI-11/OI-12 (0028), `oracle × input`.
+
+### 1. OI-1 — tek-VM probe'u: hard-stop'lu tek koşu
+Kullanıcı (1)+(3)'ü paralel, **bir hard-stop şartıyla** onayladı; şartı ben koydum:
+tam BİR kampanya, max 30 dk, bu turun SON OI-1 koşusu, ne olursa olsun başka fix/rerun
+yok. Tek-VM mantığı: 8-VM contention'ı eler; ayrıca tek VM'de yedek VM olmadığı için
+OI-12 reproduction-starvation'ı yapısal olarak da zayıflar.
+
+**Sonuç — tek-VM DAHA KÖTÜ, daha iyi değil:** 30 dakikada **31 VM kopması** ("lost
+connection"), corpus triage HİÇ bitmedi (candidates 1057'de takılı kaldı), yalnızca
+**~4.2k exec** (150k bar'ın 35x altında). int3=0, ama kampanya işlevsiz — tam void bir
+null. Bu, nested-KVM kararsızlığının **8-VM contention OLMADIĞINI** kanıtlıyor: tek VM
+bile sürekli kopuyor. (Confound: bu probe VMCPU 2→4 / VMMEM 2048→4096 da yaptı; hard-stop
+ayrıştırma için rerun'ı yasakladı — ama sonuç iki durumda da aynı.)
+
+**Verdikt:** WSL2 nested-KVM bu host'ta üretken bir syzkaller kampanyası taşıyamıyor;
+OI-1 syzkaller yolunda bu ortamda çözülemez. Tüm koşullarda int3 hiç tekrar etmedi
+(~0.68M kümülatif exec) → TCG-artifact hipotezini **DESTEKLER** ama İSPATLAMAZ. OI-1
+düşük öncelikte açık; gerçek çözüm bare-metal ya da nested-olmayan KVM ister (Win11
+ön-koşulu gibi, repo dışı). **Bu turda üçüncü kez temiz-değil bir koşuda kapatma
+cazibesine direndim; hard-stop tam da bunun içindi.**
+
+### 2. OI-9 — çok-dallı / çok-birleşme ailesi (`--gen-mb`)
+`--gen` ve `--gen-rr` ailelerinin her programında TEK compare, TEK birleşme noktası
+var. Yeni aile İKİ ardışık dal + İKİ birleşme taşıyor, ve ikinci dal, birinci dalın iki
+yolunun BİRLEŞİMİ olan bir durumu daraltıyor:
+
+```
+0: r0 = *(u32*)(r1+0)      1: r0 <op> imm1        2: if r0 <cmp> imm_a goto 5
+3: r0 <op> imm2  4: goto 6  5: r0 <op> imm3       6: [BİRLEŞME1] if r0 <cmp> imm_b goto 9
+7: r0 <op> imm2  8: goto 10 9: r0 <op> imm3       10:[BİRLEŞME2] r0 &= 0xffff  11: exit
+```
+
+imm_a=`c->imm`, imm_b=`a->imm2` (farklı sabit → ikinci dal gerçek bir ikinci daraltma,
+birincinin trivial tekrarı değil). Etiket reçetenin kendisi (`genmb#w{32,64}.alu.cmp#idx`)
+→ her bulgu tek başına yeniden kurulabilir. Yapı gereği hepsi kabul (aynı geçerli op'lar,
+sadece zincirli), böylece tnum-vs-bounds paydası temiz kalıyor.
+
+**Ölçüm (gerçek bpf-next `5e289c5a4a52`, in-VM, KVM boot ~11s):** 242 program, **242/242
+kabul**, tnum_bounds_checked=**2050** (tek-genişlik 1497'nin üstünde, reg-reg 2453'ün
+altında — iki birleşme, tek-diamond'dan fazla ama iki-bağımsız-bilinmeyen reg-reg kadar
+değil), **0/2050 divergence**, 0 parser kör-noktası. reg32_checked=**0** (her program
+tek-genişlik → 32<->64 ekseni mixed ailenin işi; pinlendi). 4 test
+`multi_branch_calibration.rs`'de geçiyor.
+
+**Hâlâ verifier LOGIC bug'ı yok** — ama artık çok-dal/çok-birleşme yüzeyinde 0/2050.
+
+### 3. Dürüst sınırlar
+- OI-1 verdikti bir ortam limiti, kod sonucu değil; deterministik `--gen*` yolu (kısa,
+  tek-VM boot) etkilenmiyor — `--gen-mb` bunu bir kez daha gösterdi (11s'de temiz koştu).
+- Çok-dallı aile *sıralı dallanma*; gerçek *looping* (back-edge) ayrı bir leg —
+  provably-bounded sayaç ister ve kabul profili farklı (hepsi-kabul değil). Ertelendi.
+- OI-9'da sıradaki: pointer arithmetic, sonra looping.
+
+### 4. Dokunulan dosyalar
+`harness/diffharness.c`, `crates/pipeline/tests/multi_branch_calibration.rs`,
+`crates/pipeline/tests/fixtures/volume/gen-multibranch-242.log`, `docs/OPEN-ITEMS.md`.

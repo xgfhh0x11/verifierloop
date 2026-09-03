@@ -774,6 +774,80 @@ static void run_generated_rr_family(void) {
                 run_generated_rr(alu_i, cmp_i, w32, index++);
 }
 
+// ===========================================================================
+// MULTI-BRANCH FAMILY (OI-9 next increment) — the --gen / --gen-rr families each
+// have exactly ONE compare and ONE merge point. The verifier's state-merge logic
+// (states_equal / regsafe / reg_bounds_sync at a join) is exercised once per
+// program. A program with TWO sequential branches has TWO merge points, and the
+// SECOND branch narrows a register whose abstract state is itself the JOIN of the
+// first branch's two paths. That is a different surface: bounds/tnum must survive
+// branch -> merge -> branch -> merge, and a desync introduced at merge 1 gets a
+// second chance to surface (or to be masked) at branch 2 and merge 2.
+//
+//   0:  r0 = *(u32*)(r1+0)      unknown scalar
+//   1:  r0 <op> imm1            shape it (tnum and/or bounds)
+//   2:  if r0 <cmp> imm_a goto 5   BRANCH 1
+//   3:  r0 <op> imm2            not-taken-1 arithmetic
+//   4:  goto 6
+//   5:  r0 <op> imm3            taken-1 arithmetic
+//   6:  [MERGE 1] if r0 <cmp> imm_b goto 9   BRANCH 2, on the merged state
+//   7:  r0 <op> imm2            not-taken-2
+//   8:  goto 10
+//   9:  r0 <op> imm3            taken-2
+//   10: [MERGE 2] r0 &= 0xffff   bound the return value
+//   11: exit
+//
+// imm_a = c->imm (first threshold), imm_b = a->imm2 (a DIFFERENT constant, so the
+// second branch is a genuine second narrowing, not a trivially-decided repeat of the
+// first). Both derive from the enumerated (alu, cmp) pair, so the label alone rebuilds
+// the exact program -- same reproducible-from-recipe contract as the other families.
+// All-accepted by construction (same valid ops as --gen, just chained), so the
+// tnum-vs-bounds denominator stays clean.
+// ===========================================================================
+static void run_generated_mb(int alu_i, int cmp_i, int w32, int index) {
+    const struct gen_alu *a = &GEN_ALU[alu_i];
+    const struct gen_cmp *c = &GEN_CMP[cmp_i];
+
+    struct bpf_insn insns[12];
+    insns[0] = BPF_LDX_MEM(BPF_W, BPF_REG_0, BPF_REG_1, 0);
+    if (w32) {
+        insns[1] = BPF_ALU32_IMM(a->op, BPF_REG_0, a->imm1);
+        insns[2] = BPF_JMP32_IMM(c->op, BPF_REG_0, c->imm, 2);
+        insns[3] = BPF_ALU32_IMM(a->op, BPF_REG_0, a->imm2);
+        insns[5] = BPF_ALU32_IMM(a->op, BPF_REG_0, a->imm3);
+        insns[6] = BPF_JMP32_IMM(c->op, BPF_REG_0, a->imm2, 2);
+        insns[7] = BPF_ALU32_IMM(a->op, BPF_REG_0, a->imm2);
+        insns[9] = BPF_ALU32_IMM(a->op, BPF_REG_0, a->imm3);
+    } else {
+        insns[1] = BPF_ALU64_IMM(a->op, BPF_REG_0, a->imm1);
+        insns[2] = BPF_JMP_IMM(c->op, BPF_REG_0, c->imm, 2);
+        insns[3] = BPF_ALU64_IMM(a->op, BPF_REG_0, a->imm2);
+        insns[5] = BPF_ALU64_IMM(a->op, BPF_REG_0, a->imm3);
+        insns[6] = BPF_JMP_IMM(c->op, BPF_REG_0, a->imm2, 2);
+        insns[7] = BPF_ALU64_IMM(a->op, BPF_REG_0, a->imm2);
+        insns[9] = BPF_ALU64_IMM(a->op, BPF_REG_0, a->imm3);
+    }
+    insns[4]  = BPF_JMP_A(1);
+    insns[8]  = BPF_JMP_A(1);
+    insns[10] = BPF_ALU64_IMM(BPF_AND, BPF_REG_0, 0xffff);
+    insns[11] = BPF_EXIT_INSN();
+
+    char name[64];
+    snprintf(name, sizeof(name), "genmb#w%s.%s.%s#%03d",
+             w32 ? "32" : "64", a->name, c->name, index);
+    run_one(name, insns, 12);
+}
+
+// Every alu x compare x width, once each -- same enumeration shape as --gen so a
+// finding is reproducible from its label alone.
+static void run_generated_mb_family(void) {
+    int index = 0;
+    for (int w32 = 0; w32 < 2; w32++)
+        for (int alu_i = 0; alu_i < GEN_ALU_N; alu_i++)
+            for (int cmp_i = 0; cmp_i < GEN_CMP_N; cmp_i++)
+                run_generated_mb(alu_i, cmp_i, w32, index++);
+}
+
 int main(int argc, char **argv) {
     // Two data sources, kept apart on purpose (different provenance):
     //   (no args) the fixed authoritative program set, pinned by tests
@@ -788,6 +862,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-rr") == 0) {
         run_generated_rr_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-mb") == 0) {
+        run_generated_mb_family();
         return 0;
     }
 
