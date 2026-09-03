@@ -111,8 +111,8 @@ Sıralama ölçütü: **tarihsel ihlal yoğunluğu** (hangi koşul geçmişte en
 **T1-1 · 32↔64 senkron × ALU zinciri / pointer offset.**
 `--gen-mix` bu bölgeyi *izole* taradı; asıl CVE yoğunluğu 32-bit ALU sonucunun 64-bit bağlamda (özellikle bir pointer offset'inde) kullanılmasında. Şekil: `w0 = ...; w0 &= 0xff; r0 <<= 3; r2 += r0; store`. Her 32-bit ALU üst yarıyı sıfırlar; bu sıfırlamanın verifier'ın var_off/range'iyle senkronu tarihsel `alu32` bug'larının merkezidir.
 
-**T1-2 · Negatif offset + smin kontrolü (map_value pointer).**
-`r2 = map_ptr; r2 += -4`. Verifier'ın smin kontrolü farklı kod yolundan geçer; tarihsel bug: negatif offsette smin kontrolünün atlanması. `--gen-ptr` şu an pozitif offset'te. Kurulum ucuz (mevcut aileye negatif shaping eklemek).
+**T1-2 · Negatif offset + smin kontrolü (map_value pointer).** ✅ **TAMAMLANDI (2026-09-03, devlog 0033, `--gen-ptr-neg`).**
+120 program (form{raw, grd} × C × reach); `r1 &= 15; r1 -= C` ile smin'i `-C`'ye itiyor. **60 kabul / 60 red; raw 4/60 (her kabul C==0), grd 56/60.** İki sonuç: **negatif-yetenekli hiçbir store kabul edilmedi** (smin alt-sınır kontrolü uygulanıyor, "R0 min value is negative" canlı) ve **grd guard'ı doğru kurtarıyor** (verifier işaretli daldan sonra smin≥0'ı yeniden türetip kabul ediyor, aşırı-reddetmiyor). Karar predikatı 120/120 tam, tnum 438, 0 sapma. Bu kernel'de OOB-below accept yok. Pinlendi: `crates/pipeline/tests/pointer_neg_calibration.rs`.
 
 **T1-3 · Paket compare-operatörü sweep (jgt vs jge — `range_right_open`).** ✅ **TAMAMLANDI (2026-09-03, devlog 0032, `--gen-pkt-cmp`).**
 240 program (form{gt,ge,lt,le} × M × off × W), offset şekli `r4 &= 7`'ye sabitlenmiş → karar saf range makinesinin fonksiyonu. **128 kabul / 112 red; gt=27, ge=37, lt=27, le=37.** İki sonuç: **operand-sırası simetrisi tam tutuyor** (gt==lt, ge==le) ve **closed vs right-open sınırı tam bir bayt** — 240/240 karar `off+W ≤ range` predikatına uyuyor (closed range=M, right-open range=M+1), 0 istisna. tnum 720, 0 sapma. Verifier tam programın ispatladığını ispatlıyor — bu kernel'de off-by-one yok. Pinlendi: `crates/pipeline/tests/packet_compare_calibration.rs`.
@@ -148,7 +148,7 @@ Sıralama ölçütü: **tarihsel ihlal yoğunluğu** (hangi koşul geçmişte en
 Harita üç şeyi söylüyor:
 
 1. **Derinlik değil, genişlik kazandık.** Altı tipin her biri için tek-op davranışı sağlam ölçüldü (0 sapma). Ama matris ilk satırda yoğun — bileşim hücreleri boş.
-2. **Tier 1'in ilk hamlesi (T1-3) tamamlandı** — packet compare-op sweep temiz çıktı (simetrik, bir-bayt-kesin, 0 sapma, devlog 0032). Kalan iki ucuz hamle: negatif offset + smin (T1-2, doğrudan karar yüzeyi) ve 32↔64 × pointer-offset (T1-1, en yoğun tarihsel bölge).
+2. **Tier 1'in iki hamlesi tamamlandı** — packet compare-op sweep (T1-3, devlog 0032: simetrik, bir-bayt-kesin) ve map-value negatif offset (T1-2, devlog 0033: smin alt-sınır uygulanıyor, OOB-below accept yok), ikisi de 0 sapma. Kalan tek Tier-1 hamlesi: **32↔64 × pointer-offset (T1-1)**, en yoğun tarihsel bölge — ve yapısal olarak en zoru.
 3. **Yapısal borç Tier 3'te** — loop, subprog, stack spill, map-in-map, helper-sonuç. Bunlar yeni harness altyapısı ister ama tarihsel olarak en zengin bug damarları.
 
 Reviewer önceliklendirme kuralı (oracle × input): oracle'ı input açken büyütme. Tier 1'deki hamleler oracle'ı büyütmeden mevcut input bütçesini yeni bir karar-koşuluna **nişan alır** — bu yüzden önce onlar.

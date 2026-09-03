@@ -941,6 +941,97 @@ static void run_generated_ptr_family(void) {
 }
 
 // ===========================================================================
+// NEGATIVE-OFFSET MAP-VALUE FAMILY (T1-2) — the --gen-ptr family adds a POSITIVE
+// bounded scalar to a map_value pointer, so the deciding check is the UPPER bound
+// (umax + size <= value_size). The other, historically bug-prone edge is the LOWER
+// bound: an offset whose signed minimum can go NEGATIVE, which would read/write BELOW
+// the start of the map value. The kernel guards it with a distinct check
+// (`check_map_access`: "R%d min value is negative, either use unsigned index or do a
+// if (index >=0) check"). Historically that smin path has been skipped/mis-derived,
+// which would ACCEPT an out-of-bounds-BELOW write — the severe class.
+//
+// The offset is pushed negative deterministically: mask to [0,15], then SUBTRACT a
+// constant C so the signed window becomes [-C, 15-C] (smin = -C). Two forms:
+//   raw  — no guard. If smin<0 the store MUST be rejected. A raw C>0 that ACCEPTS a
+//          live store is the bug this leg hunts.
+//   grd  — a signed guard `if (r1 s< 0) goto skip_store` before the arith. On the
+//          store path the verifier must re-derive smin>=0 and ACCEPT (proving it is
+//          not merely over-rejecting everything negative). Tests smin re-derivation
+//          after a signed branch, the exact code path.
+//
+//   ... r1 = *(u32*)(r0+0);  r1 &= 15;  r1 -= C;   [grd: if r1 s<0 goto skip]
+//       r0 += r1;  *(uW*)(r0+off) = r1;  skip: r0 = 0; exit
+//
+// Decision is a pure function of the instruction stream (load-time), same contract as
+// --gen-ptr. Reject REASON (negative-min vs value_size) is read from the log to tell
+// the lower-bound path from the upper-bound one.
+// ===========================================================================
+static const int PTRNEG_C[] = {0, 1, 2, 4, 8, 16, 24, 32, 48, 64};
+#define PTRNEG_C_N ((int)(sizeof(PTRNEG_C) / sizeof(PTRNEG_C[0])))
+static const struct { int off; int w; } PTRNEG_REACH[] = {
+    {0, 1}, {0, 4}, {44, 4}, {48, 1}, {49, 1}, {48, 4}, /* last three cross value_size=64 */
+};
+#define PTRNEG_REACH_N ((int)(sizeof(PTRNEG_REACH) / sizeof(PTRNEG_REACH[0])))
+
+static void run_generated_ptrneg(int form, int c_i, int reach_i, int index, int map_fd) {
+    const int grd = (form == 1);
+    const int C = PTRNEG_C[c_i];
+    const int off = PTRNEG_REACH[reach_i].off;
+    const int W = PTRNEG_REACH[reach_i].w;
+    const int szmode = (W == 1) ? BPF_B : (W == 2) ? BPF_H : BPF_W;
+
+    struct bpf_insn ins[16];
+    int n = 0;
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_fd};
+    ins[n++] = (struct bpf_insn){0};                              /* LD_DW upper half */
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    const int jnull = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);   /* patched */
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_1, BPF_REG_0, 0);       /* unknown [0,2^32-1] */
+    ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_1, 15);            /* -> [0,15] */
+    ins[n++] = BPF_ALU64_IMM(BPF_SUB, BPF_REG_1, C);            /* -> smin = -C */
+    int jguard = -1;
+    if (grd) { jguard = n; ins[n++] = BPF_JMP_IMM(BPF_JSLT, BPF_REG_1, 0, 0); } /* patched */
+    ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_0, BPF_REG_1);      /* ptr += offset */
+    ins[n++] = BPF_STX_MEM(szmode, BPF_REG_0, BPF_REG_1, off);    /* store through ptr */
+    const int exitprep = n; ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+
+    ins[jnull].off = exitprep - jnull - 1;                        /* null -> r0=0 */
+    if (grd) ins[jguard].off = exitprep - jguard - 1;            /* negative -> skip store */
+
+    char name[80];
+    snprintf(name, sizeof(name), "genptrneg#%s.C%d.o%d.w%d#%03d",
+             grd ? "grd" : "raw", C, off, W, index);
+    run_one(name, ins, n);
+}
+
+static void run_generated_ptrneg_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4;
+    m.value_size = 64;
+    m.max_entries = 1;
+    int map_fd = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_fd < 0) {
+        printf("===PROG genptrneg type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n"
+               "---LOG---\n---END---\n", errno);
+        return;
+    }
+    int index = 0;
+    for (int form = 0; form < 2; form++)
+        for (int c_i = 0; c_i < PTRNEG_C_N; c_i++)
+            for (int reach_i = 0; reach_i < PTRNEG_REACH_N; reach_i++)
+                run_generated_ptrneg(form, c_i, reach_i, index++, map_fd);
+    close(map_fd);
+}
+
+// ===========================================================================
 // PACKET-POINTER FAMILY (OI-9 next increment) — the pointer-arith family used a
 // PTR_TO_MAP_VALUE, whose bound the verifier KNOWS (value_size). A packet pointer is
 // the other kind: the verifier does NOT know where the packet ends. Instead the
@@ -1113,6 +1204,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-ptr") == 0) {
         run_generated_ptr_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-ptr-neg") == 0) {
+        run_generated_ptrneg_family();
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--gen-pkt") == 0) {

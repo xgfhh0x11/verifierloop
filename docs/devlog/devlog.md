@@ -2777,3 +2777,56 @@ invariant ihlali. Logic bug yok — ama bu, aranan sınıfın (`range_right_open
 - T1-2 negatif offset + smin (map-value): `r2 += -4`, smin kontrol yolu — ucuz, doğrudan
   karar yüzeyi. T2-2 daha geniş store'lar map-value'da. 9-EINVAL alt-ailesi hâlâ açık.
 - Bu artım da 0/720 ihlalle kapandı: altı ailenin üstüne yedinci ölçüm, hâlâ logic bug yok.
+
+## 0033 — Negatif-offset map-value ailesi (`--gen-ptr-neg`): T1-2, smin alt-sınır yolu
+
+- **Tarih:** 2026-09-03
+- **Durum:** Tamamlandı. Coverage haritasının T1-2'si — pointer'ın alt (negatif) kenarı.
+  smin kontrolü **uygulanıyor**; aranan tarihsel bug sınıfı bu kernel'de yok.
+- **Alan:** `harness/diffharness.c` (`--gen-ptr-neg`, `run_generated_ptrneg*`, `PTRNEG_C`
+  + `PTRNEG_REACH`), `crates/pipeline/tests/pointer_neg_calibration.rs` (yeni, 5 test,
+  +fixture `gen-ptrneg-120.log`), `docs/OPEN-ITEMS.md` (OI-9), `docs/COVERAGE-MAP.md` (T1-2).
+- **İlgili:** OI-9, 0030 (--gen-ptr, pozitif offset / üst sınır), coverage T1-2.
+
+### 0. Hedef — pointer'ın ALT kenarı
+`--gen-ptr` map_value pointer'a POZİTİF bounded scalar ekliyor → karar ÜST sınırda
+(`umax + size ≤ value_size`). T1-2 öteki kenarı sürüyor: işaretli minimumu NEGATİF
+olabilen offset — map value'nun başının ALTINA yazma. Kernel bunu ayrı bir kontrolle
+korur (`check_map_access`: "R%d min value is negative, either use unsigned index or do a
+if (index >=0) check"). Tarihsel olarak bu smin yolu atlanmış/yanlış türetilmiş — atlanırsa
+**OOB-below WRITE kabul edilir**, ağır sınıf.
+
+Offset deterministik negatife itiliyor: `r1 &= 15` (→[0,15]) sonra `r1 -= C`
+(→ işaretli [-C, 15-C], smin=-C). İki form:
+- **raw** — guard yok. smin<0 ise store REDDEDİLMELİ. raw C>0'ın canlı bir store'u kabul
+  etmesi, bu kolun avladığı bug'dır.
+- **grd** — `if (r1 s< 0) goto skip_store`. Store yolunda verifier smin≥0'ı yeniden
+  türetip KABUL etmeli (yalnızca her negatifi aşırı-reddetmediğini kanıtlar). İşaretli
+  daldan sonra smin re-türetimini test eder — tam o kod yolu.
+
+Grid: form{raw,grd} × C{0,1,2,4,8,16,24,32,48,64}(10) × reach{(off,W)}(6) = **120 program**,
+value_size=64, mask=15.
+
+### 1. Çıktı — bpf-next VM (kernel 5e289c5a), 2026-09-03
+- **120 program, 60 kabul / 60 red.** raw **4/60** (her kabul C==0), grd **56/60**.
+- **Karar predikatı 120/120 tam:** `accept ⟺ (grd ∧ C≥16, ölü store) ∨ (r1min≥0 ∧
+  15−C+off+W ≤ 64)` — 0 istisna. Karar, store-yolu offset aralığının [0, value_size]'e
+  karşı saf fonksiyonu.
+- **Sağlamlık (T1-2'nin özü):** negatif-yetenekli hiçbir store kabul edilmedi — raw
+  kabullerin **tümü C==0** (ispatlanabilir ≥0). "R0 min value is negative" mesajı canlı,
+  smin alt-sınır kontrolü **uygulanıyor** (vacuously yok değil). grd 56 kabul → verifier
+  işaretli daldan sonra smin≥0'ı doğru türetiyor, aşırı-reddetmiyor.
+- **tnum_bounds_checked = 438, reg32_checked = 0, 0 divergence, 0 parser kör-noktası.**
+
+### 2. Mekanizma detayı — red NEDENİ sabit off'a göre kayıyor (bug değil)
+raw C>0'da beklenen "negatif-min" değil bazen üst-sınır mesajı çıkıyor. Sebep: sabit `off`
+etkin min'i (`smin_ptr + off`) sıfırın üstüne kaldırınca alt kontrol geçiyor, ama
+`r1 -= C` (C>0, umin=0<C) unsigned bound'u U64_MAX'e patlatıyor → üst kontrol reddediyor.
+İkisi de doğru red; verifier benim ilk modelimden daha hassas. Karar (accept/reject) her
+iki durumda da tutarlı — 120/120.
+
+### 3. Verdikt
+Map-value negatif-offset smin alt-sınır kontrolü bu kernel'de **uygulanıyor ve tutarlı**.
+raw negatif store'ların hepsi reddedildi, grd rescue'ları kabul edildi, 0/438 invariant
+ihlali. Sekizinci ölçüm, hâlâ logic bug yok. Sıradaki T1: **T1-1** 32↔64 × pointer-offset
+(en yoğun tarihsel bölge). Kalan: daha geniş map-value store'ları, 9-EINVAL alt-ailesi.
