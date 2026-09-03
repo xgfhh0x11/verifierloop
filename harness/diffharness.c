@@ -1240,6 +1240,207 @@ static void run_generated_hi_family(void) {
 }
 
 // ===========================================================================
+// T1-1b ORACLE PROBE — does the EXISTING tnum32_bounds_inconsistent invariant (0026,
+// diff.rs:652) actually RUN on the register state a CVE-2020-8835-shaped program
+// produces, and stay SILENT on this (fixed) kernel? CVE-2020-8835 was a desync: the
+// buggy __reg_bound_offset32 clamped the tnum's low-32 to {0} when the compares had
+// established u32 in [0x200,0x400] (fix f2d67fec0b43). On a fixed kernel the two agree,
+// so the leg must be silent; the probe confirms it also RUNS (reg32_checked>0), i.e. the
+// state is genuinely reg32-independent, so a regression WOULD be caught.
+//   probe#cve8835 : the commit's own reproducer -- a full-unknown r1 bounded by two
+//                   jmp64 compares (into [0x2000000000, 0x4000000000]) then two jmp32
+//                   compares (w1 into [0x200,0x400]). 64-bit range spans blocks, u32 is
+//                   narrow -> the exact 32-tight/64-loose state where the desync lived.
+//   probe#shift   : the <<32|load construction reaching the same independent-view state.
+// ===========================================================================
+static void run_probe_t1b_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 64; m.max_entries = 1;
+    int map_fd = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_fd < 0) {
+        printf("===PROG probe type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    struct bpf_insn ld1 = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM,
+        .dst_reg = BPF_REG_1, .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_fd};
+    struct bpf_insn ld0 = (struct bpf_insn){0};
+
+    /* probe#cve8835 -- the fix commit's own reproducer shape. */
+    {
+        struct bpf_insn p[] = {
+            BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0),
+            BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+            BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4),
+            ld1, ld0,
+            BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem),
+            BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 11),               /* 6: null -> SKIP(18) */
+            BPF_LDX_MEM(BPF_DW, BPF_REG_1, BPF_REG_0, 0),         /* 7: full 64-bit unknown */
+            (struct bpf_insn){.code = BPF_LD|BPF_DW|BPF_IMM, .dst_reg = BPF_REG_2, .imm = 0}, /* 8 */
+            (struct bpf_insn){.imm = 0x40},                       /* 9: r2 = 0x4000000000 */
+            (struct bpf_insn){.code = BPF_LD|BPF_DW|BPF_IMM, .dst_reg = BPF_REG_3, .imm = 0}, /* 10 */
+            (struct bpf_insn){.imm = 0x20},                       /* 11: r3 = 0x2000000000 */
+            BPF_JMP_REG(BPF_JGT, BPF_REG_1, BPF_REG_2, 5),        /* 12: r1>umax -> SKIP */
+            BPF_JMP_REG(BPF_JLT, BPF_REG_1, BPF_REG_3, 4),        /* 13: r1<umin -> SKIP */
+            BPF_JMP32_IMM(BPF_JGT, BPF_REG_1, 0x400, 3),          /* 14: w1>0x400 -> SKIP */
+            BPF_JMP32_IMM(BPF_JLT, BPF_REG_1, 0x200, 2),          /* 15: w1<0x200 -> SKIP */
+            BPF_MOV64_IMM(BPF_REG_0, 0),                          /* 16: r1 constrained here */
+            BPF_EXIT_INSN(),                                      /* 17 */
+            BPF_MOV64_IMM(BPF_REG_0, 0),                          /* 18: SKIP */
+            BPF_EXIT_INSN(),                                      /* 19 */
+        };
+        run_one("probe#cve8835#000", p, (int)(sizeof(p) / sizeof(p[0])));
+    }
+
+    /* probe#shift -- the <<32|load construction reaching the same independent-view state. */
+    {
+        struct bpf_insn p[] = {
+            BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0),
+            BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+            BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4),
+            ld1, ld0,
+            BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem),
+            BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 8),                /* 6: null -> SKIP(15) */
+            BPF_LDX_MEM(BPF_W, BPF_REG_1, BPF_REG_0, 0),          /* 7: low unknown */
+            BPF_ALU64_IMM(BPF_LSH, BPF_REG_1, 32),               /* 8: -> UPPER 32 */
+            BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_0, 4),          /* 9: second unknown */
+            BPF_ALU64_REG(BPF_OR, BPF_REG_1, BPF_REG_8),          /* 10: full unknown */
+            BPF_JMP32_IMM(BPF_JGT, BPF_REG_1, 0x400, 3),          /* 11: w1>0x400 -> SKIP */
+            BPF_JMP32_IMM(BPF_JLT, BPF_REG_1, 0x200, 2),          /* 12: w1<0x200 -> SKIP */
+            BPF_MOV64_IMM(BPF_REG_0, 0),                          /* 13: constrained here */
+            BPF_EXIT_INSN(),                                      /* 14 */
+            BPF_MOV64_IMM(BPF_REG_0, 0),                          /* 15: SKIP */
+            BPF_EXIT_INSN(),                                      /* 16 */
+        };
+        run_one("probe#shift#001", p, (int)(sizeof(p) / sizeof(p[0])));
+    }
+    close(map_fd);
+}
+
+// ===========================================================================
+// 32<->64 SYNC-FRAGILE FAMILY (T1-1b, first increment) — the discriminating half.
+// The --probe-t1b probe confirmed by MEASUREMENT that the existing invariant B
+// (tnum32_bounds_inconsistent, diff.rs:652) RUNS on a CVE-2020-8835-shaped state
+// (reg32_checked>0) and stays SILENT on this fixed kernel (finding_count=0). So this
+// family reuses that proven leg -- NO new oracle -- and enumerates the two VALIDATED
+// constructions that drive a register into the 32-tight/64-loose state where a
+// reg_bounds_sync desync (the CVE-2020-8835 class) would show as an empty tnum32-vs-u32
+// intersection. Each program is an accepting scalar (the desync is a scalar property,
+// caught at its source, upstream of any pointer use). Signature: reg32_checked>0 across
+// many sync states + 0 divergence (the kernel is sync-consistent); a regression would fire B.
+//   gensync#cve : full-unknown r1 -> two jmp64 compares into a multi-block [LO,HI] ->
+//                 two jmp32 compares into a low window [KLO,KHI]. The fix commit's own
+//                 reproducer shape (f2d67fec0b43), generalized over range and window.
+//   gensync#shift : r1 = (unknown<<32)|unknown -> two jmp32 compares narrow the low half.
+// Exotic sync paths (ARSH-under-ALU32, movsx, 32-bit div/mod) are a deferred 2nd increment.
+// ===========================================================================
+static const struct { uint64_t lo, hi; } SYNC_PAIRS[] = {
+    {0x2000000000ULL, 0x4000000000ULL},   /* blocks 0x20..0x40 */
+    {0x100000000ULL,  0x500000000ULL},    /* blocks 1..5 */
+    {0x40000000ULL,   0x2c0000000ULL},    /* block 0 -> block 2 */
+    {0x180000000ULL,  0x680000000ULL},    /* block 1 -> block 6 */
+};
+#define SYNC_PAIRS_N ((int)(sizeof(SYNC_PAIRS) / sizeof(SYNC_PAIRS[0])))
+static const struct { int lo, hi; } SYNC_WIN[] = {
+    {0x200, 0x400}, {0x10, 0x1000}, {0x100, 0x800}, {0, 0x40},
+};
+#define SYNC_WIN_N ((int)(sizeof(SYNC_WIN) / sizeof(SYNC_WIN[0])))
+
+static void sync_emit_ld64(struct bpf_insn *ins, int *n, int reg, uint64_t val) {
+    ins[(*n)++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM,
+                                    .dst_reg = reg, .imm = (int)(uint32_t)(val & 0xffffffff)};
+    ins[(*n)++] = (struct bpf_insn){.imm = (int)(uint32_t)(val >> 32)};
+}
+
+static void run_sync_cve(int p_i, int w_i, int index, int map_fd) {
+    struct bpf_insn ins[26];
+    int n = 0;
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_fd};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    const int jnull = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_DW, BPF_REG_1, BPF_REG_0, 0);         /* full 64-bit unknown */
+    sync_emit_ld64(ins, &n, BPF_REG_2, SYNC_PAIRS[p_i].hi);
+    sync_emit_ld64(ins, &n, BPF_REG_3, SYNC_PAIRS[p_i].lo);
+    const int j1 = n; ins[n++] = BPF_JMP_REG(BPF_JGT, BPF_REG_1, BPF_REG_2, 0);   /* r1>HI */
+    const int j2 = n; ins[n++] = BPF_JMP_REG(BPF_JLT, BPF_REG_1, BPF_REG_3, 0);   /* r1<LO */
+    const int j3 = n; ins[n++] = BPF_JMP32_IMM(BPF_JGT, BPF_REG_1, SYNC_WIN[w_i].hi, 0); /* w1>KHI */
+    const int j4 = n; ins[n++] = BPF_JMP32_IMM(BPF_JLT, BPF_REG_1, SYNC_WIN[w_i].lo, 0); /* w1<KLO */
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);                          /* constrained state here */
+    ins[n++] = BPF_EXIT_INSN();
+    const int skip = n; ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    ins[jnull].off = skip - jnull - 1;
+    ins[j1].off = skip - j1 - 1;
+    ins[j2].off = skip - j2 - 1;
+    ins[j3].off = skip - j3 - 1;
+    ins[j4].off = skip - j4 - 1;
+
+    char name[80];
+    snprintf(name, sizeof(name), "gensync#cve.p%d.w%d#%03d", p_i, w_i, index);
+    run_one(name, ins, n);
+}
+
+static void run_sync_shift(int w_i, int pol, int index, int map_fd) {
+    const int op_hi = pol ? BPF_JGE : BPF_JGT;
+    const int op_lo = pol ? BPF_JLE : BPF_JLT;
+    struct bpf_insn ins[20];
+    int n = 0;
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_fd};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    const int jnull = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_1, BPF_REG_0, 0);
+    ins[n++] = BPF_ALU64_IMM(BPF_LSH, BPF_REG_1, 32);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_0, 4);
+    ins[n++] = BPF_ALU64_REG(BPF_OR, BPF_REG_1, BPF_REG_8);
+    const int j1 = n; ins[n++] = BPF_JMP32_IMM(op_hi, BPF_REG_1, SYNC_WIN[w_i].hi, 0);
+    const int j2 = n; ins[n++] = BPF_JMP32_IMM(op_lo, BPF_REG_1, SYNC_WIN[w_i].lo, 0);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);                          /* constrained state here */
+    ins[n++] = BPF_EXIT_INSN();
+    const int skip = n; ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    ins[jnull].off = skip - jnull - 1;
+    ins[j1].off = skip - j1 - 1;
+    ins[j2].off = skip - j2 - 1;
+
+    char name[80];
+    snprintf(name, sizeof(name), "gensync#shift.w%d.pol%d#%03d", w_i, pol, index);
+    run_one(name, ins, n);
+}
+
+static void run_generated_sync_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 64; m.max_entries = 1;
+    int map_fd = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_fd < 0) {
+        printf("===PROG gensync type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    int index = 0;
+    for (int p_i = 0; p_i < SYNC_PAIRS_N; p_i++)
+        for (int w_i = 0; w_i < SYNC_WIN_N; w_i++)
+            run_sync_cve(p_i, w_i, index++, map_fd);
+    for (int w_i = 0; w_i < SYNC_WIN_N; w_i++)
+        for (int pol = 0; pol < 2; pol++)
+            run_sync_shift(w_i, pol, index++, map_fd);
+    close(map_fd);
+}
+
+// ===========================================================================
 // PACKET-POINTER FAMILY (OI-9 next increment) — the pointer-arith family used a
 // PTR_TO_MAP_VALUE, whose bound the verifier KNOWS (value_size). A packet pointer is
 // the other kind: the verifier does NOT know where the packet ends. Instead the
@@ -1424,6 +1625,14 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-ptr-hi") == 0) {
         run_generated_hi_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-t1b") == 0) {
+        run_probe_t1b_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-sync") == 0) {
+        run_generated_sync_family();
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--gen-pkt") == 0) {

@@ -2887,3 +2887,72 @@ meşru-64-sınırlı offset, sync-kırılgan 32↔64 dizisiyle üretiliyor; bug 
 çalışır → reg32=0). Mevcut hiçbir dedektör kolu "aynı register'ın 32 ve 64 görünümü tutarsız"ı
 kontrol etmiyor → T1-1b iki iş: **yeni 32↔64-sync-invariant oracle kolu** (intrinsic tnum'un
 0026'daki genişlemesinin accept-tarafı) + onu besleyen sync-kırılgan aile. Sıradaki karar orada.
+
+## 0035 — 32↔64 sync-kırılgan aile (`--gen-sync`): T1-1b, CVE-2020-8835 sınıfı regresyon nöbetçisi
+
+- **Tarih:** 2026-09-04
+- **Durum:** Tamamlandı (T1-1b — T1-1'in ayırt edici yarısı; T1-1a soundness yarısıydı, 0034).
+  **0034'ün öngörüsü düzeltildi:** T1-1b "iki iş" (yeni 32↔64-sync oracle kolu + aile) diye
+  tahmin edilmişti; çözülen oracle sorusu (fix commit `f2d67fec0b43` incelemesi) desync'in
+  **tam olarak mevcut invariant B** (`tnum32_bounds_inconsistent`, diff.rs) olduğunu gösterdi
+  → **tek iş**: sync-kırılgan aile, B'yi yeniden kullanarak. Epistemik olarak daha temiz
+  (yeni model/invariant değil, mevcut redundancy'nin ölçümü).
+- **Alan:** `harness/diffharness.c` (`--probe-t1b`, `--gen-sync`, `run_probe_t1b_family`,
+  `run_sync_cve`/`run_sync_shift`/`run_generated_sync_family`), `scripts/probe-t1b.sh`,
+  `scripts/run-sync.sh`, `crates/pipeline/tests/probe_t1b_reg32.rs` (#[ignore] probe),
+  `crates/pipeline/tests/measure_log.rs` (#[ignore] genel ölçüm), `crates/pipeline/tests/
+  sync_calibration.rs` (yeni, 6 test, +fixture `gen-sync-24.log`), `docs/OPEN-ITEMS.md`,
+  `docs/COVERAGE-MAP.md` (T1-1).
+- **İlgili:** OI-9, 0026 (32↔64 skaler kol), 0034 (T1-1a), CVE-2020-8835, fix `f2d67fec0b43`
+  (`__reg_bound_offset32`), diff.rs invariants B ve C, coverage T1-1.
+
+### 0. Oracle kararı — desync = mevcut invariant B (yeni kol GEREKMEDİ)
+CVE-2020-8835 fix commit'i (`__reg_bound_offset32`) el ile incelendi: bug, tnum'un düşük-32'sini
+**{0}'a kırpıyordu** oysa u32 compare'leri `[0x200,0x400]`'e daraltmıştı → iki bağımsız tracker
+(tnum vs u32) **ayrışıyor (DESYNC)**, "tutarlı-ama-yanlış" değil. Bu ayrışma diff.rs'teki
+invariant B'nin tam tanımı: "tnum düşük-32 span'i `[u32_min,u32_max]` ile kesişmeli". Buggy
+state'te tnum32=[0,0], u32=[512,1024] → disjoint → **B fire eder** (el ile doğrulandı). Yani
+T1-1b yeni oracle kolu değil, B'yi CVE-şekilli state'lere sürecek bir aile.
+
+### 1. Probe teyidi (--probe-t1b) — B çalışıyor + susuyor
+Tam aileden önce 2 hand-built program (fix commit'in kendi reprodüseri + `<<32|load` shift
+konstrüksiyonu) VM'de koştu, pipeline ile ölçüldü:
+- **probe#cve8835**: accept, **reg32_checked=2**, finding_count=0.
+- **probe#shift**: accept, **reg32_checked=3**, finding_count=0.
+İkisi de reg32>0 (B bu state'lerde çalışıyor → regresyon yakalanırdı) ve finding_count=0 (bu
+düzeltilmiş kernelde B susuyor → false-positive üretmiyor). İstenen sonuç aynen.
+
+### 2. B, çok-blok rejiminde TEK nöbetçi (C yapısal olarak kapalı)
+Kritik nokta: invariant C (`reg32_reg64_inconsistent`) **tek-2³²-blok** ile gated
+(`umin>>32 == umax>>32`); CVE konstrüksiyonu 64-bit aralığı **birden çok bloğa** yayıyor
+(ör. `[0x2000000200, 0x3f00000400]` → 0x20 ≠ 0x3f), bu yüzden C bu state'lerde **atlanıyor**.
+Geriye 32-görünümü izleyen tek invariant olarak **B kalıyor** — CVE-2020-8835'in tarihsel
+olarak sadece tnum-vs-u32 redundancy'siyle yakalanabilir olmasının sebebi tam bu (5.7 öncesi
+ayrı u32 bounds yoktu → yakalanamazdı). Ölçüm bunu doğruluyor: ailedeki **56 checkable
+scalar-state'in 56'sı da çok-bloklu** (%100) — aile, B'nin saf bir izolasyonu.
+
+### 3. Çıktı — bpf-next VM (kernel 5e289c5a), 2026-09-04
+`--gen-sync` = cve{pair(4)×win(4)}=16 + shift{win(4)×pol(2)}=8 → **24 program**. SYNC_WIN[0]
+= `[0x200,0x400]` tarihsel CVE penceresi.
+- **24 kabul / 0 red.** Programlar önemsiz-güvenli (daraltma sonrası `MOV r0,0; EXIT`) —
+  yüzey karar değil, daraltmanın **bıraktığı register state**'i.
+- **reg32_checked = 56** (cve=32, shift=24) — B tüm sync state'lerinde koştu → CVE-2020-8835
+  regresyonu fire ederdi. **finding_count = 0** — B sustu → 32↔64 görünümler tutarlı: çalışan
+  nöbetçi, false-positive yok. **56/56 çok-bloklu** (C kapalı, B tek başına). **0 divergence,
+  0 parser kör-noktası.**
+
+### 4. İmza ve sınır
+T1-1b'nin imzası accept/reject dengesi DEĞİL (0034'te öngörüldüğü gibi, hepsi accept):
+**reg32_checked>0 + finding_count=0 + boş-olmayan çok-blok altkümesi.** Kanıtladığı: "mevcut
+invariant B, CVE-2020-8835 sınıfı 32↔64 desync'i için çalışan bir regresyon nöbetçisi, hem de
+invariant C'nin yardım edemediği çok-blok rejiminde." **Sınır — dikkat:** consistency oracle'ı
+DESYNC yakalar (iki görünüm bağımsız kodla tutulur, birindeki bug diğeriyle uyuşmazlıktan
+görünür); "tutarlı-ama-yanlış" (iki görünüm de AYNI şekilde bozulur) yakalanmaz — o, ertelenen
+(b) diferansiyel-recompute bölgesi. CVE-2020-8835 bir desync'ti, bu yüzden B'nin kapsamında.
+Pinlendi: `crates/pipeline/tests/sync_calibration.rs` (6 test). Tam suite 145 yeşil.
+
+### 5. Sıradaki
+T1-1 (T1-1a soundness + T1-1b desync-nöbetçisi) kapandı. Açık uçlar: (a) daha geniş map-value
+store'lar (2/4/8B) + EINVAL alt-ailesi (T1-1a'dan devreden); (b) "tutarlı-ama-yanlış" için
+diferansiyel-recompute oracle'ı (consistency'nin yapısal kör noktası — ayrı, büyük iş);
+gerçek *looping* (back-edge) hâlâ açık. Öncelik sırası COVERAGE-MAP.md'de.
