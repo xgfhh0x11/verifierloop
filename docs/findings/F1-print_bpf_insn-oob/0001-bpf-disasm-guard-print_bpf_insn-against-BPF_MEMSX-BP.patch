@@ -1,6 +1,6 @@
-From cd8814f46b41579092e28ef9d32fc93d7ec45fc9 Mon Sep 17 00:00:00 2001
-From: tylersec <freedawg71@gmail.com>
-Date: Thu, 3 Sep 2026 03:32:23 +0300
+From dffc1150e2cc5ea4e7da140ea278c6c79aa2210e Mon Sep 17 00:00:00 2001
+From: Utku Erol <utkuerol71@gmail.com>
+Date: Thu, 3 Sep 2026 16:32:25 +0300
 Subject: [PATCH] bpf: disasm: guard print_bpf_insn against BPF_MEMSX | BPF_DW
 
 print_bpf_insn() renders a BPF_LDX by indexing one of two size tables with
@@ -27,7 +27,7 @@ Reject the impossible size the same way the branch already rejects an
 unexpected mode, keeping the disassembler total for any opcode.
 
 Fixes: b9c5d822f677 ("bpf: Add source and instruction diagnostic context")
-Signed-off-by: tylersec <freedawg71@gmail.com>
+Signed-off-by: Utku Erol <utkuerol71@gmail.com>
 ---
  kernel/bpf/disasm.c | 4 ++++
  1 file changed, 4 insertions(+)

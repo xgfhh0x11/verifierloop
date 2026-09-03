@@ -7,13 +7,13 @@
 real tree). NOT yet sent — sending is a human action; this sandbox has no mail transport
 (`git send-email` unavailable, no SMTP), and the send goes out under your identity.
 
-**The two irreducible human steps (everything else is done):**
-1. **Real name in Signed-off-by** — the DCO requires your legal name; the patch carries
-   a placeholder `Signed-off-by: tylersec <freedawg71@gmail.com>`. Fix it in the lab
-   tree with `git -C .lab/bpf-next commit --amend -s` (edit the name) then re-export, or
-   edit the `.patch` file's Signed-off-by line directly.
+**Human steps — 1 of 2 DONE:**
+1. ~~Real name in Signed-off-by~~ — **DONE (2026-09-03):** the lab-tree commit was amended
+   with the real-name DCO Signed-off-by and the `.patch` re-exported (lab commit
+   `dffc1150e2cc`). The diff itself is unchanged (`index 50b3ca5149a0..70c2b281cfe9`);
+   checkpatch re-verified clean on the finalized patch.
 2. **Send from your own environment** (the Win11/Desktop copy) with the `git send-email`
-   line below.
+   line below — the ONLY remaining step. This sandbox has no mail transport.
 
 ## Subject
 `[PATCH bpf-next] bpf: disasm: guard print_bpf_insn against BPF_MEMSX | BPF_DW`
