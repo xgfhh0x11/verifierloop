@@ -2,7 +2,18 @@
 
 **Patch:** `0001-bpf-disasm-guard-print_bpf_insn-against-BPF_MEMSX-BP.patch`
 **Target tree:** bpf-next
-**Status:** prepared, NOT yet sent (sending is a human action — see below)
+**Status:** prepared + **checkpatch-clean** (0 errors; the only checkpatch warnings are
+`Unknown commit id b9c5d822f677`, a `--no-tree` false positive that resolves against the
+real tree). NOT yet sent — sending is a human action; this sandbox has no mail transport
+(`git send-email` unavailable, no SMTP), and the send goes out under your identity.
+
+**The two irreducible human steps (everything else is done):**
+1. **Real name in Signed-off-by** — the DCO requires your legal name; the patch carries
+   a placeholder `Signed-off-by: tylersec <freedawg71@gmail.com>`. Fix it in the lab
+   tree with `git -C .lab/bpf-next commit --amend -s` (edit the name) then re-export, or
+   edit the `.patch` file's Signed-off-by line directly.
+2. **Send from your own environment** (the Win11/Desktop copy) with the `git send-email`
+   line below.
 
 ## Subject
 `[PATCH bpf-next] bpf: disasm: guard print_bpf_insn against BPF_MEMSX | BPF_DW`
