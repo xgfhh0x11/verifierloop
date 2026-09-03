@@ -1,7 +1,7 @@
 # Kapsama Haritası — Taranan Yüzeyler ve Açık Uçlar
 
-> Durum: HEAD `d96a049` (36 commit). Kaynak: `harness/diffharness.c` generator aileleri
-> (`--gen*`), `crates/pipeline/tests/*_calibration.rs` pinlenmiş ölçümler, devlog 0025–0031.
+> Durum: HEAD `6a6fea0`+ (42 commit). Kaynak: `harness/diffharness.c` generator aileleri
+> (`--gen*`), `crates/pipeline/tests/*_calibration.rs` pinlenmiş ölçümler, devlog 0025–0036.
 > Bu belge kararı **kod tabanına dayandırılmış** bir haritadır: her sayı bir generator
 > ailesinden ve onu donduran bir kalibrasyon testinden gelir.
 
@@ -82,6 +82,45 @@ Hepsi `harness/diffharness.c` içinde enumerative generator, hepsi bir fixture'a
 
 **Ne:** `PTR_TO_PACKET` + scalar offset + programın kendi `if (data+1 > data_end) goto err` compare'ı → verifier statik `range` kaydeder (`find_good_pkt_pointers`) → 1-byte erişim. **49 kabul / 193 red** (184 EACCES = `MAX_PACKET_OFF` guard'ı + map_value ile aynı 9 EINVAL = scalar-şekillendirme özelliği), **1254 kontrol**, 0 sapma. Statik range log'da görünür (`r=0` → `r=16`).
 **Kritik düzeltme:** Runtime `data_end`-fixing mekanizması **gerekmez** — karar yükleme-zamanı statik, saf komut-akışı fonksiyonu. `data_end` compare `>` (jgt) olarak sabit tutuldu (bu ilk increment).
+
+---
+
+## 2b. Yeni oracle — runtime yer-gerçeği (`--gen-rt`, devlog 0036)
+
+Yukarıdaki altı ailenin hepsi **Ω**'ya (iç tutarlılık) dayanır: verifier'ın bastırdığı
+tnum/bounds görünümleri **birbiriyle** çelişiyor mu? Bunun yapısal bir kör noktası var:
+iki görünüm **aynı şekilde** bozulursa (consistent-but-wrong), birbirleriyle uyumlu
+kalırlar ve hiçbir iç-tutarlılık invariant'ı ateşlemez. Tarihsel verifier bug'larının
+çoğu (ör. CVE-2021-3490, 32-bit bounds) tam bu sınıfta.
+
+Runtime oracle bu kör noktadan kaçan **ilk** dedektör. Daha güçlü bir önerme kanıtlar:
+
+> **Ω_rt:** verifier bir programı kabul edip dönüş register'ı için `[lo,hi]` sınırını
+> kanıtladıysa, programın **gerçek çalışma-zamanı** dönüş değeri de `[lo,hi]` içindedir.
+
+Mekanizma: program tam-attacker-kontrollü 32-bit bir input'u (userspace'ten set edilen
+map değeri) alır, verifier-izlenen bir ALU/compare şekli uygular, sınırlanmış değeri
+**döndürür**. Harness onu `BPF_PROG_TEST_RUN` ile bir input süpürmesi üzerinde **fiilen
+çalıştırır** ve gerçek `retval`'ı kaydeder. Pipeline her retval'ı r0'ın kanıtlanmış
+scalar sınırlarının **birleşimiyle** karşılaştırır (birleşim = exit-başına sınırın
+muhafazakâr üst-kümesi → geniş birleşim ihlali kaçırabilir ama asla uydurmaz). retval
+sınır dışındaysa `runtime_bound_violation` — verifier kanıtladığı sınırı çalışmada aşan
+bir programı kabul etmiş demektir; ve bu, verifier log'unun kendi-tutarlılığına **hiç
+güvenmeden** yakalanır.
+
+**Çıktı (bpf-next VM, kernel 5e289c5a, 2026-09-04):** `--gen-rt` = 37 program (and /
+andadd / andlsh / cmp / alu32 şekilleri; hepsi ≤32-bit), her biri 12-değerli input
+süpürmesi. **37 kabul, runtime_checked=444** (444 gerçek çalıştırma, her biri verifier'ın
+kendi sınırıyla kontrol edildi), **finding_count=0** — hiçbir gerçek retval sınırını
+aşmadı. **0 parser kör noktası.** Oracle'ın boş olmadığı kanıtlandı: planlı bir kaçış
+(sınır dışı retval) tam bir kez ateşliyor; ve off-by-one sağlam: retval==umax ateşlemiyor,
+umax+1 ateşliyor. Pinlendi: `crates/pipeline/tests/runtime_calibration.rs` (6 test).
+
+**Sınır:** Ω_rt DESYNC'e de consistent-but-wrong'a da bakmaz — dönüş değerinin kanıtlanan
+sınırı **çalışmada** aşıp aşmadığına bakar, bu yüzden ikisini de yakalayabilir; ama yalnız
+dönüş-değeri kanalı (retval, 32-bit) üzerinden gözlemlenebilen bug'ları görür. v2 yönleri:
+daha geniş gözlem kanalları (map/packet write, 64-bit değerler), pointer-erişim OOB'sinin
+runtime tespiti, ve döngü/iterator input'ları.
 
 ---
 

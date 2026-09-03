@@ -83,10 +83,13 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
     let mut result_line: Option<&str> = None;
     let mut in_log = false;
     let mut log: Vec<&str> = Vec::new();
+    let mut runtime_lines: Vec<&str> = Vec::new();
 
     for line in repaired.iter().map(|l| l.as_ref()) {
         if line.starts_with("RESULT ") {
             result_line = Some(line);
+        } else if line.starts_with("RUNTIME ") {
+            runtime_lines.push(line);
         } else if line.starts_with("---LOG---") {
             in_log = true;
         } else if line.starts_with("---END---") {
@@ -148,6 +151,7 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
         coverage_delta: CoverageDelta::default(), // exec_n stamped by normalize
         helper_arg_observations: parse_helper_calls(&log),
         helper_arg_violations: Vec::new(),        // legacy synthetic path
+        runtime_samples: parse_runtime_samples(&runtime_lines),
     };
 
     // Record-level parse notes: partial-parse caveats (lower confidence, NOT anomalies).
@@ -181,6 +185,44 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
         notes,
         label: Some(label),
     })
+}
+
+/// Parse the harness's `RUNTIME input=0x.. retval=0x..` lines (BPF_PROG_TEST_RUN
+/// ground-truth samples) that sit between the RESULT line and the verifier log.
+/// A line carrying `error=` marks a sample the harness could not execute; it is
+/// kept (so the count is honest) but flagged so the diff oracle skips it.
+fn parse_runtime_samples(lines: &[&str]) -> Vec<metrics::core::RuntimeSample> {
+    fn parse_u(v: &str) -> Option<u64> {
+        let v = v.trim();
+        if let Some(h) = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+            u64::from_str_radix(h, 16).ok()
+        } else {
+            v.parse::<u64>().ok()
+        }
+    }
+    let mut out = Vec::new();
+    for l in lines {
+        let mut input = None;
+        let mut retval = None;
+        let mut error = false;
+        for tok in l.split_whitespace() {
+            if let Some(v) = tok.strip_prefix("input=") {
+                input = parse_u(v);
+            } else if let Some(v) = tok.strip_prefix("retval=") {
+                retval = parse_u(v);
+            } else if tok.starts_with("error=") {
+                error = true;
+            }
+        }
+        if let Some(i) = input {
+            out.push(metrics::core::RuntimeSample {
+                input: i,
+                retval: retval.unwrap_or(0),
+                error: error || retval.is_none(),
+            });
+        }
+    }
+    out
 }
 
 /// The `===PROG <name> ...` label of a block (for triage), or "block".

@@ -160,4 +160,27 @@ pub struct CoreMetrics {
     /// Skipped when empty so existing artifacts stay byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub helper_arg_observations: Vec<HelperArgObservation>,
+    /// Runtime ground-truth samples from BPF_PROG_TEST_RUN: for each attacker-
+    /// controlled input, the ACTUAL value the program returned. The diff stage
+    /// checks each retval against the verifier's own proven bound on the return
+    /// register — a violation is a soundness bug caught WITHOUT trusting the
+    /// verifier log to be self-consistent. Skipped when empty so existing
+    /// artifacts stay byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_samples: Vec<RuntimeSample>,
+}
+
+/// One runtime observation: the program was executed via BPF_PROG_TEST_RUN with a
+/// chosen attacker-controlled `input`, and returned `retval` (the low 32 bits of
+/// the return register). `error` marks a sample the harness could not run (the
+/// diff stage never treats an errored sample as a violation).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeSample {
+    /// The attacker-controlled input fed to the program (a 32-bit map value).
+    pub input: u64,
+    /// The value the program actually returned (retval, low 32 bits).
+    pub retval: u64,
+    /// True if the harness could not execute this sample (skipped by the oracle).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub error: bool,
 }

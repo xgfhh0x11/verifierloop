@@ -2956,3 +2956,69 @@ T1-1 (T1-1a soundness + T1-1b desync-nöbetçisi) kapandı. Açık uçlar: (a) d
 store'lar (2/4/8B) + EINVAL alt-ailesi (T1-1a'dan devreden); (b) "tutarlı-ama-yanlış" için
 diferansiyel-recompute oracle'ı (consistency'nin yapısal kör noktası — ayrı, büyük iş);
 gerçek *looping* (back-edge) hâlâ açık. Öncelik sırası COVERAGE-MAP.md'de.
+
+## 0036 — Runtime yer-gerçeği oracle'ı (`--gen-rt`): verifier log'una güvenmeyen ilk dedektör
+
+- **Tarih:** 2026-09-04
+- **Durum:** Yeni oracle, ilk artış (input ailesi değil — **oracle değişikliği**). Stratejik
+  dönüş: 0025–0035 arası tüm aileler aynı iç-tutarlılık oracle'ına (Ω) dayanıyordu; daha
+  fazla input eklemek bug *bulmak* için azalan getiri, çünkü Ω yapısal olarak
+  "consistent-but-wrong"u kaçırıyor. Bu oracle o kör noktadan kaçan ilki.
+- **Alan:** `harness/diffharness.c` (`--gen-rt`, `run_rt_one`, `run_rt_prog`,
+  `run_generated_rt_family`, `rt_map_set` — `BPF_PROG_TEST_RUN` + `BPF_MAP_UPDATE_ELEM`),
+  `crates/metrics/src/core.rs` (`RuntimeSample` + `CoreMetrics.runtime_samples`, serde-skip),
+  `crates/pipeline/src/verifier_log.rs` (`parse_runtime_samples`, RUNTIME satırı ayrıştırma),
+  `crates/pipeline/src/diff.rs` (`check_runtime_ground_truth`, `runtime_checked`,
+  `runtime_bound_violation`), `crates/pipeline/tests/runtime_calibration.rs` (yeni, 6 test,
+  +fixture `gen-rt-37.log`), `crates/pipeline/tests/measure_log.rs` (+runtime_checked satırı),
+  `scripts/run-rt.sh`, `docs/COVERAGE-MAP.md` (§2b), `docs/OPEN-ITEMS.md` (OI-9).
+- **İlgili:** 0035 (T1-1b BOUND = consistent-but-wrong), CVE-2021-3490 (32-bit bounds),
+  OI-9, OI-11 (`test_run` high-repeat → RCU-stall; bu yüzden repeat=1), [[oracle-times-input]].
+
+### 0. Neden — Ω'nun yapısal kör noktası
+Ω (iç tutarlılık) verifier'ın bastırdığı görünümlerin **birbiriyle** çelişip çelişmediğine
+bakar. İki görünüm **aynı şekilde** bozulursa uyumlu kalır, hiçbir Ω-invariant'ı ateşlemez.
+Tarihsel bug'ların çoğu (CVE-2021-3490 = 32-bit bounds güncelleme hatası) bu sınıfta. Reviewer
+kuralı ([[oracle-times-input]]): input açken oracle'ı büyütme — ama artık input değil oracle aç.
+
+### 1. Ω_rt — daha güçlü önerme, yer-gerçeğiyle
+> **Ω_rt:** verifier bir programı kabul edip dönüş register'ı için `[lo,hi]` kanıtladıysa,
+> programın **gerçek çalışma-zamanı** dönüş değeri de `[lo,hi]` içindedir.
+
+Mekanizma: program tam-attacker-kontrollü 32-bit input'u (userspace'ten `BPF_MAP_UPDATE_ELEM`
+ile set edilen map değeri) okur, verifier-izlenen bir ALU/compare şekli uygular, sınırlanmış
+değeri döndürür. Harness `BPF_PROG_TEST_RUN` ile 12-değerli bir input süpürmesi üzerinde
+**fiilen çalıştırır**, gerçek `retval`'ı kaydeder (`RUNTIME input=.. retval=..` satırı).
+Pipeline retval'ı r0'ın kanıtlanmış scalar sınırıyla karşılaştırır. Bu, verifier log'unun
+**kendi-tutarlılığına hiç güvenmez** — yer gerçeğidir.
+
+### 2. Sağlamlık — union + ≤32-bit guard (yanlış-pozitif yok)
+İki incelik, ikisi de "safe direction = under-claim":
+- **Referans sınır = r0'ın tüm scalar state'lerinin BİRLEŞİMİ.** Null-check yolu 0 döndürür
+  (r0 ∈ [0,0]); "en yüksek insn" seçmek onu alıp retval=1'i yanlış-pozitif yapardı. Birleşim
+  = exit-başına sınırın muhafazakâr üst-kümesi → geniş birleşim ihlali **kaçırabilir** ama
+  asla **uydurmaz**. (Bizim programlarda r0 yalnız iki exit'te scalar → birleşim tam.)
+- **retval düşük-32 bit.** 64-bit sınır yalnız `umax < 2³²` iken kontrol edilir (aksi halde
+  atlanır, tahmin edilmez); u32-görünüm kolu her zaman geçerli. v1'de tüm şekiller ≤32-bit.
+
+### 3. Çıktı — bpf-next VM (kernel 5e289c5a), 2026-09-04
+`--gen-rt` = 37 program (and 6 + andadd 9 + andlsh 9 + cmp 4 + alu32 9; alu32 =
+CVE-2021-3490 lezzeti, 32-bit bounds yolu), her biri 12-değerli süpürme.
+- **37 kabul / 0 red. runtime_checked = 444** (37×12 gerçek çalıştırma, her biri verifier'ın
+  kendi kanıtladığı sınırla kontrol edildi). **finding_count = 0** — hiçbir gerçek retval
+  sınırını aşmadı. **0 parser kör noktası.** map/testrun hata satırı = 0.
+
+### 4. Oracle dişli mi — planlı-kaçış + sınır testi
+"0 bulgu"nun anlamı, ancak oracle bir bug'a ateşleyebiliyorsa vardır. İki negatif kontrol
+pinlendi: (a) **diş** — `and#000`'ın ([0,1]) bir retval'ı 0xdead0000'e bozulunca **tam bir
+kez** `runtime_bound_violation` ateşliyor; (b) **off-by-one sağlam** — retval==umax (=1)
+ateşlemiyor, umax+1 (=2) ateşliyor. Yani `>` doğru operatör, sınır dahil, oracle boş değil.
+
+### 5. Sınır ve v2
+Ω_rt yalnız dönüş-değeri kanalından (retval, 32-bit) gözlemlenebilen bug'ları görür. Bu,
+ertelenen (b) diferansiyel-recompute'a **farklı** bir saldırı: recompute sınırı soyut
+yeniden-türetir (ikinci bir implementasyon riski), runtime gerçek değeri gözler (ikinci
+implementasyon gerekmez ama sadece kanalın gösterdiğini görür). v2 yönleri: daha geniş
+gözlem kanalları (map/packet write, 64-bit değerler), pointer-erişim OOB'sinin runtime
+tespiti, ve döngü/iterator input'ları. Pinlendi: `runtime_calibration.rs` (6 test). Tam
+suite 151 yeşil.

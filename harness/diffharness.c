@@ -1591,6 +1591,185 @@ static void run_generated_pktcmp_family(void) {
                     run_generated_pktcmp(form_i, m, off, wi, index++);
 }
 
+// ---- runtime ground-truth oracle (--gen-rt) --------------------------------
+// The FIRST oracle that does not trust the verifier's own log to be self-
+// consistent. Load an accepted program that RETURNS a verifier-bounded value
+// derived from a fully attacker-controlled 32-bit input (a map value we set from
+// userspace), then EXECUTE it via BPF_PROG_TEST_RUN over a sweep of inputs and
+// print the ACTUAL retval for each. The pipeline compares each retval against the
+// verifier's claimed bound on the return register: a retval outside
+// [u32_min,u32_max] means the verifier proved a bound the runtime violated -- a
+// soundness bug caught even when the tnum and u32 views AGREE with each other
+// (the "consistent-but-wrong" blind spot every log-only invariant shares).
+//
+// v1 keeps every shape's result within 32 bits (umax < 2^32) so retval is the
+// return register's exact value and the comparison is unambiguous.
+
+static int rt_map_set(int map_fd, uint32_t key, uint32_t val) {
+    union bpf_attr a;
+    memset(&a, 0, sizeof(a));
+    a.map_fd = map_fd;
+    a.key = (uint64_t)(unsigned long)&key;
+    a.value = (uint64_t)(unsigned long)&val;
+    a.flags = 0; /* BPF_ANY */
+    return bpf(BPF_MAP_UPDATE_ELEM, &a, sizeof(a));
+}
+
+/* extremes + interior values that hit the bound edges of the shapes below. */
+static const uint32_t RT_INPUTS[] = {
+    0x00000000u, 0x00000001u, 0x0000007fu, 0x000000ffu, 0x00007fffu, 0x0000ffffu,
+    0x7fffffffu, 0x80000000u, 0xfffffffeu, 0xffffffffu, 0x5a5a5a5au, 0xdeadbeefu,
+};
+#define RT_INPUTS_N ((int)(sizeof(RT_INPUTS) / sizeof(RT_INPUTS[0])))
+
+static void run_rt_one(const char *name, const struct bpf_insn *insns, int n, int map_fd) {
+    g_log[0] = '\0';
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)insns;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = sizeof(g_log);
+    attr.log_buf = (uint64_t)(unsigned long)g_log;
+
+    uint64_t t0 = now_ns();
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int e = errno;
+    uint64_t dt = now_ns() - t0;
+
+    printf("===PROG %s type=socket_filter ===\n", name);
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=%llu\n",
+           fd >= 0 ? "accept" : "reject", fd, fd >= 0 ? 0 : e,
+           (unsigned long long)dt);
+
+    if (fd >= 0) {
+        /* 64-byte zero packet: content is irrelevant (the computed input comes
+           from the map), but skb-based test_run needs a non-empty packet. */
+        unsigned char pkt[64];
+        memset(pkt, 0, sizeof(pkt));
+        for (int i = 0; i < RT_INPUTS_N; i++) {
+            uint32_t in = RT_INPUTS[i];
+            int uerr = rt_map_set(map_fd, 0, in);
+            union bpf_attr t;
+            memset(&t, 0, sizeof(t));
+            t.test.prog_fd = fd;
+            t.test.data_in = (uint64_t)(unsigned long)pkt;
+            t.test.data_size_in = sizeof(pkt);
+            t.test.repeat = 1;
+            int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+            if (r < 0 || uerr < 0)
+                printf("RUNTIME input=0x%08x error=1 testrun_errno=%d map_err=%d\n",
+                       in, r < 0 ? errno : 0, uerr);
+            else
+                printf("RUNTIME input=0x%08x retval=0x%08x\n", in,
+                       (unsigned)t.test.retval);
+        }
+        close(fd);
+    }
+    printf("---LOG---\n%s\n---END---\n", g_log);
+}
+
+enum rt_shape { RT_AND, RT_AND_ADD, RT_AND_LSH, RT_CMP, RT_ALU32 };
+static const char *rt_shape_name(enum rt_shape s) {
+    switch (s) {
+    case RT_AND:     return "and";
+    case RT_AND_ADD: return "andadd";
+    case RT_AND_LSH: return "andlsh";
+    case RT_CMP:     return "cmp";
+    case RT_ALU32:   return "alu32";
+    }
+    return "?";
+}
+
+static void run_rt_prog(enum rt_shape shape, uint32_t p1, uint32_t p2,
+                        int idx, int map_fd) {
+    struct bpf_insn ins[32];
+    int n = 0;
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_fd};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    const int jnull = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0); /* r6 = attacker input */
+    int jcmp = -1;
+    switch (shape) {
+    case RT_AND:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, p1);
+        break;
+    case RT_AND_ADD:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, p1);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_6, p2);
+        break;
+    case RT_AND_LSH:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, p1);
+        ins[n++] = BPF_ALU64_IMM(BPF_LSH, BPF_REG_6, p2);
+        break;
+    case RT_CMP:
+        jcmp = n; ins[n++] = BPF_JMP_IMM(BPF_JGT, BPF_REG_6, p1, 0); /* >p1 -> return 0 */
+        break;
+    case RT_ALU32:
+        ins[n++] = BPF_ALU32_IMM(BPF_AND, BPF_REG_6, p1);
+        ins[n++] = BPF_ALU32_IMM(BPF_OR, BPF_REG_6, p2);
+        break;
+    }
+    ins[n++] = BPF_MOV64_REG(BPF_REG_0, BPF_REG_6); /* return the bounded value */
+    ins[n++] = BPF_EXIT_INSN();
+    const int exit0 = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    ins[jnull].off = exit0 - jnull - 1;
+    if (jcmp >= 0) ins[jcmp].off = exit0 - jcmp - 1;
+
+    char name[80];
+    snprintf(name, sizeof(name), "genrt#%s#%03d", rt_shape_name(shape), idx);
+    run_rt_one(name, ins, n, map_fd);
+}
+
+static void run_generated_rt_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 8; m.max_entries = 1;
+    int map_fd = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_fd < 0) {
+        printf("===PROG genrt type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    int idx = 0;
+    const uint32_t and_masks[] = {0x1u, 0x7fu, 0xffu, 0xffffu, 0xfffffu, 0x7fffffffu};
+    for (int i = 0; i < (int)(sizeof(and_masks)/sizeof(and_masks[0])); i++)
+        run_rt_prog(RT_AND, and_masks[i], 0, idx++, map_fd);
+    /* AND then ADD: [add, mask+add], both fit in 32 bits. */
+    const uint32_t aa_mask[] = {0xffu, 0xffffu, 0xfffffu};
+    const uint32_t aa_add[]  = {1u, 100u, 0x1000u};
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            run_rt_prog(RT_AND_ADD, aa_mask[i], aa_add[j], idx++, map_fd);
+    /* AND then LSH: mask<<shift stays < 2^32. */
+    const uint32_t al_mask[] = {0xfu, 0xffu, 0xfffu};
+    const uint32_t al_shift[] = {4u, 8u, 12u};
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            run_rt_prog(RT_AND_LSH, al_mask[i], al_shift[j], idx++, map_fd);
+    /* compare-narrow: return path has value in [0, K]. */
+    const uint32_t cmp_k[] = {10u, 0xffu, 0xffffu, 0x7fffffu};
+    for (int i = 0; i < 4; i++)
+        run_rt_prog(RT_CMP, cmp_k[i], 0, idx++, map_fd);
+    /* 32-bit ALU AND|OR: the CVE-2021-3490 flavour (32-bit bounds update path). */
+    const uint32_t a32_and[] = {0xffu, 0xffffu, 0xf0f0f0u};
+    const uint32_t a32_or[]  = {0x0u, 0x5u, 0xf00u};
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            run_rt_prog(RT_ALU32, a32_and[i], a32_or[j], idx++, map_fd);
+    close(map_fd);
+}
+
 int main(int argc, char **argv) {
     // Two data sources, kept apart on purpose (different provenance):
     //   (no args) the fixed authoritative program set, pinned by tests
@@ -1641,6 +1820,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-pkt-cmp") == 0) {
         run_generated_pktcmp_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-rt") == 0) {
+        run_generated_rt_family();
         return 0;
     }
 

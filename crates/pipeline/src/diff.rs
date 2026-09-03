@@ -169,6 +169,12 @@ pub struct DiffSummary {
     /// something different are counted.
     #[serde(default)]
     pub reg32_checked: u64,
+    /// Runtime ground-truth samples (BPF_PROG_TEST_RUN retvals) actually compared
+    /// against the verifier's proven bound on the return register. The denominator
+    /// for the runtime oracle — the ONLY leg that does not trust the verifier log
+    /// to be internally consistent.
+    #[serde(default)]
+    pub runtime_checked: u64,
 }
 
 /// The DIFF_FINDINGS payload for a period.
@@ -233,11 +239,13 @@ pub fn run(
     let mut documented_cases_checked = 0u64;
     let mut tnum_bounds_checked = 0u64;
     let mut reg32_checked = 0u64;
+    let mut runtime_checked = 0u64;
     for (idx, record) in metrics.records.iter().enumerate() {
         let idx = idx as u64;
         helper_args_observed += record.core.helper_arg_observations.len() as u64;
         check_logical_invariants(idx, record, &mut findings, &mut tnum_bounds_checked);
         check_subregister_invariants(idx, record, &mut findings, &mut reg32_checked);
+        check_runtime_ground_truth(idx, record, &mut findings, &mut runtime_checked);
         check_helper_proto(idx, record, ground_truth, &mut findings);
         check_helper_observations(
             idx,
@@ -265,6 +273,7 @@ pub fn run(
         note_count: notes.len() as u64,
         tnum_bounds_checked,
         reg32_checked,
+        runtime_checked,
     };
 
     let out = DiffFindings {
@@ -552,6 +561,77 @@ fn check_documented_behavior(
 /// for constants. It only becomes a check when the two views diverge, or when the
 /// 64-bit range spans more than one 2^32 block (there the 32-bit view constrains
 /// something the 64-bit endpoints alone do not).
+/// (Runtime ground truth) Compare each BPF_PROG_TEST_RUN sample's ACTUAL retval
+/// against the verifier's own proven bound on the return register (r0). A retval
+/// outside the bound means the verifier accepted a program whose runtime return
+/// value escaped what it proved — a soundness bug caught WITHOUT trusting the
+/// verifier log to be self-consistent (the "consistent-but-wrong" blind spot the
+/// tnum/reg32 legs share). The reference bound is the UNION of r0's scalar bounds
+/// over every snapshot: a conservative superset of the true per-exit bound, so a
+/// too-wide union can only MISS a violation, never fabricate one. retval is the
+/// low 32 bits, so the 64-bit leg is only sound when the bound fits in 32 bits
+/// (a wider bound is skipped, not guessed); the 32-bit-view leg always applies.
+fn check_runtime_ground_truth(
+    idx: u64,
+    record: &MetricRecord,
+    out: &mut Vec<DivergenceFinding>,
+    checked: &mut u64,
+) {
+    if record.core.runtime_samples.is_empty() {
+        return;
+    }
+    let mut any = false;
+    let mut last_insn = 0u32;
+    let (mut umin, mut umax) = (u64::MAX, 0u64);
+    let (mut u32lo, mut u32hi) = (u64::MAX, 0u64);
+    let mut have32 = false;
+    for snap in &record.core.register_evolution {
+        for reg in &snap.regs {
+            if reg.reg != 0 || reg.reg_type != "scalar" {
+                continue;
+            }
+            any = true;
+            last_insn = last_insn.max(snap.insn_idx);
+            umin = umin.min(reg.umin);
+            umax = umax.max(reg.umax);
+            if let (Some(a), Some(b)) = (reg.u32_min, reg.u32_max) {
+                have32 = true;
+                u32lo = u32lo.min(a);
+                u32hi = u32hi.max(b);
+            }
+        }
+    }
+    let check64 = any && umax <= u32::MAX as u64;
+    if !check64 && !have32 {
+        // No 32-bit-meaningful bound to compare a (32-bit) retval against.
+        return;
+    }
+    for smp in &record.core.runtime_samples {
+        if smp.error {
+            continue;
+        }
+        *checked += 1;
+        let rv = smp.retval & 0xffff_ffff;
+        let viol64 = check64 && (rv < umin || rv > umax);
+        let viol32 = have32 && (rv < u32lo || rv > u32hi);
+        if viol64 || viol32 {
+            let (elo, ehi) = if viol32 { (u32lo, u32hi) } else { (umin, umax) };
+            out.push(DivergenceFinding {
+                record_index: Some(idx),
+                source: GroundTruthSource::LogicalInvariant,
+                kind: "runtime_bound_violation".to_string(),
+                aspect: "runtime".to_string(),
+                expected: format!("retval in [{elo},{ehi}] (verifier's proven r0 bound)"),
+                observed: format!("input=0x{:x} retval={rv} (0x{rv:x})", smp.input),
+                detail: format!(
+                    "r0 up to insn {last_insn}: runtime return value escaped the \
+                     verifier's proven bound"
+                ),
+            });
+        }
+    }
+}
+
 pub fn reg32_checkable(reg: &RegState) -> bool {
     if reg.reg_type != "scalar" {
         return false;
@@ -762,6 +842,7 @@ mod tests {
                 jit_interp_diff: None,
                 coverage_delta: CoverageDelta::default(),
                 helper_arg_observations: Vec::new(),
+                runtime_samples: Vec::new(),
                 helper_arg_violations: Vec::new(),
             },
             counterfactual: CounterfactualLayer::default(),
