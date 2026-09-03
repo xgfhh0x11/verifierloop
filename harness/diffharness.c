@@ -940,6 +940,83 @@ static void run_generated_ptr_family(void) {
     close(map_fd);
 }
 
+// ===========================================================================
+// PACKET-POINTER FAMILY (OI-9 next increment) — the pointer-arith family used a
+// PTR_TO_MAP_VALUE, whose bound the verifier KNOWS (value_size). A packet pointer is
+// the other kind: the verifier does NOT know where the packet ends. Instead the
+// PROGRAM must prove the bound with its own `if (data + N > data_end)` compare, and
+// the verifier statically TRACKS that proof as a per-pointer `range`
+// (find_good_pkt_pointers, verifier.c) — then checks every packet access against the
+// recorded range at load time. Nothing here is runtime: the harness only LOADS, and
+// accept/reject is a pure function of the instruction stream, so the deterministic
+// enumeration and its denominator carry over unchanged.
+//
+// The interesting edges live in that range machinery: MAX_PACKET_OFF (0xffff) — a
+// larger offset umax gives NO range ("risk of overflow") and the access is rejected —
+// and range_right_open (`>` vs `>=`). This is the historically densest packet-bounds
+// bug region. socket_filter forbids direct packet access (sk_filter_is_valid_access
+// returns false for data/data_end), so this family loads as SCHED_CLS.
+//
+//   0: r2 = *(u32*)(r1+76)      skb->data     -> PTR_TO_PACKET
+//   1: r3 = *(u32*)(r1+80)      skb->data_end -> PTR_TO_PACKET_END
+//   2: r4 = *(u32*)(r1+0)       skb->len       unknown scalar offset
+//   3: r4 <alu> imm1            shape it
+//   4: if r4 <cmp> imm goto 7   narrow it per path
+//   5: r4 <alu> imm2  6: goto 8  (not-taken)     7: r4 <alu> imm3 (taken)
+//   8: r2 += r4                  PACKET POINTER ARITH: data += bounded scalar
+//   9: r5 = r2  10: r5 += 1      end of the intended 1-byte access
+//  11: if r5 > r3 goto 13        THE PROGRAM'S OWN BOUNDS CHECK -> verifier sets range
+//  12: *(u8*)(r2+0) = r4         STORE through the packet ptr, checked vs range
+//  13: r0 = 0   14: exit
+//
+// Acceptance ~ whether the shaping bounds the offset's umax within MAX_PACKET_OFF so a
+// range can be recorded: a genuine accept/reject sweep of exactly that guard. The
+// data_end compare is held fixed at `>` (the canonical idiom) in this first increment;
+// enumerating it (jgt/jge/jlt/jle -> right-open vs closed) is the natural follow-up.
+// ===========================================================================
+static void run_generated_pkt(int alu_i, int cmp_i, int w32, int index) {
+    const struct gen_alu *a = &GEN_ALU[alu_i];
+    const struct gen_cmp *c = &GEN_CMP[cmp_i];
+
+    struct bpf_insn insns[15];
+    insns[0] = BPF_LDX_MEM(BPF_W, BPF_REG_2, BPF_REG_1, 76);   /* data */
+    insns[1] = BPF_LDX_MEM(BPF_W, BPF_REG_3, BPF_REG_1, 80);   /* data_end */
+    insns[2] = BPF_LDX_MEM(BPF_W, BPF_REG_4, BPF_REG_1, 0);    /* len: unknown */
+    if (w32) {
+        insns[3] = BPF_ALU32_IMM(a->op, BPF_REG_4, a->imm1);
+        insns[4] = BPF_JMP32_IMM(c->op, BPF_REG_4, c->imm, 2);  /* taken -> 7 */
+        insns[5] = BPF_ALU32_IMM(a->op, BPF_REG_4, a->imm2);
+        insns[7] = BPF_ALU32_IMM(a->op, BPF_REG_4, a->imm3);
+    } else {
+        insns[3] = BPF_ALU64_IMM(a->op, BPF_REG_4, a->imm1);
+        insns[4] = BPF_JMP_IMM(c->op, BPF_REG_4, c->imm, 2);
+        insns[5] = BPF_ALU64_IMM(a->op, BPF_REG_4, a->imm2);
+        insns[7] = BPF_ALU64_IMM(a->op, BPF_REG_4, a->imm3);
+    }
+    insns[6]  = BPF_JMP_A(1);                                   /* -> 8 */
+    insns[8]  = BPF_ALU64_REG(BPF_ADD, BPF_REG_2, BPF_REG_4);   /* pkt += scalar */
+    insns[9]  = BPF_MOV64_REG(BPF_REG_5, BPF_REG_2);
+    insns[10] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_5, 1);
+    insns[11] = BPF_JMP_REG(BPF_JGT, BPF_REG_5, BPF_REG_3, 1);   /* OOB -> 13 */
+    insns[12] = BPF_STX_MEM(BPF_B, BPF_REG_2, BPF_REG_4, 0);    /* store via pkt */
+    insns[13] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    insns[14] = BPF_EXIT_INSN();
+
+    char name[64];
+    snprintf(name, sizeof(name), "genpkt#w%s.%s.%s#%03d",
+             w32 ? "32" : "64", a->name, c->name, index);
+    run_one_ex(name, insns, 15, BPF_PROG_TYPE_SCHED_CLS, "sched_cls", 0);
+}
+
+// Every alu x compare x width, once each -- same enumeration/label contract.
+static void run_generated_pkt_family(void) {
+    int index = 0;
+    for (int w32 = 0; w32 < 2; w32++)
+        for (int alu_i = 0; alu_i < GEN_ALU_N; alu_i++)
+            for (int cmp_i = 0; cmp_i < GEN_CMP_N; cmp_i++)
+                run_generated_pkt(alu_i, cmp_i, w32, index++);
+}
+
 int main(int argc, char **argv) {
     // Two data sources, kept apart on purpose (different provenance):
     //   (no args) the fixed authoritative program set, pinned by tests
@@ -962,6 +1039,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-ptr") == 0) {
         run_generated_ptr_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-pkt") == 0) {
+        run_generated_pkt_family();
         return 0;
     }
 

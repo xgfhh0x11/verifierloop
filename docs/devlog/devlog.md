@@ -2642,3 +2642,83 @@ pointer/OOB-write) temiz, sıradakine".
 ### 6. Dokunulan dosyalar
 `harness/diffharness.c`, `crates/pipeline/tests/pointer_arith_calibration.rs`,
 `crates/pipeline/tests/fixtures/volume/gen-ptr-242.log`, `docs/OPEN-ITEMS.md`.
+
+## 0031 — Packet-pointer ailesi (`--gen-pkt`): program-ispatlı sınır, statik takip, ilk çıktı
+
+- **Tarih:** 2026-09-03
+- **Durum:** Tamamlandı (ilk artım). Reviewer'ın tasarım sorusuna cevap bir **premise
+  düzeltmesi** gerektirdi ve o düzeltme tasarımı belirledi.
+- **Alan:** `harness/diffharness.c` (`--gen-pkt`, SCHED_CLS),
+  `crates/pipeline/tests/packet_pointer_calibration.rs` (+fixture `gen-pkt-242.log`),
+  `docs/OPEN-ITEMS.md` (OI-9).
+- **İlgili:** OI-9, 0030 (map-value pointer), `oracle × input`.
+
+### 0. Premise düzeltmesi — `data_end` sabitleme mekanizması GEREKMİYOR
+Reviewer'ın endişesi: packet'ta `data + off < data_end` runtime'da gerçekleşir; runtime
+`data_end` sabitlenmezse kabul/red kararı değişkenleşir ve deterministik ölçüm anlamını
+kaybeder. **Bu doğru değil — verifier'ın packet-bounds kararı tamamen STATİK (load-time).**
+Verifier runtime `data_end` değerini hiç bilmez (bilinmeyen değerli bir pointer). Yaptığı
+şey (`find_good_pkt_pointers`, `verifier.c:16068`, kernel'in kendi yorumuyla):
+`r2 = data; r2 += 8; if (r2 > pkt_end) goto err` → programın KENDİ compare'i; verifier
+güvenli yolda `new_range = reg_umax(dst_reg)` kaydeder (programın eklediği STATİK
+offset'ten türetilir) ve her packet erişimini `check_mem_region_access(..., reg->range, ...)`
+ile o kayıtlı range'e karşı load-time'da kontrol eder. Harness zaten sadece LOAD ediyor,
+hiç çalıştırmıyor — runtime yok. Kabul/red, komut dizisinin saf fonksiyonu →
+deterministik `--gen` yolu ve paydası aynen geçerli. **Kaynakta doğrulandı, log'da canlı
+görüldü** (§2).
+
+Doğru olan kısım (reviewer'ın ikinci noktası): mekanizma farklı. Map-value'da verifier
+sınırı BİLİR (value_size); packet'ta program sınırı kendi compare'iyle İSPATLAR, verifier
+ispatı takip eder. Farklı kod yolu, kendi kenarlarıyla — `MAX_PACKET_OFF` (0xffff)
+overflow guard'ı ve `range_right_open` (`>` vs `>=`). Tarihsel bug yoğunluğu tam orada.
+
+### 1. Tasarım
+`socket_filter` direkt packet erişimini **yasaklıyor** (`sk_filter_is_valid_access` →
+`return false`, doğrulandı); `SCHED_CLS` izin veriyor (`data→PTR_TO_PACKET`,
+`data_end→PTR_TO_PACKET_END`, doğrulandı) → aile `run_one_ex` ile SCHED_CLS yüklüyor.
+
+```
+0: r2=*(u32*)(r1+76) data   1: r3=*(u32*)(r1+80) data_end   2: r4=*(u32*)(r1+0) len
+3: r4<alu>imm1   4: if r4<cmp>imm goto 7   5/7: r4<alu>imm2/imm3   8: r2 += r4 (PKT ARITH)
+9: r5=r2  10: r5+=1   11: if r5 > r3 goto 13  (PROGRAMIN KENDİ SINIR KONTROLÜ → range)
+12: *(u8*)(r2+0) = r4  (STORE, range'e karşı)   13: r0=0  14: exit
+```
+Kabul ≈ şekillendirme offset umax'ını `MAX_PACKET_OFF` içinde tutup range kaydedilebilir
+kılıyor mu — tam o guard'ın accept/reject taraması. `data_end` compare'i bu ilk artımda
+`>`'de sabit (kanonik idiom); onu enumerate etmek (jgt/jge/jlt/jle → right-open/closed)
+doğal ikinci artım.
+
+### 2. İlk çıktı — mekanizma log'da CANLI
+- **242 program, 49 kabul / 193 red** (184 EACCES + 9 EINVAL). Map-value'dan (34/208)
+  biraz daha çok kabul — 0xffff sınırı value_size=64'ten gevşek, beklenen.
+- **tnum_bounds_checked = 1254, 0 divergence, 0 parser kör-noktası.** `pkt(id=1,r=16,
+  ...,var_off=(0x0; 0xf))`, `pkt_end()` ve SCHED_CLS parser'a yeni şekillerdi; hepsi
+  temiz okundu (pkt token'ı var_off+bounds taşıyor → pointer'ın kendi offset'i oracle'a
+  gitti). 1 parse notu = OI-10 console-interleave onarımı (zararsız tür).
+- **Statik range canlı** (`genpkt#w64.and.jeq#000`): `9: R2=pkt(id=1,r=0,...umax=15)` →
+  `11: if r5 > r3 goto pc+1 ; R3=pkt_end() R5=pkt(id=1,r=16,...)` → `12: *(u8*)(r2+0)=r4`
+  kabul. `r=0 → r=16`, compare boyunca, saf statik umax'tan. §0'ın kanıtı.
+- **Red = MAX_PACKET_OFF guard'ı** (`genpkt#w64.or.jeq#011`): `or 0x00f0` üst bitleri
+  bilinmeyen bırakıyor (`unknown mask 0xffffff0c`, umax ≫ 0xffff) → range kaydedilemez →
+  "outside of the object of size 0" → red. Tasarlandığı gibi.
+
+### 3. 9 EINVAL — map-value ailesiyle BİREBİR aynı indeksler
+087, 138, 139, 149, 150, 182, 183, 204, 205 — `w64.sub.jset` + `w32.{or,xor,arsh,sub}×
+{jsgt,jsge}`. Pointer tipinden BAĞIMSIZ, skalar şekillendirmenin (imzalı compare'lerin
+diagnostics.c raporlayıcısını tetiklemesi) bir özelliği. Yeniden üretilebilir bir alt-aile;
+ayrı incelemeye değer, bug değil.
+
+### 4. BEŞ yüzey taranmış — hâlâ logic bug yok
+1497 + 2453 + 2050 + 1191 + **1254 ≈ 8450 kontrol, 0 divergence**. Skalar imm, reg-reg,
+çok-birleşme, map-value pointer (OOB-write), packet pointer (program-ispatlı sınır).
+
+### 5. Dürüst sınırlar — sıradaki
+- 1-byte store, `data_end` compare'i `>`'de sabit. En yüksek değerli genişletmeler:
+  **`data_end` operatör taraması** (jgt/jge/jlt/jle → `range_right_open` kenarı — kernel'in
+  kendi "off-by-one" bölgesi), daha geniş store'lar (2/4/8-byte), 9-EINVAL alt-ailesi.
+- Oracle intrinsic tutarlılığı kontrol ediyor; "bu kabul DOĞRU muydu" (yanlış-kabul =
+  OOB-write) için ground-truth ayrı — ama tutarlılık ihlali o sınıfın göstergesi, şu an 0/1254.
+
+### 6. Dokunulan dosyalar
+`harness/diffharness.c`, `crates/pipeline/tests/packet_pointer_calibration.rs`,
+`crates/pipeline/tests/fixtures/volume/gen-pkt-242.log`, `docs/OPEN-ITEMS.md`.
