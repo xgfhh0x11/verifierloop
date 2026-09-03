@@ -1032,6 +1032,214 @@ static void run_generated_ptrneg_family(void) {
 }
 
 // ===========================================================================
+// T1-1 SETUP PROBE — three hand-built programs, one per claim, to decide the family
+// construction from MEASUREMENT (per-program reg32_checked + reject message), not
+// from reading the kernel. Each is loaded against a value_size=64 map, same as --gen-ptr.
+//   probe#naiveA : w1 &= 0x3f (32-bit ALU zero-extends) then r0 += r1. Claim: reg32=0
+//                  (the two views coincide -> the 0025 payda-zero trap).
+//   probe#hi     : r1 upper-unknown (<<32 | second load), then a 32-bit compare narrows
+//                  ONLY the low half; then r0 += r1. Claim: reg32>0 (32-tight/64-loose),
+//                  and the pointer add must REJECT (accept = the bug).
+//   probe#ptr32  : w0 += w1 (32-bit ALU on the pointer). Claim: "32-bit pointer
+//                  arithmetic prohibited" EACCES, never reaching bounds logic.
+// ===========================================================================
+static void run_probe_t1_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 64; m.max_entries = 1;
+    int map_fd = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_fd < 0) {
+        printf("===PROG probe type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    struct bpf_insn ld1 = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM,
+        .dst_reg = BPF_REG_1, .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_fd};
+    struct bpf_insn ld2 = (struct bpf_insn){0};
+
+    /* probe#naiveA -- 32-bit AND zero-extends; r0 += r1. */
+    {
+        struct bpf_insn p[] = {
+            BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0),
+            BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+            BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4),
+            ld1, ld2,
+            BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem),
+            BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 4),          /* null -> r0=0 */
+            BPF_LDX_MEM(BPF_W, BPF_REG_1, BPF_REG_0, 0),
+            BPF_ALU32_IMM(BPF_AND, BPF_REG_1, 0x3f),        /* 32-bit AND -> zext [0,0x3f] */
+            BPF_ALU64_REG(BPF_ADD, BPF_REG_0, BPF_REG_1),   /* ptr += bounded scalar */
+            BPF_STX_MEM(BPF_B, BPF_REG_0, BPF_REG_1, 0),
+            BPF_MOV64_IMM(BPF_REG_0, 0),
+            BPF_EXIT_INSN(),
+        };
+        run_one("probe#naiveA#000", p, (int)(sizeof(p) / sizeof(p[0])));
+    }
+
+    /* probe#hi -- upper-unknown offset, 32-bit compare narrows only the low half. */
+    {
+        struct bpf_insn p[] = {
+            BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0),
+            BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+            BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4),
+            ld1, ld2,
+            BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem),
+            BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 7),          /* null -> r0=0 */
+            BPF_LDX_MEM(BPF_W, BPF_REG_1, BPF_REG_0, 0),    /* low unknown */
+            BPF_ALU64_IMM(BPF_LSH, BPF_REG_1, 32),          /* unknown -> UPPER 32 */
+            BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_0, 4),    /* second unknown, low 32 */
+            BPF_ALU64_REG(BPF_OR, BPF_REG_1, BPF_REG_8),    /* -> full 64-bit unknown */
+            BPF_JMP32_IMM(BPF_JGE, BPF_REG_1, 0x40, 2),     /* if w1>=64 skip: narrows LOW only */
+            BPF_ALU64_REG(BPF_ADD, BPF_REG_0, BPF_REG_1),   /* ptr += (umax huge) -> must reject */
+            BPF_STX_MEM(BPF_B, BPF_REG_0, BPF_REG_1, 0),
+            BPF_MOV64_IMM(BPF_REG_0, 0),
+            BPF_EXIT_INSN(),
+        };
+        run_one("probe#hi#001", p, (int)(sizeof(p) / sizeof(p[0])));
+    }
+
+    /* probe#ptr32 -- 32-bit ALU directly on the pointer. */
+    {
+        struct bpf_insn p[] = {
+            BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0),
+            BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+            BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4),
+            ld1, ld2,
+            BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem),
+            BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 3),          /* null -> r0=0 */
+            BPF_LDX_MEM(BPF_W, BPF_REG_1, BPF_REG_0, 0),
+            BPF_ALU32_REG(BPF_ADD, BPF_REG_0, BPF_REG_1),   /* 32-bit ALU on pointer -> prohibited */
+            BPF_STX_MEM(BPF_B, BPF_REG_0, BPF_REG_1, 0),
+            BPF_MOV64_IMM(BPF_REG_0, 0),
+            BPF_EXIT_INSN(),
+        };
+        run_one("probe#ptr32#002", p, (int)(sizeof(p) / sizeof(p[0])));
+    }
+    close(map_fd);
+}
+
+// ===========================================================================
+// 32<->64 x POINTER-OFFSET FAMILY (T1-1a) — the upper-unknown soundness probe.
+// The probe above settled the construction from measurement: a 32-bit-shaped offset
+// zero-extends (views coincide, reg32=0, the 0025 trap), and 32-bit ALU on a pointer
+// is prohibited outright (Option B). Only the "hi" construction reaches the 32-tight/
+// 64-loose surface (reg32>0). Two arms:
+//
+//   hi  (soundness, ~3/4): the offset has its UPPER 32 bits unknown while a 32-bit
+//        compare narrows ONLY the low half. Its 64-bit smin is S64_MIN / umax ~ U64_MAX,
+//        so adjust_ptr_min_max_vals (verifier.c:14665, check_reg_sane_offset_scalar on
+//        the 64-bit bounds) MUST reject at `r0 += r1`. reg32>0 proves the independent
+//        32-view formed; any ACCEPT is the bug. Two constructions (shift-or, u64 load)
+//        x 5 low-narrowing compares x 4 thresholds K -- K cannot make it accept (upper
+//        stays unknown for every K: mutual exclusivity), the variety is code-path breadth.
+//   bnd (control, ~1/4): a 32-bit AND zero-extends to a genuinely 64-bounded offset
+//        (reg32=0), which the verifier ACCEPTS when it fits -- proving it is not merely
+//        over-rejecting everything 32-bit-shaped.
+//
+// value_size=64, same map as --gen-ptr. This arm is decision-invariant on the hi side
+// (all-reject) BY the mutual-exclusivity theorem (reg32>0 <=> upper-unknown <=> reject);
+// its signature is reg32_checked>0 with 0 wrongly-accepted hi programs, NOT an
+// accept/reject balance. The discriminating "which view / sync" test is T1-1b (a
+// separate oracle arm), not here.
+// ===========================================================================
+static const struct { const char *name; int op; } HI_CMP[] = {
+    {"lt", BPF_JLT}, {"le", BPF_JLE}, {"gt", BPF_JGT}, {"ge", BPF_JGE}, {"set", BPF_JSET},
+};
+#define HI_CMP_N ((int)(sizeof(HI_CMP) / sizeof(HI_CMP[0])))
+static const int HI_K[] = {8, 16, 64, 256};
+#define HI_K_N ((int)(sizeof(HI_K) / sizeof(HI_K[0])))
+static const int HI_MASK[] = {0x0f, 0x1f, 0x3f};
+#define HI_MASK_N ((int)(sizeof(HI_MASK) / sizeof(HI_MASK[0])))
+static const struct { int off; int w; } HI_REACH[] = { {0,1}, {0,4}, {8,4}, {48,1} };
+#define HI_REACH_N ((int)(sizeof(HI_REACH) / sizeof(HI_REACH[0])))
+
+static struct bpf_insn hi_ld1(int map_fd) {
+    return (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                             .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_fd};
+}
+
+static void run_hi_soundness(int cons, int cmp_i, int k_i, int index, int map_fd) {
+    const int K = HI_K[k_i];
+    struct bpf_insn ins[18];
+    int n = 0;
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = hi_ld1(map_fd); ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    const int jnull = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    if (cons == 0) {                                    /* shift-or: unknown -> UPPER 32 */
+        ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_1, BPF_REG_0, 0);
+        ins[n++] = BPF_ALU64_IMM(BPF_LSH, BPF_REG_1, 32);
+        ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_0, 4);
+        ins[n++] = BPF_ALU64_REG(BPF_OR, BPF_REG_1, BPF_REG_8);
+    } else {                                            /* direct 64-bit unknown load */
+        ins[n++] = BPF_LDX_MEM(BPF_DW, BPF_REG_1, BPF_REG_0, 0);
+    }
+    const int jskip = n;                                /* 32-bit compare narrows LOW only */
+    ins[n++] = BPF_JMP32_IMM(HI_CMP[cmp_i].op, BPF_REG_1, K, 0);
+    ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_0, BPF_REG_1);   /* umax huge -> must reject */
+    ins[n++] = BPF_STX_MEM(BPF_B, BPF_REG_0, BPF_REG_1, 0);
+    const int exitp = n; ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    ins[jnull].off = exitp - jnull - 1;
+    ins[jskip].off = exitp - jskip - 1;
+
+    char name[80];
+    snprintf(name, sizeof(name), "genhi#hi.%s.%s.K%d#%03d",
+             cons ? "ld" : "so", HI_CMP[cmp_i].name, K, index);
+    run_one(name, ins, n);
+}
+
+static void run_hi_bounded(int m_i, int r_i, int index, int map_fd) {
+    const int mask = HI_MASK[m_i];
+    const int off = HI_REACH[r_i].off, W = HI_REACH[r_i].w;
+    const int szmode = (W == 1) ? BPF_B : (W == 2) ? BPF_H : BPF_W;
+    struct bpf_insn ins[16];
+    int n = 0;
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = hi_ld1(map_fd); ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    const int jnull = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_1, BPF_REG_0, 0);
+    ins[n++] = BPF_ALU32_IMM(BPF_AND, BPF_REG_1, mask);        /* zext -> 64-bounded [0,mask] */
+    ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_0, BPF_REG_1);
+    ins[n++] = BPF_STX_MEM(szmode, BPF_REG_0, BPF_REG_1, off);
+    const int exitp = n; ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    ins[jnull].off = exitp - jnull - 1;
+
+    char name[80];
+    snprintf(name, sizeof(name), "genhi#bnd.m%d.o%d.w%d#%03d", mask, off, W, index);
+    run_one(name, ins, n);
+}
+
+static void run_generated_hi_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 64; m.max_entries = 1;
+    int map_fd = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_fd < 0) {
+        printf("===PROG genhi type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    int index = 0;
+    for (int cons = 0; cons < 2; cons++)
+        for (int cmp_i = 0; cmp_i < HI_CMP_N; cmp_i++)
+            for (int k_i = 0; k_i < HI_K_N; k_i++)
+                run_hi_soundness(cons, cmp_i, k_i, index++, map_fd);
+    for (int m_i = 0; m_i < HI_MASK_N; m_i++)
+        for (int r_i = 0; r_i < HI_REACH_N; r_i++)
+            run_hi_bounded(m_i, r_i, index++, map_fd);
+    close(map_fd);
+}
+
+// ===========================================================================
 // PACKET-POINTER FAMILY (OI-9 next increment) — the pointer-arith family used a
 // PTR_TO_MAP_VALUE, whose bound the verifier KNOWS (value_size). A packet pointer is
 // the other kind: the verifier does NOT know where the packet ends. Instead the
@@ -1208,6 +1416,14 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-ptr-neg") == 0) {
         run_generated_ptrneg_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-t1") == 0) {
+        run_probe_t1_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-ptr-hi") == 0) {
+        run_generated_hi_family();
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--gen-pkt") == 0) {

@@ -2830,3 +2830,60 @@ Map-value negatif-offset smin alt-sınır kontrolü bu kernel'de **uygulanıyor 
 raw negatif store'ların hepsi reddedildi, grd rescue'ları kabul edildi, 0/438 invariant
 ihlali. Sekizinci ölçüm, hâlâ logic bug yok. Sıradaki T1: **T1-1** 32↔64 × pointer-offset
 (en yoğun tarihsel bölge). Kalan: daha geniş map-value store'ları, 9-EINVAL alt-ailesi.
+
+## 0034 — 32↔64 × pointer-offset ailesi (`--gen-ptr-hi`): T1-1a, üst-bilinmez soundness probe
+
+- **Tarih:** 2026-09-03
+- **Durum:** Tamamlandı (T1-1a — soundness yarısı). Kurulum kararı **ölçümle** verildi
+  (`--probe-t1`, 3 iddia), ve mutual-exclusivity teoremi bir reviewer önerisini (K<value_size
+  ekle) kurmadan önce eledi. Ayırt edici yarı (T1-1b) yeni bir oracle kolu gerektiriyor, ayrı.
+- **Alan:** `harness/diffharness.c` (`--probe-t1`, `--gen-ptr-hi`, `run_probe_t1_family`,
+  `run_hi_soundness`/`run_hi_bounded`), `crates/pipeline/tests/pointer_hi_calibration.rs`
+  (yeni, 5 test, +fixture `gen-hi-52.log`), `docs/OPEN-ITEMS.md`, `docs/COVERAGE-MAP.md` (T1-1).
+- **İlgili:** OI-9, 0026 (32↔64 skaler kol), 0030 (--gen-ptr), CVE-2020-8835, coverage T1-1.
+
+### 0. Kurulum ölçümle verildi — 3 iddia, 3 teyit (--probe-t1)
+Tam aileden önce 3 hand-built program VM'de koştu, program-başına reg32_checked + mesajla:
+- **naiveA** (`w1 &= 0x3f; r0 += r1`): reg32=**0**, accept. `zext_32_to_64` (verifier.c:5652,
+  `if (alu32) zext` @15695) üst yarıyı sıfırlıyor → iki görünüm çakışıyor → 0025 tuzağı.
+- **hi** (üst-bilinmez + 32-bit compare): reg32=**2**, reject. Yüzeye değen tek kurulum.
+- **ptr32** (`w0 += w1`): reg32=0, "R0 32-bit pointer arithmetic prohibited" (verifier.c:14585)
+  → bounds mantığına hiç girmiyor, Option B ölü.
+
+### 1. Provenance — red pointer-add'den, 64-bit görünümden
+hi red mesajı ("math between map_value pointer and register with unbounded min value")
+`check_reg_sane_offset_scalar` (verifier.c:14190) tarafından, `adjust_ptr_min_max_vals`
+**içinden satır 14665**'te, `off_reg` üzerinde basılıyor; o fonksiyon offset'in **64-bit**
+sınırlarını (`reg_smin`/`reg_umax`) okuyor, **u32/s32'ye hiç bakmıyor**. Yani "verifier
+pointer için 32 mi 64 mü kullanır" sorusunun cevabı yapısal olarak kesin: **her zaman 64.**
+Bu, hi'nin neden geçerli soundness probe'u olduğunu kanıtlıyor — reg32>0 (bağımsız 32-durum
+var) ama karar 64'ten, accept=bug.
+
+### 2. Mutual exclusivity — bir reviewer önerisini kurmadan eledi
+`reg32>0 ⟺ üst 32 bilinmez ⟺ umax≥2³² & smin=S64_MIN`; meşru-accept `⟺ umax<value_size<2³²
+⟺ üst bitler sabit ⟺ reg32=0`. İki koşul aynı anda olamaz. Yani "K<value_size ekle,
+verifier'ın 32 mi 64 mü kullandığını gör" önerisi hi'de **boş küme** üretiyordu — her K için
+üst yarı bilinmez kalır, smin=S64_MIN, red. K alt-ekseni eklenmedi (0025 tuzağının tasarım
+katmanına taşınmış hali). Ayırt edici test yapısal olarak farklı bir aile → T1-1b.
+
+### 3. Çıktı — bpf-next VM (kernel 5e289c5a), 2026-09-03
+- **52 program, 8 kabul / 44 red.** hi kolu (40): **0 kabul / 40 red** — mutual
+  exclusivity'nin öngördüğü all-reject, **0 yanlış-kabul** (bug yok), hepsi "unbounded min
+  value". bnd kolu (12): 8 kabul / 4 red (4'ü doğru üst-sınır redleri, mask+off+W>64).
+- **reg32_checked = 52, TAMAMEN hi kolundan (bnd = 0).** Pointer bağlamında reg32'yi
+  sıfırdan çıkaran **ilk aile** — ve bounded kolun tam 0 olması, yüzeyin tam hi
+  konstrüksiyonu olduğunun kanıtı. **0 divergence, 0 parser kör-noktası.**
+
+### 4. İmza ve sınır
+T1-1a'nın imzası accept/reject dengesi değil: **reg32_checked>0 + 0 yanlış-kabul.** Kanıtladığı:
+"üst-bilinmez offset pointer erişimini lisanslayamaz; verifier pointer-add'de yalnız 64'e bakar."
+Gerçek ama dar — çünkü adjust_ptr_min_max_vals zaten yapısal olarak 32'ye bakmıyor, bu kolun
+bulacağı bug'ı kod yapısı zaten engelliyor. Düşük-sürprizli, temiz, provenance-teyitli. Kapat, geç.
+
+### 5. Asıl av T1-1b (ayrı, öncelikli) — yeni oracle kolu gerekiyor
+Ayırt edici "verifier doğru görünümü/sync'i mi kullanıyor" testi (CVE-2020-8835 sınıfı):
+meşru-64-sınırlı offset, sync-kırılgan 32↔64 dizisiyle üretiliyor; bug = **yanlış-kabul veya
+32↔64 görünüm ayrışması accept'e rağmen**. İmzası reg32>0 DEĞİL (sağlam verifier'da sync
+çalışır → reg32=0). Mevcut hiçbir dedektör kolu "aynı register'ın 32 ve 64 görünümü tutarsız"ı
+kontrol etmiyor → T1-1b iki iş: **yeni 32↔64-sync-invariant oracle kolu** (intrinsic tnum'un
+0026'daki genişlemesinin accept-tarafı) + onu besleyen sync-kırılgan aile. Sıradaki karar orada.
