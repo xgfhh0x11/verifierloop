@@ -848,6 +848,98 @@ static void run_generated_mb_family(void) {
                 run_generated_mb(alu_i, cmp_i, w32, index++);
 }
 
+// ===========================================================================
+// POINTER-ARITHMETIC FAMILY (OI-9 next increment) — the scalar families
+// (--gen / --gen-rr / --gen-mb / --gen-mix) only ever combine SCALARS. This one
+// aims the verifier's POINTER-safety decision: it takes a real PTR_TO_MAP_VALUE
+// (from a bpf_map_lookup_elem on a 64-byte ARRAY value), adds a shaped+narrowed
+// scalar offset to it, and then STORES through the adjusted pointer. The store is
+// where the verifier decides "is this pointer access in bounds" (check_mem_access /
+// adjust_ptr_min_max_vals / sanitize bounds). A logic bug here is not an OOB read of
+// a log string (cf. F1) but a wrongly-ACCEPTED out-of-bounds WRITE — higher severity
+// and a historically dense bug region, which is why this leg is flagged highest-EV.
+//
+//   0: *(u32*)(r10-4) = 0        key on stack
+//   1: r2 = r10   2: r2 += -4     r2 = &key
+//   3: r1 = map_fd (LD_MAP_FD, slots 3-4)
+//   5: call bpf_map_lookup_elem   r0 = PTR_TO_MAP_VALUE_OR_NULL (value_size=64)
+//   6: if r0 == 0 goto 15         mandatory null-check
+//   7: r1 = *(u32*)(r0+0)         unknown scalar offset (read from the value)
+//   8: r1 <alu> imm1              shape it (tnum and/or bounds)
+//   9: if r1 <cmp> imm goto 12    narrow r1 differently on each path
+//  10: r1 <alu> imm2  11: goto 13  (not-taken)      12: r1 <alu> imm3 (taken)
+//  13: r0 += r1                    POINTER ARITHMETIC: map_value_ptr += scalar
+//  14: *(u8*)(r0+0) = r1           STORE through the adjusted ptr -> the bounds check
+//  15: r0 = 0   16: exit
+//
+// This family is NOT all-accepted by construction: acceptance depends on whether the
+// verifier can prove the offset stays within value_size, which is exactly the
+// decision under test. A mix of accept/reject is the point. Rejected programs still
+// print their register state up to the faulting insn, so the intrinsic tnum-vs-bounds
+// leg still has the shaped scalar (and the pointer's own var_off) to examine.
+// First increment writes a 1-byte store (r1's low byte); wider stores are a follow-up.
+// ===========================================================================
+static void run_generated_ptr(int alu_i, int cmp_i, int w32, int index, int map_fd) {
+    const struct gen_alu *a = &GEN_ALU[alu_i];
+    const struct gen_cmp *c = &GEN_CMP[cmp_i];
+
+    struct bpf_insn insns[17];
+    insns[0] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    insns[1] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    insns[2] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    insns[3] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_fd};
+    insns[4] = (struct bpf_insn){0};
+    insns[5] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    insns[6] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 8);       /* null -> insn 15 */
+    insns[7] = BPF_LDX_MEM(BPF_W, BPF_REG_1, BPF_REG_0, 0);
+    if (w32) {
+        insns[8]  = BPF_ALU32_IMM(a->op, BPF_REG_1, a->imm1);
+        insns[9]  = BPF_JMP32_IMM(c->op, BPF_REG_1, c->imm, 2);  /* taken -> insn 12 */
+        insns[10] = BPF_ALU32_IMM(a->op, BPF_REG_1, a->imm2);
+        insns[12] = BPF_ALU32_IMM(a->op, BPF_REG_1, a->imm3);
+    } else {
+        insns[8]  = BPF_ALU64_IMM(a->op, BPF_REG_1, a->imm1);
+        insns[9]  = BPF_JMP_IMM(c->op, BPF_REG_1, c->imm, 2);
+        insns[10] = BPF_ALU64_IMM(a->op, BPF_REG_1, a->imm2);
+        insns[12] = BPF_ALU64_IMM(a->op, BPF_REG_1, a->imm3);
+    }
+    insns[11] = BPF_JMP_A(1);                               /* -> insn 13 */
+    insns[13] = BPF_ALU64_REG(BPF_ADD, BPF_REG_0, BPF_REG_1);  /* ptr += scalar */
+    insns[14] = BPF_STX_MEM(BPF_B, BPF_REG_0, BPF_REG_1, 0);   /* store through ptr */
+    insns[15] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    insns[16] = BPF_EXIT_INSN();
+
+    char name[64];
+    snprintf(name, sizeof(name), "genptr#w%s.%s.%s#%03d",
+             w32 ? "32" : "64", a->name, c->name, index);
+    run_one(name, insns, 17);
+}
+
+// Create the value_size=64 ARRAY map once, then every alu x compare x width, once
+// each -- same enumeration/label contract as the scalar families.
+static void run_generated_ptr_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4;
+    m.value_size = 64;
+    m.max_entries = 1;
+    int map_fd = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_fd < 0) {
+        printf("===PROG genptr type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n"
+               "---LOG---\n---END---\n", errno);
+        return;
+    }
+    int index = 0;
+    for (int w32 = 0; w32 < 2; w32++)
+        for (int alu_i = 0; alu_i < GEN_ALU_N; alu_i++)
+            for (int cmp_i = 0; cmp_i < GEN_CMP_N; cmp_i++)
+                run_generated_ptr(alu_i, cmp_i, w32, index++, map_fd);
+    close(map_fd);
+}
+
 int main(int argc, char **argv) {
     // Two data sources, kept apart on purpose (different provenance):
     //   (no args) the fixed authoritative program set, pinned by tests
@@ -866,6 +958,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-mb") == 0) {
         run_generated_mb_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-ptr") == 0) {
+        run_generated_ptr_family();
         return 0;
     }
 

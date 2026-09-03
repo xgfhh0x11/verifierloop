@@ -243,7 +243,7 @@ both volume captures.)*
 ## OI-9 — The targeted family covers one program SHAPE, not the input space
 
 - **Status:** OPEN, **NARROWED 2026-09-01 by devlog 0026.** The 32<->64 half is done;
-  what is listed below under "still not reached" is what remains. Register-register operands are now DONE (2026-09-01): the reg-reg leg (`--gen-rr`, 242 programs, all accepted) scores tnum_bounds_checked=**2453** — the largest denominator of any family (single-width 1497, mixed >1500) — with 0/2453 divergences and 0 parser blind-spots; pinned in `crates/pipeline/tests/register_register_calibration.rs`. reg-reg is a different axis from 32<->64 (reg32_checked=0). **Multi-branch/multi-merge now DONE (2026-09-03, devlog 0029):** the `--gen-mb` family (242 programs, all accepted, two sequential branches + two merge points) scores tnum_bounds_checked=**2050**, 0/2050 divergences, 0 parser blind-spots, reg32_checked=0; pinned in `crates/pipeline/tests/multi_branch_calibration.rs`. True *looping* (back-edges) is still open.
+  what is listed below under "still not reached" is what remains. Register-register operands are now DONE (2026-09-01): the reg-reg leg (`--gen-rr`, 242 programs, all accepted) scores tnum_bounds_checked=**2453** — the largest denominator of any family (single-width 1497, mixed >1500) — with 0/2453 divergences and 0 parser blind-spots; pinned in `crates/pipeline/tests/register_register_calibration.rs`. reg-reg is a different axis from 32<->64 (reg32_checked=0). **Multi-branch/multi-merge now DONE (2026-09-03, devlog 0029):** the `--gen-mb` family (242 programs, all accepted, two sequential branches + two merge points) scores tnum_bounds_checked=**2050**, 0/2050 divergences, 0 parser blind-spots, reg32_checked=0; pinned in `crates/pipeline/tests/multi_branch_calibration.rs`. True *looping* (back-edges) is still open. **Pointer arithmetic now DONE — FIRST increment (2026-09-03, devlog 0030):** `--gen-ptr` (242 programs, map_value ptr += bounded scalar, then a STORE through it — the OOB-*write* decision) is a genuine accept/reject surface: **34 accept / 208 reject** (199 EACCES + 9 EINVAL diagnostics-path), tnum_bounds_checked=**1191** (on the scalar offset AND the pointer's own var_off), 0 divergences, **0 parser blind-spots** (robust first run); pinned in `crates/pipeline/tests/pointer_arith_calibration.rs`. This first increment is 1-byte store + map-value only; wider stores, stack/packet pointers, and the EINVAL signed-compare sub-family remain.
 - **Raised:** 2026-09-01 (devlog 0025)
 - **Closed half (0026):** mixed-width programs now exist — four sub-families, 396
   programs (`mix#64-32`, `mix#32-64`, `mix#movsx*`, `mix#hi`), and the 32<->64
@@ -253,9 +253,10 @@ both volume captures.)*
   fits in one 2^32 block — and a ctx `u32` load always does. What actually reaches
   the region is `mix#hi`: shift the unknown bits into the UPPER half, then narrow only
   the lower one. Yield is still only ~18% of registers that print a 32-bit view.
-- **Still not reached:** **looping** control flow (back-edges), pointer
-  arithmetic, and `BPF_LD_IMM64` 64-bit constants. (reg-reg operands DONE 2026-09-01;
-  multi-branch / multi-merge DONE 2026-09-03.)
+- **Still not reached:** **looping** control flow (back-edges), `BPF_LD_IMM64`
+  64-bit constants, and pointer arithmetic's WIDER surface (2/4/8-byte stores,
+  stack/packet pointers). (reg-reg DONE 2026-09-01; multi-branch/multi-merge DONE
+  2026-09-03; pointer-arith FIRST increment DONE 2026-09-03.)
 - **What:** `diffharness --gen` enumerates `11 alu x 11 compare x {64,32}-bit` = 242
   programs, and that cross-product IS covered. But every one of them is the same
   8-instruction skeleton: one shaping op, one branch, one op per path, immediate
@@ -270,10 +271,11 @@ both volume captures.)*
 - **Why it matters:** "0 findings out of 1497 checks" is a real result, but it is a
   result about ONE program shape. Reading it as "the verifier's range tracking is
   sound" would be exactly the over-reading this file exists to prevent.
-- **Next increment (highest value first):** pointer arithmetic, then looping
-  (back-edges — a different acceptance profile, needs a provably-bounded counter, so
-  it is a separate leg from the all-accepted diamond families). (reg-reg, mixed-width,
-  `movsx`, and multi-branch / multi-merge are done.)
+- **Next increment (highest value first):** widen the pointer-arith surface (2/4/8-byte
+  stores; stack and packet pointers — the packet data/data_end bounds check is
+  historically the densest bug region), then looping (back-edges — a separate leg,
+  needs a provably-bounded counter, not all-accepted). (reg-reg, mixed-width, `movsx`,
+  multi-branch/multi-merge, and the pointer-arith first increment are done.)
 
 ---
 

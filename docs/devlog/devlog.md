@@ -2577,3 +2577,68 @@ tek-genişlik → 32<->64 ekseni mixed ailenin işi; pinlendi). 4 test
 ### 4. Dokunulan dosyalar
 `harness/diffharness.c`, `crates/pipeline/tests/multi_branch_calibration.rs`,
 `crates/pipeline/tests/fixtures/volume/gen-multibranch-242.log`, `docs/OPEN-ITEMS.md`.
+
+## 0030 — Pointer-arithmetic ailesi (`--gen-ptr`): verifier'ın pointer-güvenlik kararı, ilk çıktı
+
+- **Tarih:** 2026-09-03
+- **Durum:** Tamamlandı (ilk artım). OI-9'un en yüksek beklenen-değerli yüzeyi —
+  reviewer'ın işaretlediği gibi: skalar range mantığının aksine burada bir logic bug
+  yanlış-KABUL edilen bir OOB-**write** demek (F1'in OOB-read'inden daha yüksek severity).
+- **Alan:** `harness/diffharness.c` (`--gen-ptr`),
+  `crates/pipeline/tests/pointer_arith_calibration.rs` (+fixture `gen-ptr-242.log`),
+  `docs/OPEN-ITEMS.md` (OI-9).
+- **İlgili:** OI-9, F1 (aynı diagnostics.c yolu), `oracle × input`.
+
+### 1. Tasarım — gerçek bir pointer, sınırlı offset, pointer üzerinden STORE
+Önceki tüm aileler (`--gen`/`-rr`/`-mb`/`-mix`) yalnızca SKALAR birleştiriyor. Bu aile
+gerçek bir `PTR_TO_MAP_VALUE` alıyor (64-byte ARRAY value'da `bpf_map_lookup_elem`),
+şekillendirilmiş+daraltılmış bir skalar offset ekliyor, ve ayarlanmış pointer üzerinden
+**yazıyor**:
+
+```
+6: if r0==0 goto 15   (zorunlu null-check)   7: r1 = *(u32*)(r0+0)  (bilinmeyen offset)
+8: r1 <alu> imm1   9: if r1 <cmp> imm goto 12   10/12: r1 <alu> imm2/imm3 (dal)
+13: r0 += r1  (POINTER ARITH)   14: *(u8*)(r0+0) = r1  (STORE -> bounds check)
+```
+
+Yapı gereği **hepsi-kabul DEĞİL** — kabul, verifier'ın offset'in value_size içinde
+kaldığını ISPATLAYIP ispatlayamamasına bağlı, ki test edilen karar tam bu.
+
+### 2. İlk çıktı (gerçek bpf-next `5e289c5a4a52`, in-VM, KVM boot ~11s)
+- **242 program, 34 kabul / 208 red** — gerçek bir accept/reject karar yüzeyi. Red
+  dağılımı: **199 EACCES** (güvenlik reddi) + **9 EINVAL**.
+- **tnum_bounds_checked = 1191**, **0 divergence**. Oracle hem skalar offset'i HEM DE
+  pointer'ın kendi `var_off`'unu kontrol ediyor (`R0=map_value(...,var_off=(0x0; 0xf))`).
+- **0 parser kör-noktası** (unparsed=0, unrecognized=0) — bir İLK koşu için dikkat
+  çekici: parser map_value pointer state'ini, `r0 += r1` pointer aritmetiğini ve
+  diagnostics.c red raporlarını temiz okudu. (Kıyas: 0026'nın ilk koşusu 10 parser
+  bulgusu üretmişti; reg-reg de dikkat istemişti.) reg32_checked=0.
+- **Kabul örneği** (`genptr#w64.and.jeq#000`): `and 0xf0f` + `jeq 0x40` offset'i [0,15]'e
+  daraltıyor; 15 < 64 → 1-byte yazma sınır içinde → kabul. Pointer'a offset işleniyor:
+  `R0=map_value(ks=4,vs=64,...,umax=15,var_off=(0x0; 0xf))`.
+
+### 3. 9 EINVAL — generator bug'ı DEĞİL, diagnostics.c yolu (F1 ile aynı tesis)
+EINVAL alanlar imzalı karşılaştırmalarda kümeleniyor (`jsgt`/`jsge`/`jset` × `sub`/`or`/
+`xor`/`arsh`). Log'ları verifier'ın **diagnostics raporlayıcısını** gösteriyor —
+"Instruction context" + "Suggestion: Clamp or bounds-check the scalar offset before
+applying it to the pointer". Yani meşru bir verifier reddi (yeni tanılama yolu), bozuk
+program değil. Yan fayda: aile F1'in geldiği aynı diagnostics.c tesisini yoğun
+kullanıyor ve F1 guard'ının ayakta olduğunu doğruluyor (bunlar LDX, LDSX+DW değil → OOB yok).
+
+### 4. Hâlâ verifier LOGIC bug'ı yok — ama artık DÖRT yüzey taranmış
+Tek-genişlik 1497 + reg-reg 2453 + çok-dallı 2050 + pointer 1191 ≈ **7200 kontrol,
+0 divergence**. "Bulamıyoruz" değil — "bu dört yüzey (skalar imm, reg-reg, çok-birleşme,
+pointer/OOB-write) temiz, sıradakine".
+
+### 5. Dürüst sınırlar — ve sıradaki artımlar
+- Bu ilk artım: **1-byte store** ve yalnızca **map-value** pointer. Genişletmeler:
+  daha geniş store'lar (2/4/8-byte, sınır kenarını daha sıkı zorlar), **stack** ve
+  **packet** pointer'ları (paket data/data_end sınır kontrolü — tarihsel olarak en yoğun
+  bug bölgesi), ve 9 EINVAL imzalı-karşılaştırma alt-ailesinin ayrı incelenmesi.
+- Oracle sınırı: intrinsic leg tnum-vs-bounds TUTARLILIĞINI kontrol ediyor; "bu kabul
+  DOĞRU muydu" (yanlış-kabul = OOB-write) için gereken ground-truth ayrı bir problem —
+  ama tutarlılık ihlali de o bug sınıfının bir göstergesi ve şu an 0/1191.
+
+### 6. Dokunulan dosyalar
+`harness/diffharness.c`, `crates/pipeline/tests/pointer_arith_calibration.rs`,
+`crates/pipeline/tests/fixtures/volume/gen-ptr-242.log`, `docs/OPEN-ITEMS.md`.
