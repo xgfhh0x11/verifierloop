@@ -2722,3 +2722,58 @@ ayrı incelemeye değer, bug değil.
 ### 6. Dokunulan dosyalar
 `harness/diffharness.c`, `crates/pipeline/tests/packet_pointer_calibration.rs`,
 `crates/pipeline/tests/fixtures/volume/gen-pkt-242.log`, `docs/OPEN-ITEMS.md`.
+
+## 0032 — Packet `data_end` compare-op taraması (`--gen-pkt-cmp`): T1-3, range_right_open kenarı
+
+- **Tarih:** 2026-09-03
+- **Durum:** Tamamlandı. 0031'in adını koyduğu "doğal ikinci artım" — kernel'in kendi
+  "off-by-one" bölgesi ölçüldü ve **tam tutarlı çıktı**.
+- **Alan:** `harness/diffharness.c` (`--gen-pkt-cmp`, `run_generated_pktcmp*`, `PKT_DCMP`
+  tablosu), `crates/pipeline/tests/packet_compare_calibration.rs` (yeni, 5 test, +fixture
+  `gen-pktcmp-240.log`), `docs/OPEN-ITEMS.md` (OI-9), `docs/COVERAGE-MAP.md` (T1-3).
+- **İlgili:** OI-9, 0031 (packet pointer), coverage haritası T1-3, `oracle × input`.
+
+### 0. Hedef — tek değişken: range'i kuran compare
+0031 offset şekillendirmesini (alu×cmp) tarıyordu ama sınır kontrolünü `>`'de (BPF_JGT)
+sabit tutuyordu. T1-3 tersini yapar: offset şekillendirmesini tek bilinen skalere
+(`r4 &= 7`, [0,7]) **sabitler** ve YALNIZ `find_good_pkt_pointers`'ı besleyen compare'i
+süpürür. Böylece accept/reject, range makinesinin saf fonksiyonu olur. İki dik eksen:
+
+- **closed vs right-open** — {gt,lt} `r5 <= end` ispatlar, {ge,le} `r5 < end` ispatlar.
+  Kayıtlı range bir bayt kayar; bu kernel'in tarihsel off-by-one bölgesi.
+- **operand-sırası simetrisi** — gt (`r5 > end`) ile lt (`end < r5`) AYNI OOB koşulunun
+  iki yazımı; ge ile le keza. `find_good_pkt_pointers` ikisini aynı görmek zorunda.
+
+Program (11 insn, SCHED_CLS): `r2=data; r4=len; r4&=7; r2+=r4; r5=r2; r5+=M;
+if (r5 <dcmp> r3) goto skip; *(uW*)(r2+off)=r4; skip: r0=0; exit`. Grid: form(4) ×
+headroom M(1..5) × store-offset off(0..3) × genişlik W(1,2,4) = **240 program**.
+
+### 1. Çıktı — bpf-next VM'de (kernel 5e289c5a), 2026-09-03
+- **240 program, 128 kabul / 112 red.** Form başına: **gt=27, ge=37, lt=27, le=37** (her
+  biri /60).
+- **Simetri TAM tutuyor:** gt == lt (27) ve ge == le (37). `find_good_pkt_pointers`
+  operand-sırasına simetrik — süpürmenin birinci sorusu temiz "evet".
+- **Closed vs right-open TAM bir bayt:** predikat `accept ⟺ off+W ≤ range`, closed
+  range=M, right-open range=M+1 — **240/240 birebir uyuşuyor, 0 istisna.** Right-open
+  formlar (`>=`/`<=`) closed formlardan tam 10 fazla kabul ediyor (37 vs 27), ve fark her
+  (M,off,W) hücresinde tam bir baytlık kaymadan geliyor. **Off-by-one yok, drift yok** —
+  verifier tam olarak programın ispatladığını ispatlıyor, ne bir bayt fazla ne eksik.
+- **tnum_bounds_checked = 720** (alu×cmp ailelerinden düşük — offset şekli sabit,
+  çeşitlilik yerine izolasyon), **reg32_checked = 0, 0 divergence, 0 parser kör-noktası.**
+
+### 2. Kenarı izole eden çift
+`gt.M1.o0.w2` (closed, reach=2, M=1 → 2>1) **red**; `ge.M1.o0.w2` (right-open, reach=2,
+M+1=2 → 2≤2) **kabul**. Tek fark compare'in `>` vs `>=` olması — `range_right_open`'ın
+kararı tek baytta çevirdiği nokta, canlı. Kabul tarafı da güvenli: `>=` ile M=1 iken 2-byte
+store'un kabulü, verifier'ın `r5 < end`'den `r5+1 ≤ end` çıkarımının doğru sonucu.
+
+### 3. Verdikt
+Tarihsel olarak en yoğun packet-bounds off-by-one bölgesi bu kernel'de **tam tutarlı**.
+Süpürmenin iki sorusu (operand simetrisi + closed/open bir-bayt) da temiz geçti; 0/720
+invariant ihlali. Logic bug yok — ama bu, aranan sınıfın (`range_right_open` yanlış-kabulü
+= OOB-write) ta kendisiydi; oracle onu görebilecek çözünürlükteydi ve verifier temiz çıktı.
+
+### 4. Sıradaki (T1 kalanı)
+- T1-2 negatif offset + smin (map-value): `r2 += -4`, smin kontrol yolu — ucuz, doğrudan
+  karar yüzeyi. T2-2 daha geniş store'lar map-value'da. 9-EINVAL alt-ailesi hâlâ açık.
+- Bu artım da 0/720 ihlalle kapandı: altı ailenin üstüne yedinci ölçüm, hâlâ logic bug yok.

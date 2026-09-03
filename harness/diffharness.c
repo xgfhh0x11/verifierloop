@@ -1017,6 +1017,80 @@ static void run_generated_pkt_family(void) {
                 run_generated_pkt(alu_i, cmp_i, w32, index++);
 }
 
+// ===========================================================================
+// PACKET data_end COMPARE-OPERATOR SWEEP (T1-3) — the --gen-pkt family held the
+// program's own bounds check fixed at `>` (BPF_JGT), the canonical idiom. That
+// operator is exactly where the packet-bounds machinery has been historically wrong:
+// `find_good_pkt_pointers` records a per-pointer `range` from the compare, and whether
+// the range's right endpoint is CLOSED (`>`, `<`) or RIGHT-OPEN (`>=`, `<=`) shifts the
+// last provable byte by one. An off-by-one here means the verifier proves ONE BYTE MORE
+// (or fewer) than the program actually checked — a real OOB-write accept if it errs high.
+//
+// This sweep pins the offset shaping to a small known scalar and varies ONLY the range
+// machinery, over two orthogonal axes the base family never touched:
+//   (1) closed vs right-open — {gt,lt} prove `r5 <= end`, {ge,le} prove `r5 < end`.
+//   (2) operand-order symmetry — gt (`r5 > end`) vs lt (`end < r5`) are the SAME OOB
+//       condition written two ways; the verifier must treat them identically. Likewise
+//       ge vs le. A gt/lt or ge/le disagreement is a symmetry bug in find_good_pkt_pointers.
+//
+//   0: r2 = data   1: r3 = data_end   2: r4 = skb->len
+//   3: r4 &= 7                 bounded scalar offset [0,7] (partially-known -> tnum leg)
+//   4: r2 += r4                PTR_TO_PACKET at data + r4
+//   5: r5 = r2   6: r5 += M     headroom: the compare proves M bytes past r2
+//   7: if (r5 <dcmp> r3) goto 9   THE RANGE-SETTING COMPARE (swept)   -> skip store on OOB
+//   8: *(uW *)(r2 + off) = r4  STORE reaching byte off+W; accept iff off+W <= range(M,form)
+//   9: r0 = 0   10: exit
+//
+// Prediction is NOT hand-derived: the verifier is the oracle. We MEASURE the accept
+// boundary per form and assert (a) gt==lt and ge==le exactly (symmetry), (b) the closed
+// and open boundaries differ by exactly one byte, (c) 0 tnum-vs-bounds divergence across
+// all programs. SCHED_CLS, same as --gen-pkt.
+// ===========================================================================
+static const struct { const char *name; int op; int swap; } PKT_DCMP[] = {
+    {"gt", BPF_JGT, 0},   // if r5 >  end  -> OOB (skip store); proves r5 <= end   CLOSED
+    {"ge", BPF_JGE, 0},   // if r5 >= end  -> OOB;              proves r5 <  end   RIGHT-OPEN
+    {"lt", BPF_JLT, 1},   // if end <  r5  -> OOB (== r5 > end);  proves r5 <= end  CLOSED (swapped)
+    {"le", BPF_JLE, 1},   // if end <= r5  -> OOB (== r5 >= end); proves r5 <  end  RIGHT-OPEN (swapped)
+};
+#define PKT_DCMP_N ((int)(sizeof(PKT_DCMP) / sizeof(PKT_DCMP[0])))
+static const int PKTCMP_W[] = {1, 2, 4};   // BPF_B / BPF_H / BPF_W store width
+
+static void run_generated_pktcmp(int form_i, int m, int off, int wi, int index) {
+    const int W = PKTCMP_W[wi];
+    const int szmode = (W == 1) ? BPF_B : (W == 2) ? BPF_H : BPF_W;
+
+    struct bpf_insn insns[11];
+    insns[0] = BPF_LDX_MEM(BPF_W, BPF_REG_2, BPF_REG_1, 76);   /* data */
+    insns[1] = BPF_LDX_MEM(BPF_W, BPF_REG_3, BPF_REG_1, 80);   /* data_end */
+    insns[2] = BPF_LDX_MEM(BPF_W, BPF_REG_4, BPF_REG_1, 0);    /* len -> unknown */
+    insns[3] = BPF_ALU64_IMM(BPF_AND, BPF_REG_4, 7);           /* bound offset to [0,7] */
+    insns[4] = BPF_ALU64_REG(BPF_ADD, BPF_REG_2, BPF_REG_4);   /* pkt ptr = data + r4 */
+    insns[5] = BPF_MOV64_REG(BPF_REG_5, BPF_REG_2);
+    insns[6] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_5, m);           /* headroom M */
+    if (PKT_DCMP[form_i].swap)
+        insns[7] = BPF_JMP_REG(PKT_DCMP[form_i].op, BPF_REG_3, BPF_REG_5, 1); /* end <op> r5 */
+    else
+        insns[7] = BPF_JMP_REG(PKT_DCMP[form_i].op, BPF_REG_5, BPF_REG_3, 1); /* r5 <op> end */
+    insns[8]  = BPF_STX_MEM(szmode, BPF_REG_2, BPF_REG_4, off); /* store reaching byte off+W */
+    insns[9]  = BPF_MOV64_IMM(BPF_REG_0, 0);
+    insns[10] = BPF_EXIT_INSN();
+
+    char name[80];
+    snprintf(name, sizeof(name), "genpc#%s.M%d.o%d.w%d#%03d",
+             PKT_DCMP[form_i].name, m, off, W, index);
+    run_one_ex(name, insns, 11, BPF_PROG_TYPE_SCHED_CLS, "sched_cls", 0);
+}
+
+// form x headroom x store-offset x width -- 4*5*4*3 = 240, same order as the label index.
+static void run_generated_pktcmp_family(void) {
+    int index = 0;
+    for (int form_i = 0; form_i < PKT_DCMP_N; form_i++)
+        for (int m = 1; m <= 5; m++)
+            for (int off = 0; off <= 3; off++)
+                for (int wi = 0; wi < 3; wi++)
+                    run_generated_pktcmp(form_i, m, off, wi, index++);
+}
+
 int main(int argc, char **argv) {
     // Two data sources, kept apart on purpose (different provenance):
     //   (no args) the fixed authoritative program set, pinned by tests
@@ -1043,6 +1117,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-pkt") == 0) {
         run_generated_pkt_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-pkt-cmp") == 0) {
+        run_generated_pktcmp_family();
         return 0;
     }
 
