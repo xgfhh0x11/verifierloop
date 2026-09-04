@@ -3136,3 +3136,96 @@ verifier'ın kanıtladığı pointer-offset bound'uyla karşılaştırılmıyor.
 write (SCHED_CLS), `store_off`'u verifier'ın pointer-offset bound'uyla karşılaştırma
 (pointer-tracking desync, "içeride mi" değil "dediği yerde mi"), sonra döngü/iterator
 input'ları. Tam suite 163 yeşil.
+
+## 0039 — Packet-write runtime bellek-güvenliği oracle'ı (`--gen-pktw`): T3, PTR_TO_PACKET store yer-gerçeği
+
+- **Tarih:** 2026-09-04
+- **Durum:** TAMAM. Kod bir önceki oturumda yazıldı (build/VM adımları oturum-ortası
+  araç-erişim düşüşüyle bloklanmıştı — checkpoint'teki "TOOL-DROP"); capture bu taze
+  oturumda alındı, sayılar ÖNCEDEN türetilen tahminle bire bir tuttu, calibration testi
+  aktive edildi (`.rs.pending` → `.rs`), fixture pinlendi.
+- **Alan:** `harness/diffharness.c` (`--gen-pktw`, `run_pktw_one`/`run_pktw_prog`/
+  `run_generated_pktw_family`, `PKTW_M`), `scripts/run-pktw.sh` (yeni),
+  `crates/pipeline/tests/packet_write_calibration.rs` (yeni, 7 test),
+  `crates/pipeline/tests/fixtures/volume/gen-pktw-12.log` (yeni, gerçek VM capture),
+  `docs/COVERAGE-MAP.md` (§2b.3), `docs/OPEN-ITEMS.md`.
+  **Pipeline (parser/diff/metrics) DEĞİŞMEDİ** — çıktı formatı 0038 ile bayt-özdeş.
+- **İlgili:** 0038 (`--gen-rtw2`, map-value store-genişlik), 0037 (`--gen-rtw`),
+  0031 (`--gen-pkt`, load-only packet pointer), 0032 (`--gen-pkt-cmp`, range makinesi
+  compare taraması), [[store-location-desync-is-the-hunt]], [[oracle-times-input]].
+
+### 0. Neden — packet, oracle'ın asıl av yüzeyinin ikinci yarısı
+0037/0038 map_value pointer'ından geçiyor; sınırı verifier statik BİLİYOR (value_size).
+Packet pointer öteki tür: verifier packet'in nerede bittiğini BİLMEZ — PROGRAM kendi
+`data + M > data_end` compare'i ile ispatlar, verifier ortaya çıkan `range`'i statik
+TAKİP eder (`find_good_pkt_pointers`, verifier.c). Bu range makinesi tarihsel olarak en
+yoğun packet-bounds bug bölgesi. Load-only packet aileleri (`--gen-pkt`/`--gen-pkt-cmp`)
+yalnızca accept/reject'i ve verifier'ın KENDİ iç-tutarlılığını görebiliyor — store'un
+gerçekte NEREYE düştüğünü asla göremiyor. Bu leg accepted programı `BPF_PROG_TEST_RUN`
+ile KOŞUYOR ve packet'i geri okuyor, böylece iç-tutarlı ama YANLIŞ bir range'i yakalıyor
+(her log-only kolun paylaştığı kör nokta — "consistent-but-wrong").
+
+### 1. Mekanizma — runtime packet boyutu tam M, byte M = data_end
+Şekil (SCHED_CLS — socket_filter direct packet erişimini yasaklar):
+`r2=data; r3=data_end; r5=r2; r5+=M; if (r5 > r3) skip; *(uW*)(r2 + off) = -1`. Runtime
+packet uzunluğu TAM M'e ayarlanıyor (`data_size_in = PKTW_M = 32`, ≥ ETH_HLEN=14), böylece
+data_end byte M'e düşüyor ve compare `data+M > data_end` yanlış (M ≤ M) → accepted store
+KOŞUYOR. `bpf_prog_test_run_skb` skb'yi taze kurar (data_in sıfır → tek 0xFF kaynağı
+store), koştuktan sonra yalnız `[0, skb->len)`'i data_out'a kopyalar — byte M skb
+tailroom'da (kopyalanmaz). Harness data_out'ta İLK 0xFF'i (`store_off`) bulur, ardışık
+run'ı sayar (`store_len`), `store_size` ile yazar — çıktı 0038 ile bayt-özdeş, o yüzden
+parser/diff/metrics DEĞİŞMEDEN yeniden kullanılıyor.
+
+Sağlam kernel: her accepted store `off + W ≤ M`, tüm W sentinel byte'ı `[0, M)`'e düşer,
+data_out'ta geri gelir (`store_len == store_size`). `off + W = M + 1` kabul eden bir
+verifier (range off-by-one) store'un son byte'ını data_end'e (tailroom) koyar → run
+kısalır (`store_len < store_size`) ya da yok olur (`store_off=none`) → paylaşılan
+predikat (`check_runtime_write_safety`) tam da bunu ateşler.
+
+### 2. Neden compare-korumalı DEĞİL — dişin yaşadığı yer
+Kritik tasarım kararı: store'u koruyan runtime branch, store bölgesini TAM yeniden
+kontrol EDERSE (offset değişken, compare `data+off+W > data_end`), runtime kendi kendini
+korur ve buggy bir verifier bile runtime OOB üretemez — branch off+W ≤ len'i runtime'da
+yeniden doğrular. O yüzden böyle bir şekil TAUTOLOJİ (asla ateşlemeyen bir payda), oracle
+× input kuralının dışladığı şey. Diş yalnız compare'in ispatladığından DAHA İLERİYE ulaşan
+store'dan gelir: compare M byte ispatlar, store `off+W`'ye ulaşır, `off+W ≤ M` kararının
+TEK hakemi verifier'dır. Bu tam `--gen-pkt-cmp`'in dişi — ama koşturulmuş hâli. Bu yüzden
+offset SABİT (değişken r4 yok), packet boyutu M'e sabitlenip byte M tam data_end'e
+oturtuluyor.
+
+### 3. Aile — kapalı `>` idiom, W{1,2,4,8} × 3 kol
+12 program. Her W için üç kol: off 0 iç-kabul, off=M−W sınır-kabul (byte M-1'de tam biter,
+en sıkı in-bounds store), off=M−W+1 off-by-one (son byte data_end'de olur → RED).
+**ÖLÇÜLEN (koşumdan ÖNCE predikattan türetilmiş tahminle bire bir aynı): 8 kabul /
+4 red, runtime_writes_checked = 8** (her kabul 1 kez koşar, input = packet boyutu 0x20),
+**finding_count = 0, parser_unrecognized = 0.** Kabul sınırı her genişlikte tam
+`off = M−W`: w1 o31 kabul / o32 red, w2 o30/o31, w4 o28/o29, w8 o24/o25 — yani red nedeni
+her seferinde tek byte'lık aşım. Her kabul edilen store TAM genişliğini in-bounds yazdı;
+en sıkısı w8.o24 (8 byte'lık run tam byte 32 = data_end'de biter). Sınır başka bir yere
+düşseydi bu, "capture hatası" değil, İLK ÖNCE incelenecek potansiyel bulgu olurdu. BPF_ST (store-immediate) → PTR_TO_PACKET kabul EDİLİR: do_check_insn
+BPF_ST kolu `check_mem_access(BPF_WRITE)`'a gider, packet-özel blok yok
+(atomic_ptr_type_ok packet'i yalnız ATOMIC için bloklar); `--gen-pkt` zaten STX packet
+write'ı kabul ettiriyor. Reject nedeni check_packet_access -EACCES "invalid access to
+packet". İlk increment kapalı `>`'ye sabit; operatör taraması (`>=` right-open, operand-
+sırası simetrisi) doğal takip — tıpkı `--gen-pkt` → `--gen-pkt-cmp` gibi (OI-9'a eklendi).
+
+### 4. Diş + reject kontrolü — GERÇEK capture üzerinde doğrulandı
+Diff predikatı 0037/0038'den paylaşıldığı için diş zaten `runtime_write2_calibration`'da
+kanıtlıydı; yine de non-vacuity bu ailenin KENDİ gerçek capture'ı üzerinde ayrıca
+sınandı: planlı `store_off=none` (w1.o0#000) ve planlı kısa run
+(`store_len=5 store_size=8`, en sıkı sınır w8.o24#010) — her biri tam bir kez
+`runtime_oob_write` ateşliyor (pipeline üzerinden ayrıca elle de doğrulandı:
+w8.o24 satırı `store_off=none` ve `store_len=7` varyantlarıyla mutasyona uğratıldığında
+`finding_count` 0 → 1). Reject kontrolü: off-by-one programları
+load-time'da reddedilir → koşmaz → kontrol edilmez; W başına (off=M−W kabul / off=M−W+1
+red) çift off-by-one'ı ikiye böler.
+
+### 5. Sınır ve sıradaki
+Store artık packet, ama `store_off` hâlâ yalnız "packet İÇİNDE mi TAM olarak"
+düzeyinde ölçülüyor — henüz verifier'ın PROVED pointer-offset bound'uyla
+karşılaştırılmıyor. Asıl av (store-location desync — "içeride mi" değil "DEDİĞİ yerde mi",
+[[store-location-desync-is-the-hunt]]) bir sonraki merkezi hamle. Bu leg onun packet
+altyapısını (SCHED_CLS test_run + data_out geri-okuma) kuruyor. Sonra: compare-form
+taraması, sonra döngü/iterator input'ları.
+
+Tam suite 170 yeşil (163 + bu ailenin 7 testi).

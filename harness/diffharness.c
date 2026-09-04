@@ -2139,6 +2139,146 @@ static void run_generated_rtw2_family(void) {
     close(map_out);
 }
 
+// ---- packet-write runtime memory-safety oracle (--gen-pktw) -----------------
+// The runtime-write oracle so far (--gen-rtw / --gen-rtw2) stores through a
+// PTR_TO_MAP_VALUE, whose bound the verifier KNOWS statically (value_size). This
+// leg is the PACKET analog: a store through a PTR_TO_PACKET, whose bound the
+// verifier does NOT know — the PROGRAM proves it with its own `data + M > data_end`
+// compare and the verifier statically TRACKS the resulting `range`
+// (find_good_pkt_pointers, verifier.c). That range machinery is the historically
+// densest packet-bounds bug region, and the load-only packet families (--gen-pkt /
+// --gen-pkt-cmp) can only see accept/reject and the verifier's OWN self-consistency
+// — never where the store actually LANDS. This one EXECUTES the accepted program
+// via BPF_PROG_TEST_RUN and reads the packet back, so it catches a range that is
+// internally consistent but WRONG (the blind spot every log-only leg shares).
+//
+// Shape (SCHED_CLS — socket_filter forbids direct packet access):
+//   0: r2 = *(u32*)(r1+76)   data      -> PTR_TO_PACKET
+//   1: r3 = *(u32*)(r1+80)   data_end  -> PTR_TO_PACKET_END
+//   2: r5 = r2   3: r5 += M   headroom the compare will prove
+//   4: if (r5 > r3) goto 6    proves data + M <= data_end -> range = M bytes
+//   5: *(uW*)(r2 + off) = -1  store W sentinel bytes; accepted iff off + W <= M
+//   6: r0 = 0   7: exit
+//
+// The runtime packet length is set to EXACTLY M, so data_end lands at byte M and the
+// compare `data+M > data_end` is false (M <= M) — the accepted store executes. On a
+// sound kernel every accepted store has off + W <= M, so all W sentinel bytes land
+// in [0, M) and are copied back in data_out (store_len == store_size). A verifier
+// that accepted off + W = M + 1 (a range off-by-one) would put the store's last byte
+// AT data_end — in skb tailroom, which test_run never copies back — so the sentinel
+// run is truncated (store_len < store_size) or absent: exactly the runtime_oob_write
+// the shared diff predicate already fires on. The one-past programs (off = M-W+1) are
+// the reject control: a sound verifier rejects them, so they never execute and never
+// count — a buggy one would accept, run, and truncate.
+//
+// The output format is byte-identical to --gen-rtw2, so the parser, the diff
+// predicate (check_runtime_write_safety), and the metrics counters are reused
+// UNCHANGED; only the bytes' provenance differs (packet read-back vs map read-back).
+// First increment pins the compare to the canonical closed `>` idiom; sweeping the
+// operator (`>=` right-open, operand-order symmetry) is the natural follow-up, as
+// --gen-pkt -> --gen-pkt-cmp did for the load-only side.
+
+#define PKTW_M 32   /* proven headroom == runtime packet length (>= ETH_HLEN = 14) */
+
+static void run_pktw_one(const char *name, const struct bpf_insn *insns, int n,
+                         int pkt_size, int store_size) {
+    g_log[0] = '\0';
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = BPF_PROG_TYPE_SCHED_CLS;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)insns;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = sizeof(g_log);
+    attr.log_buf = (uint64_t)(unsigned long)g_log;
+
+    uint64_t t0 = now_ns();
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int e = errno;
+    uint64_t dt = now_ns() - t0;
+
+    printf("===PROG %s type=sched_cls ===\n", name);
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=%llu\n",
+           fd >= 0 ? "accept" : "reject", fd, fd >= 0 ? 0 : e,
+           (unsigned long long)dt);
+
+    if (fd >= 0) {
+        /* Fresh skb per run: data_in is zeroed, so the ONLY 0xFF bytes come from
+           the store. data_end lands at data + pkt_size, so byte pkt_size is the
+           first out-of-bounds byte (skb tailroom, never copied back to data_out). */
+        unsigned char in[RTW_VALUE_SIZE];
+        unsigned char out[RTW_VALUE_SIZE];
+        memset(in, 0, sizeof(in));
+        memset(out, 0, sizeof(out));
+        union bpf_attr t;
+        memset(&t, 0, sizeof(t));
+        t.test.prog_fd = fd;
+        t.test.data_in = (uint64_t)(unsigned long)in;
+        t.test.data_size_in = pkt_size;
+        t.test.data_out = (uint64_t)(unsigned long)out;
+        t.test.data_size_out = sizeof(out);
+        t.test.repeat = 1;
+        int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+        if (r < 0) {
+            printf("RUNTIME input=0x%08x error=1 testrun_errno=%d\n", pkt_size, errno);
+        } else {
+            int off = -1;
+            for (int b = 0; b < RTW_VALUE_SIZE; b++)
+                if (out[b] == RTW_SENTINEL) { off = b; break; }
+            if (off < 0) {
+                printf("RUNTIME input=0x%08x store_off=none store_len=0 store_size=%d\n",
+                       pkt_size, store_size);
+            } else {
+                int len = 0;
+                for (int b = off; b < RTW_VALUE_SIZE && out[b] == RTW_SENTINEL; b++)
+                    len++;
+                printf("RUNTIME input=0x%08x store_off=%d store_len=%d store_size=%d\n",
+                       pkt_size, off, len, store_size);
+            }
+        }
+        close(fd);
+    }
+    printf("---LOG---\n%s\n---END---\n", g_log);
+}
+
+static void run_pktw_prog(int store_size, int const_off, int idx) {
+    struct bpf_insn ins[16];
+    int n = 0;
+    int sc = rtw2_size_code(store_size);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_2, BPF_REG_1, 76);   /* r2 = data */
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_3, BPF_REG_1, 80);   /* r3 = data_end */
+    ins[n++] = BPF_MOV64_REG(BPF_REG_5, BPF_REG_2);            /* r5 = data */
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_5, PKTW_M);      /* r5 = data + M */
+    const int jc = n;
+    ins[n++] = BPF_JMP_REG(BPF_JGT, BPF_REG_5, BPF_REG_3, 0);  /* if r5 > data_end -> skip */
+    ins[n++] = BPF_ST_MEM(sc, BPF_REG_2, const_off, -1);       /* store W sentinel bytes at data+off */
+    const int skip = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    ins[jc].off = skip - jc - 1;
+
+    char name[96];
+    snprintf(name, sizeof(name), "genpktw#w%d.o%d#%03d", store_size, const_off, idx);
+    run_pktw_one(name, ins, n, PKTW_M, store_size);
+}
+
+static void run_generated_pktw_family(void) {
+    int idx = 0;
+    const int sizes[] = {1, 2, 4, 8};
+    /* Closed `>` form: the compare proves M bytes past data, so a store reaching
+       byte off + W is accepted iff off + W <= M (= PKTW_M). Three arms per width:
+       an interior accept at off 0, a boundary accept ending exactly at byte M-1
+       (off = M-W, the tightest in-bounds store), and the off-by-one at off = M-W+1
+       whose last byte would be AT data_end -> the verifier must REJECT it. */
+    for (int j = 0; j < 4; j++) {
+        int W = sizes[j];
+        run_pktw_prog(W, 0, idx++);                 /* interior accept */
+        run_pktw_prog(W, PKTW_M - W, idx++);        /* boundary accept: ends at byte M-1 */
+        run_pktw_prog(W, PKTW_M - W + 1, idx++);    /* off-by-one -> reject */
+    }
+}
+
 int main(int argc, char **argv) {
     // Two data sources, kept apart on purpose (different provenance):
     //   (no args) the fixed authoritative program set, pinned by tests
@@ -2201,6 +2341,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-rtw2") == 0) {
         run_generated_rtw2_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-pktw") == 0) {
+        run_generated_pktw_family();
         return 0;
     }
 

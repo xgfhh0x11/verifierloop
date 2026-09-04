@@ -151,7 +151,34 @@ tutar. İki şekil: **and.wN** (attacker offset r6&=MASK, kabul ⟺ MASK+N≤64)
 kabul edilen store tam genişliğini içeri yazdı; en sıkı sınır bndc.w8 (off=56, run=8, tam
 64'te biter). Diş iki kez: planlı `store_off=none` VE planlı kısa run (`store_len<store_size`)
 ayrı ayrı `runtime_oob_write` ateşliyor. Pinlendi: `runtime_write2_calibration.rs` (7 test).
-Sıradaki: packet write, store_off vs verifier pointer-offset bound, döngü/iterator.
+Sıradaki: packet write (§2b.3, DONE), store_off vs verifier pointer-offset bound, döngü/iterator.
+
+### 2b.3 — Packet-write ekseni (`--gen-pktw`, devlog 0039) — DONE
+
+Runtime bellek-güvenliği oracle'ının **packet** ayağı: 2b.1/2b.2 map_value pointer'ından
+geçiyor (sınırı verifier statik BİLİR, value_size); packet pointer'ın sınırını verifier
+BİLMEZ — PROGRAM `data + M > data_end` compare'iyle ispatlar, verifier `range`'i statik
+takip eder (`find_good_pkt_pointers`, tarihsel en yoğun bug bölgesi). Load-only packet
+aileleri (`--gen-pkt`/`--gen-pkt-cmp`) yalnız accept/reject ve iç-tutarlılık görür;
+bu leg accepted programı `BPF_PROG_TEST_RUN` (SCHED_CLS/skb) ile KOŞAR ve packet'i geri
+okur, iç-tutarlı-ama-yanlış range'i yakalar. Runtime packet boyutu TAM M (=32,
+data_size_in), böylece data_end byte M'e oturur; sağlam kernelde her accepted store
+`off+W≤M` → tüm byte'lar `[0,M)`'e düşer, data_out'ta geri gelir (`store_len==store_size`).
+`off+W=M+1` kabul eden buggy verifier son byte'ı data_end'e (skb tailroom, test_run
+kopyalamaz) koyar → kısa run / yok → paylaşılan predikat `runtime_write_safety` ateşler.
+**Kritik:** offset SABİT (compare M byte ispatlar, store off+W'ye ulaşır → verifier tek
+hakem); compare'in store bölgesini tam yeniden-kontrol ettiği değişken şekil TAUTOLOJİ
+olurdu (runtime kendini korur), o yüzden dışarıda. Şekil W{1,2,4,8}×3 kol (off 0 iç-kabul,
+off=M−W sınır-kabul, off=M−W+1 off-by-one red). **Çıktı format 0038 ile bayt-özdeş →
+parser/diff/metrics DEĞİŞMEDİ.** ÖLÇÜLEN (koşumdan önce türetilen tahminle bire bir):
+12 program, **8 kabul / 4 red, runtime_writes_checked=8, finding_count=0,
+parser_unrecognized=0**. Kabul sınırı her genişlikte tam `off=M−W` (w1 o31/o32, w2 o30/o31,
+w4 o28/o29, w8 o24/o25) — her kabul edilen store TAM genişliğini `[0,M)` içine yazdı; en
+sıkısı w8.o24 (8 byte'lık run tam byte 32 = data_end'de biter). Diş bu ailenin GERÇEK
+capture'ı üzerinde iki kez: planlı `store_off=none` ve planlı kısa run ayrı ayrı
+`runtime_oob_write` ateşliyor. Pinlendi: `packet_write_calibration.rs` (7 test),
+fixture `fixtures/volume/gen-pktw-12.log`. İlk increment kapalı `>`; compare-form
+taraması (`>=`, operand-simetri) OI-9 takip.
 
 ---
 
