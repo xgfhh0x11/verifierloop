@@ -3642,3 +3642,82 @@ ediyor; maliyet `BPF_PSEUDO_KFUNC_CALL` + load-time BTF). Ayrıca bu ailenin do�
 artışı: kabul edilen loop programlarını ÇALIŞTIRIP 0041'in store-location oracle'ını
 üzerlerine koşmak — verifier'ın fixpoint'i runtime'ın gerçek iterasyon sayısı için de
 tutmak zorunda.
+
+---
+
+## 0044 — Loop fixpoint vs runtime (`--gen-loopr`): kanıt okundu, ve maliyet önce ölçüldü
+
+### 1. Soru, ve 0043'te bıraktığı delik
+
+0043 back-edge programın KARARININ checkpoint sıklığına dayanıklı olup olmadığını
+sordu. Bu bacak 0041'in daha güçlü sorusunu döngü üstünde soruyor: verifier, store'daki
+offset register'ına bir sınırı **sınırsız sayıda iterasyon üzerinden bir FIXPOINT
+hesaplayarak** kanıtlıyor; runtime ise milyonlarca iterasyon sayısından somut birini
+seçiyor. Store, hangi sayı seçilirse seçilsin kanıtlanmış kümenin içine düşmek zorunda.
+
+Aynı zamanda 0043'ün deliğini kapatıyor: o aile `STORE` satırı basıyor ama hiç
+çalıştırmıyordu, yani `store_locations_checked = 0` — kendi kuralımıza göre iddia hiç
+okunmadı, ve oradaki sıfır bulgu konum sorusu hakkında hiçbir şey ifade etmiyordu.
+
+### 2. Maliyet ÖNCE ölçüldü (`--probe-loopr`)
+
+Aileyi kurmadan önce tek soru şuydu: bir may_goto programı gerçekte ne kadar dönüyor?
+`BPF_MAX_LOOPS = 8*1024*1024` sayısı ilk bakışta 8M iterasyon diyor, ama x86-64'te
+`bpf_jit_supports_timed_may_goto()` **true** — bütçe SAYI değil ZAMAN:
+`bpf_check_timed_may_goto()` 0xffff'lik sayacı `NSEC_PER_SEC / 4` dolana kadar
+tazeliyor. Ölçüm: **250.3 / 250.5 / 251.4 ms** — bütçe birebir.
+
+Zaman tabanlı olması bu bacağı mümkün kılan şey: KASAN/KCOV yavaşlığı aynı 250 ms
+içindeki iterasyon SAYISINI düşürüyor, koşuyu uzatmıyor. OI-11 tam olarak uzun
+kernel-içi çalıştırma hakkında tahmin yürütmemek dersiydi; bu yüzden 18 saniyelik bir
+kernel dönüşüne körlemesine girmek yerine 0040'taki gibi önce probe edildi.
+
+### 3. Sweep bu ailenin kendisi
+
+Paylaşılan `RT_INPUTS` 12 değer taşıyor, ama buradaki giriş state'i `input & 7` ve o 12
+değer yalnız **beş** farklı kalıntıya düşüyor — yedi koşu × 250 ms hiçbir şey satın
+almadan harcanırdı. `LOOPR_INPUTS` sekiz kalıntının hepsini kapsıyor.
+
+### 4. Sonuç
+
+**7 program (6 kabul + 1 red kontrolü), `store_locations_checked = 48`,
+`runtime_writes_checked = 48`, `finding_count = 0`, `parser_unrecognized = 0`.**
+Her store, verifier'ın fixpoint'inin kanıtladığı kümenin içine düştü. Landing setleri
+(r6 = off − 56):
+
+| kol | ulaşılan r6 | yorum |
+|---|---|---|
+| `nop` | {0..7} | gövde offset'e dokunmuyor, sekiz kalıntının hepsi |
+| `mask` | {0..7} | idempotent |
+| `xor3` | {0..6} | [0,7] içinde |
+| `incmask` | {2,3,4,6,7} | iterasyon sayısına bağlı → **nondeterministik** |
+| `shr` | {0} | deterministik olarak sıfıra iniyor |
+| `cond` | {0,1,2,3} | dal 3'ün üstünü sıfırlıyor |
+
+**Nondeterminizm burada özellik.** Son offset bütçeye kaç iterasyon sığdığına bağlı,
+yani `incmask` her koşuda başka yere düşüyor. Oracle **üyelik** soruyor, eşitlik değil —
+her koşu fixpoint'i taze bir noktadan örneklüyor. Aşağı akışta hiçbir şey bu kollar için
+kesin bir `store_off` iddia etmemeli.
+
+**`cond` muhafazakârlığı gösteriyor:** verifier [0,7] kanıtlıyor, runtime yalnız [0,3]'e
+ulaşıyor. Bu doğru yön — kanıttan DAR bir runtime kümesi sadece imprecision; kanıttan
+GENİŞ olsaydı bulgu olurdu. Test bunu açıkça sabitliyor.
+
+### 5. Dürüst sınır
+
+Bütçe her zaman sonuna kadar harcandığı için runtime **sıfır-iterasyon yolunu hiç
+almıyor**. O yol verifier için gerçek (0043'te `mask.m63`'ün reddedilme sebebi), ama
+burada yalnızca verifier tarafı kanıt — runtime tarafından hiç doğrulanmadı.
+
+### 6. Testler
+
+`loop_runtime_calibration.rs` 7 test: headline (48 kontrol, 0 bulgu), **vakum guard'ı**
+(gövde runtime'da gerçekten koşmuş olmalı — `shr` her girdide base'e düşüyor ve `nop`'un
+setinden farklı; koşmasaydı hepsi `nop` gibi olurdu), pencerenin dar olduğu, muhafazakâr
+yönün serbest / geniş yönün bulgu olduğu, 0041'in dişinin BU capture'da ateşlediği
+(pencere dışı ama value içi offset → `store_location_desync` bir kez,
+`runtime_oob_write` SESSİZ), probe'un ölçtüğü bütçenin pinlenmesi, ve parser kör noktası
+yok. Workspace 210 yeşil.
+
+**Sıradaki:** açık iteratorler (OI-13'ün ikinci sırası; `BPF_PSEUDO_KFUNC_CALL` +
+load-time BTF makinesi gerekiyor).

@@ -3088,6 +3088,277 @@ static void run_loop_prog(enum loop_body body, int init_mask, int idx,
     printf("---LOG---\n%s\n---END---\n", g_log);
 }
 
+// ---- loop fixpoint vs runtime (--gen-loopr) ---------------------------------
+// 0043 asked whether a back-edge program's VERDICT survives a change in checkpoint
+// frequency. This asks the strictly stronger question 0041 introduced, now on a loop:
+// the verifier proves a bound on the offset register at the store by computing a
+// FIXPOINT over an unbounded number of iterations -- does that bound hold for the
+// number of iterations the machine ACTUALLY runs?
+//
+// It also closes a hole in 0043: that family emits a STORE line but never executes, so
+// `store_locations_checked` was 0 -- by this project's own rule, the claim was never
+// read, and zero findings there meant nothing.
+//
+// COST, MEASURED FIRST (--probe-loopr): on x86-64 `bpf_jit_supports_timed_may_goto()`
+// is true, so the budget is TIME-based and every run spends the full
+// `NSEC_PER_SEC / 4`. Measured: 250.3 / 250.5 / 251.4 ms -- the budget exactly. Being
+// time-based is what makes this affordable at all: KASAN/KCOV slowness lowers the
+// iteration count inside the same 250ms instead of extending the run (OI-11).
+// Six shapes x eight inputs x 250ms is about 12 seconds of kernel-side spinning.
+//
+// THE SWEEP IS THIS FAMILY'S OWN. The shared RT_INPUTS has twelve values, but the entry
+// state here is `input & 7`, and those twelve collapse to only FIVE distinct residues --
+// seven runs of 250ms each buying nothing. LOOPR_INPUTS covers all eight.
+//
+// NON-DETERMINISM IS A FEATURE HERE. The final offset depends on how many iterations
+// fit in the time budget, so a shape like `incmask` lands somewhere different on every
+// run. The oracle asks for MEMBERSHIP in the verifier's proven set, never equality, so
+// each run samples the fixpoint at a fresh point. Nothing downstream may assert an exact
+// store_off for these arms.
+static const uint32_t LOOPR_INPUTS[] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+#define LOOPR_INPUTS_N ((int)(sizeof(LOOPR_INPUTS) / sizeof(LOOPR_INPUTS[0])))
+
+static void run_loopr_prog(enum loop_body body, int idx, int map_in, int map_out) {
+    struct bpf_insn ins[64];
+    int n = 0, jexit[4], nx = 0;
+
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);
+    ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7);
+    const int loop_head = n;
+    const int jbreak = n; ins[n++] = BPF_MAY_GOTO_INSN(0);
+    n = emit_loop_body(ins, n, body);
+    const int jback = n;
+    ins[jback] = BPF_JMP_IMM(BPF_JA, 0, 0, loop_head - jback - 1);
+    n++;
+    ins[jbreak].off = n - jbreak - 1;
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_0);
+    ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_7, BPF_REG_6);
+    const int store_insn = n;
+    ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_7, LOOP_STORE_OFF, -1);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);   /* witness: the store path ran */
+    ins[n++] = BPF_EXIT_INSN();
+    const int exit0 = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    for (int i = 0; i < nx; i++) ins[jexit[i]].off = exit0 - jexit[i] - 1;
+
+    g_log[0] = '\0';
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)ins;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = sizeof(g_log);
+    attr.log_buf = (uint64_t)(unsigned long)g_log;
+    uint64_t t0 = now_ns();
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int e = errno;
+    uint64_t dt = now_ns() - t0;
+
+    char name[96];
+    snprintf(name, sizeof(name), "genloopr#%s#%03d", loop_body_name(body), idx);
+    printf("===PROG %s type=socket_filter ===\n", name);
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=%llu\n",
+           fd >= 0 ? "accept" : "reject", fd, fd >= 0 ? 0 : e, (unsigned long long)dt);
+    printf("STORE insn=%d reg=7 off=%d size=1\n", store_insn, LOOP_STORE_OFF);
+
+    if (fd >= 0) {
+        unsigned char pkt[64];
+        memset(pkt, 0, sizeof(pkt));
+        for (int i = 0; i < LOOPR_INPUTS_N; i++) {
+            uint32_t in = LOOPR_INPUTS[i];
+            unsigned char zero[RTW_VALUE_SIZE];
+            memset(zero, 0, sizeof(zero));
+            int ue = rt_map_set(map_in, 0, in);
+            int ze = rt_map_set_bytes(map_out, 0, zero);
+            union bpf_attr t;
+            memset(&t, 0, sizeof(t));
+            t.test.prog_fd = fd;
+            t.test.data_in = (uint64_t)(unsigned long)pkt;
+            t.test.data_size_in = sizeof(pkt);
+            t.test.repeat = 1;
+            int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+            unsigned char out[RTW_VALUE_SIZE];
+            memset(out, 0, sizeof(out));
+            int ge = rt_map_get(map_out, 0, out);
+            if (r < 0 || ue < 0 || ze < 0 || ge < 0) {
+                printf("RUNTIME input=0x%08x error=1 testrun_errno=%d\n",
+                       in, r < 0 ? errno : 0);
+                continue;
+            }
+            int off = -1;
+            for (int b = 0; b < RTW_VALUE_SIZE; b++)
+                if (out[b] == RTW_SENTINEL) { off = b; break; }
+            int executed = (t.test.retval == 1);
+            if (off < 0) {
+                printf("RUNTIME input=0x%08x store_off=none store_len=0 store_size=1"
+                       " executed=%d\n", in, executed);
+            } else {
+                int len = 0;
+                for (int b = off; b < RTW_VALUE_SIZE && out[b] == RTW_SENTINEL; b++) len++;
+                printf("RUNTIME input=0x%08x store_off=%d store_len=%d store_size=1"
+                       " executed=%d\n", in, off, len, executed);
+            }
+        }
+        close(fd);
+    }
+    printf("---LOG---\n%s\n---END---\n", g_log);
+}
+
+static void run_generated_loopr_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 8; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = RTW_VALUE_SIZE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
+        printf("===PROG genloopr type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    /* The six shapes 0043 measured as ACCEPTED, plus one rejected shape as a control
+       that the decision surface is still real here. A rejected program never runs, so
+       it contributes no runtime samples and no 250ms. */
+    const enum loop_body shapes[] = {
+        LB_NOP, LB_MASK, LB_INCMASK, LB_SHR, LB_XOR3, LB_COND,
+        LB_MASKINC,   /* control: join [0,8] -> rejected, contributes no runtime */
+    };
+    int idx = 0;
+    for (unsigned i = 0; i < sizeof(shapes) / sizeof(shapes[0]); i++)
+        run_loopr_prog(shapes[i], idx++, map_in, map_out);
+    close(map_in);
+    close(map_out);
+}
+
+/* --probe-loopr: MEASURE before committing to a runtime loop family.
+ *
+ * On x86-64 `bpf_jit_supports_timed_may_goto()` is true, so the may_goto budget is
+ * TIME-based: bpf_check_timed_may_goto() refreshes a 0xffff counter until
+ * `NSEC_PER_SEC / 4` has elapsed, i.e. ~250ms of kernel-side spinning PER RUN. A full
+ * 12-input sweep over the six accepted loop shapes would be ~18s of that, in 250ms
+ * uninterruptible chunks -- and OI-11 is exactly the lesson that says do not guess about
+ * this. So: one run per shape, wall time and landing site reported, and the family gets
+ * sized from the measurement instead of from an assumption.
+ *
+ * Being time-based is the reassuring half: KASAN/KCOV slowness cannot extend the budget,
+ * it only lowers the iteration count inside the same 250ms. The measurement says whether
+ * the whole idea is affordable. */
+static void run_probe_loopr(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 8; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = RTW_VALUE_SIZE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
+        printf("CHANNEL error=map_create errno=%d\n", errno);
+        return;
+    }
+    const enum loop_body shapes[] = { LB_NOP, LB_INCMASK, LB_SHR };
+    for (unsigned si = 0; si < sizeof(shapes) / sizeof(shapes[0]); si++) {
+        struct bpf_insn ins[64];
+        int n = 0, jexit[4], nx = 0;
+        ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+        ins[n++] = (struct bpf_insn){0};
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+        jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7);
+        const int loop_head = n;
+        const int jbreak = n; ins[n++] = BPF_MAY_GOTO_INSN(0);
+        n = emit_loop_body(ins, n, shapes[si]);
+        const int jback = n;
+        ins[jback] = BPF_JMP_IMM(BPF_JA, 0, 0, loop_head - jback - 1);
+        n++;
+        ins[jbreak].off = n - jbreak - 1;
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+        ins[n++] = (struct bpf_insn){0};
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+        jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_0);
+        ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_7, BPF_REG_6);
+        ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_7, LOOP_STORE_OFF, -1);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);
+        ins[n++] = BPF_EXIT_INSN();
+        const int exit0 = n;
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+        ins[n++] = BPF_EXIT_INSN();
+        for (int i = 0; i < nx; i++) ins[jexit[i]].off = exit0 - jexit[i] - 1;
+
+        g_log[0] = '\0';
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 1;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        if (fd < 0) {
+            printf("CHANNEL shape=%s load=reject errno=%d\n", loop_body_name(shapes[si]), errno);
+            continue;
+        }
+        unsigned char zero[RTW_VALUE_SIZE], out[RTW_VALUE_SIZE], pkt[64];
+        memset(zero, 0, sizeof(zero)); memset(pkt, 0, sizeof(pkt));
+        rt_map_set(map_in, 0, 0x5a5a5a5a);
+        rt_map_set_bytes(map_out, 0, zero);
+        union bpf_attr t;
+        memset(&t, 0, sizeof(t));
+        t.test.prog_fd = fd;
+        t.test.data_in = (uint64_t)(unsigned long)pkt;
+        t.test.data_size_in = sizeof(pkt);
+        t.test.repeat = 1;
+        uint64_t t0 = now_ns();
+        int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+        uint64_t dt = now_ns() - t0;
+        memset(out, 0, sizeof(out));
+        rt_map_get(map_out, 0, out);
+        int off = -1;
+        for (int b = 0; b < RTW_VALUE_SIZE; b++)
+            if (out[b] == RTW_SENTINEL) { off = b; break; }
+        printf("CHANNEL shape=%s load=accept testrun_rc=%d retval=%u wall_ns=%llu",
+               loop_body_name(shapes[si]), r, (unsigned)t.test.retval,
+               (unsigned long long)dt);
+        if (off < 0) printf(" store_off=none\n"); else printf(" store_off=%d\n", off);
+        close(fd);
+    }
+    close(map_in);
+    close(map_out);
+}
+
 static void run_generated_loop_family(void) {
     union bpf_attr m;
     memset(&m, 0, sizeof(m));
@@ -3262,6 +3533,14 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-loop") == 0) {
         run_generated_loop_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-loopr") == 0) {
+        run_probe_loopr();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-loopr") == 0) {
+        run_generated_loopr_family();
         return 0;
     }
 
