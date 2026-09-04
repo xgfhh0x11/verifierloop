@@ -177,7 +177,7 @@ w4 o28/o29, w8 o24/o25) — her kabul edilen store TAM genişliğini `[0,M)` iç
 sıkısı w8.o24 (8 byte'lık run tam byte 32 = data_end'de biter). Diş bu ailenin GERÇEK
 capture'ı üzerinde iki kez: planlı `store_off=none` ve planlı kısa run ayrı ayrı
 `runtime_oob_write` ateşliyor. Pinlendi: `packet_write_calibration.rs` (7 test),
-fixture `fixtures/volume/gen-pktw-12.log`. İlk increment kapalı `>`; compare-form
+fixture `fixtures/volume/gen-pktw-12.log`. **Kanal ölçüldü (0040, `--probe-pktw`):** bu leg'in tek okumaya-dayalı halkası — "test_run yalnız `[0,skb->len)`'i döndürür, OOB store gözlenemez" — artık ÖLÇÜM. Sağlam verifier her OOB store'u reddettiği için negatif yarıya store'u değil PENCEREYİ oynatarak gidildi (`bpf_skb_change_tail` store'dan SONRA `skb->len`'i küçültür). 4 kol, hepsi kabul: win32 out_size=32/off=31; win40 out_size=**40** (pencere `skb->len`'i takip eder, sabit değil); trim.o19 out_size=20/off=**19** (pencerenin son byte'ı çözülür); trim.o20 out_size=20/off=**none** (fiilen yazılmış `index==out_size` byte'ı DÖNMEZ). İki trim kolu tek byte'lık offset farkıyla zıt gözlenebilirlik → kenar byte-hassas, "yok" konumsal. `tail_zero=1` her kolda: pencere ötesi sıfır kalır, sentinel diye YANLIŞ OKUNAMAZ da. Store-location desync'in ön-koşulu kapandı. Pinlendi: `packet_channel_calibration.rs` (7 test), fixture `probe-pktw-4.log`. İlk increment kapalı `>`; compare-form
 taraması (`>=`, operand-simetri) OI-9 takip.
 
 ---

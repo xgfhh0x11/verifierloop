@@ -3229,3 +3229,55 @@ altyapısını (SCHED_CLS test_run + data_out geri-okuma) kuruyor. Sonra: compar
 taraması, sonra döngü/iterator input'ları.
 
 Tam suite 170 yeşil (163 + bu ailenin 7 testi).
+
+## 0040 — Packet gözlem-kanalı ölçümü (`--probe-pktw`): iddia → ölçüm, desync'in ön-koşulu
+
+- **Tarih:** 2026-09-04
+- **Durum:** TAMAM. Ölçüm alındı, dört iddianın dördü de doğrulandı, pinlendi.
+- **Alan:** `harness/diffharness.c` (`--probe-pktw`, `run_pktw_probe_one`/
+  `run_pktw_probe_prog`/`run_probe_pktw_family`), `scripts/probe-pktw.sh` (yeni),
+  `crates/pipeline/tests/packet_channel_calibration.rs` (yeni, 7 test),
+  `crates/pipeline/tests/fixtures/volume/probe-pktw-4.log` (yeni, gerçek VM capture).
+  **Pipeline DEĞİŞMEDİ** — probe çıktısı ayrı bir `CHANNEL` satırı, parser'a girmiyor.
+- **İlgili:** 0039 (`--gen-pktw`), [[store-location-desync-is-the-hunt]].
+
+### 0. Neden — 0039'un tek okumaya-dayalı halkası
+0039 "sentinel yok / kısa" durumunu OOB write olarak OKUYOR. Bu okuma kanal hakkında bir
+İDDİAYA dayanıyordu: `bpf_prog_test_run_skb` yalnız `[0, skb->len)`'i geri kopyalar, yani
+`data_end`'i aşan store skb tailroom'a düşer ve dönmez. İddia kernel kaynağı OKUNARAK
+kuruldu, GÖZLENEREK değil — sağlam verifier her OOB store'u REDDETTİĞİ için 0039 kanalın
+yalnız POZİTİF yarısını (paket içindeki byte geri gelir) çalıştırdı; negatif yarı
+("yazılmış ama pencere dışındaki byte GERÇEKTEN görünmez") hiç ölçülmedi. Sıradaki leg
+(store-location desync) "verifier X dedi, store Y'ye düştü" diyecek; o "Y'ye düştü"ye
+güvenmek için kanalın byte-hassas çözdüğünü ÖLÇMÜŞ olmak gerekiyor — yoksa bir desync
+bulgusu pekâlâ bir kanal artefaktı olabilir.
+
+### 1. Mekanizma — store'u değil PENCEREYİ oynat
+Buggy verifier olmadan OOB geometrisini üretmenin yolu: store'u dışarı taşımak yerine
+pencereyi içeri çekmek. `bpf_skb_change_tail()` store KOŞTUKTAN SONRA `skb->len`'i
+küçültüyor, böylece paket tamponuna FİİLEN yazılmış bir byte dönen uzunluğun dışında
+kalıyor — tam olarak bir OOB store'un geometrisi, ama yalnız KABUL EDİLMİŞ programlarla.
+Probe her koşumdan sonra kernel'in attr'a geri yazdığı gerçek `data_size_out`'u okuyor.
+
+### 2. Ölçüm (4 kol, hepsi kabul, `retval=0` → change_tail başarılı)
+| kol | in | store | trim | out_size | store_off | tail_zero |
+|---|---|---|---|---|---|---|
+| `win32` | 32 | 31 | — | **32** | 31 | 1 |
+| `win40` | 40 | 31 | — | **40** | 31 | 1 |
+| `trim.o19` | 32 | 19 | 20 | **20** | **19** | 1 |
+| `trim.o20` | 32 | 20 | 20 | **20** | **none** | 1 |
+
+Okunuşu: (a) pencere TAM paket (`out_size == skb->len`), (b) pencere sabit değil,
+`skb->len`'i TAKİP ediyor (32→40), (c) pencerenin SON byte'ı çözülüyor (o19 görünür),
+(d) **negatif yarı**: `index == out_size`'a fiilen yazılmış byte dönmüyor (o20 = `none`).
+o19 ile o20 arasındaki TEK fark bir byte'lık store offset'i — aynı şekil, aynı shrink —
+ve gözlenebilirlik zıt: kenar **byte-hassas**, ve "yok" konumsal, change_tail'in veriyi
+bozmasının artefaktı değil. `tail_zero=1` her kolda aynı iddianın öteki yönü: önceden
+sıfırlanmış çıkış tamponu `out_size`'ın ötesinde sıfır kalıyor, yani oradaki bir byte
+yanlışlıkla sentinel olarak da OKUNAMAZ.
+
+### 3. Sonuç
+0039'un "yok ⟹ OOB" okuması artık argüman değil ÖLÇÜM: yazılmış-ama-pencere-dışı byte
+gerçekten görünmez, pencere içindeki son byte gerçekten görünür, ve ikisi arasındaki
+sınır tam bir byte. Store-location desync ailesinin ön-koşulu karşılandı — "store Y'ye
+düştü" artık ölçülmüş bir kanal üzerinden söylenebilir. Tam suite 177 yeşil.

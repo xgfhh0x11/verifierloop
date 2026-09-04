@@ -2279,6 +2279,128 @@ static void run_generated_pktw_family(void) {
     }
 }
 
+// ---- packet-write observation-channel probe (--probe-pktw) ------------------
+// 0039's packet oracle rests on a CLAIM about the observation channel:
+// bpf_prog_test_run_skb copies back only [0, skb->len), so a store past data_end lands
+// in skb tailroom and is never returned — which is exactly why an absent or truncated
+// sentinel run is read as an OOB write. That claim was ARGUED from reading the kernel,
+// never MEASURED: on a sound verifier every OOB store is REJECTED, so 0039 never
+// observed a true OOB and never exercised the channel's negative half. The next leg
+// (store-location desync) will assert "the verifier proved X, the store landed at Y",
+// so the channel has to be shown to resolve bytes precisely BEFORE it is trusted to
+// locate a store — otherwise a desync finding could be a channel artefact.
+//
+// The probe measures the window using ACCEPTED programs only, by moving the WINDOW
+// instead of the store: bpf_skb_change_tail() shrinks skb->len AFTER the store has run,
+// so a byte that WAS written into the packet buffer ends up beyond the returned length —
+// the exact geometry of an OOB store, produced without needing a buggy verifier.
+//
+//   probe#pktw.win32     in=32, store at 31           -> out_size == 32, store visible
+//   probe#pktw.win40     in=40, same program          -> out_size tracks skb->len (40)
+//   probe#pktw.trim.o19  in=32, store at 19, tail->20 -> VISIBLE: last returned byte
+//   probe#pktw.trim.o20  in=32, store at 20, tail->20 -> ABSENT: first byte past it
+//
+// The last two are the byte-precise edge: identical shape, identical shrink, offsets one
+// apart, opposite observability — so "absent" is positional, not an artefact of
+// change_tail touching the data. `tail_zero` additionally reports that our pre-zeroed
+// output buffer is STILL zero beyond out_size, so bytes out there can never be misread
+// as a sentinel (the positive half of the same claim).
+
+static void run_pktw_probe_one(const char *name, const struct bpf_insn *insns, int n,
+                               int in_size) {
+    g_log[0] = '\0';
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = BPF_PROG_TYPE_SCHED_CLS;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)insns;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = sizeof(g_log);
+    attr.log_buf = (uint64_t)(unsigned long)g_log;
+
+    uint64_t t0 = now_ns();
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int e = errno;
+    uint64_t dt = now_ns() - t0;
+
+    printf("===PROG %s type=sched_cls ===\n", name);
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=%llu\n",
+           fd >= 0 ? "accept" : "reject", fd, fd >= 0 ? 0 : e,
+           (unsigned long long)dt);
+
+    if (fd >= 0) {
+        unsigned char in[RTW_VALUE_SIZE];
+        unsigned char out[RTW_VALUE_SIZE];
+        memset(in, 0, sizeof(in));
+        memset(out, 0, sizeof(out));
+        union bpf_attr t;
+        memset(&t, 0, sizeof(t));
+        t.test.prog_fd = fd;
+        t.test.data_in = (uint64_t)(unsigned long)in;
+        t.test.data_size_in = in_size;
+        t.test.data_out = (uint64_t)(unsigned long)out;
+        t.test.data_size_out = sizeof(out);
+        t.test.repeat = 1;
+        int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+        if (r < 0) {
+            printf("CHANNEL in_size=%d error=1 testrun_errno=%d\n", in_size, errno);
+        } else {
+            /* the kernel writes the ACTUAL output length back into the attr */
+            unsigned out_size = t.test.data_size_out;
+            int off = -1;
+            for (int b = 0; b < RTW_VALUE_SIZE; b++)
+                if (out[b] == RTW_SENTINEL) { off = b; break; }
+            int tail_zero = 1;
+            for (unsigned b = out_size; b < (unsigned)RTW_VALUE_SIZE; b++)
+                if (out[b] != 0) { tail_zero = 0; break; }
+            if (off < 0)
+                printf("CHANNEL in_size=%d out_size=%u retval=%u store_off=none tail_zero=%d\n",
+                       in_size, out_size, t.test.retval, tail_zero);
+            else
+                printf("CHANNEL in_size=%d out_size=%u retval=%u store_off=%d tail_zero=%d\n",
+                       in_size, out_size, t.test.retval, off, tail_zero);
+        }
+        close(fd);
+    }
+    printf("---LOG---\n%s\n---END---\n", g_log);
+}
+
+/* store 1 sentinel byte at `off` behind the usual `data + PKTW_M > data_end` proof;
+   when trim_to > 0, shrink skb->len to trim_to AFTERWARDS so the window moves under
+   an already-written byte. r1 still holds the ctx at the call site. */
+static void run_pktw_probe_prog(const char *name, int off, int in_size, int trim_to) {
+    struct bpf_insn ins[16];
+    int n = 0;
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_2, BPF_REG_1, 76);   /* r2 = data */
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_3, BPF_REG_1, 80);   /* r3 = data_end */
+    ins[n++] = BPF_MOV64_REG(BPF_REG_5, BPF_REG_2);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_5, PKTW_M);      /* r5 = data + M */
+    const int jc = n;
+    ins[n++] = BPF_JMP_REG(BPF_JGT, BPF_REG_5, BPF_REG_3, 0);  /* skip store if short */
+    ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_2, off, -1);          /* sentinel at data+off */
+    const int skip = n;
+    if (trim_to > 0) {
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_2, trim_to);          /* new_len */
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_3, 0);                /* flags */
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_skb_change_tail);    /* r0 = 0 on success */
+    } else {
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    }
+    ins[n++] = BPF_EXIT_INSN();
+    ins[jc].off = skip - jc - 1;
+    run_pktw_probe_one(name, ins, n, in_size);
+}
+
+static void run_probe_pktw_family(void) {
+    /* window geometry: out_size == skb->len, and it MOVES with the input length */
+    run_pktw_probe_prog("probe#pktw.win32",    PKTW_M - 1, PKTW_M,     0);
+    run_pktw_probe_prog("probe#pktw.win40",    PKTW_M - 1, PKTW_M + 8, 0);
+    /* byte-precise edge: same shrink, offsets one apart, opposite observability */
+    run_pktw_probe_prog("probe#pktw.trim.o19", 19,         PKTW_M,     20);
+    run_pktw_probe_prog("probe#pktw.trim.o20", 20,         PKTW_M,     20);
+}
+
 int main(int argc, char **argv) {
     // Two data sources, kept apart on purpose (different provenance):
     //   (no args) the fixed authoritative program set, pinned by tests
@@ -2341,6 +2463,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-rtw2") == 0) {
         run_generated_rtw2_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-pktw") == 0) {
+        run_probe_pktw_family();
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--gen-pktw") == 0) {
