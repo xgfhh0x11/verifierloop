@@ -240,6 +240,72 @@ both volume captures.)*
 
 ---
 
+## OI-13 — Which loop mechanism the first back-edge family targets
+
+- **Status:** OPEN but DECIDABLE — the source reconnaissance below was done 2026-09-05
+  (after devlog 0042) so the next leg can open with a decision instead of a question.
+  Nothing is built yet.
+- **Why it needs deciding first:** eBPF has three unrelated loop mechanisms and they
+  trigger DIFFERENT verifier code paths. Picking wrong means the family never touches
+  the surface it was built for — the failure mode [[oracle-times-input]] warns about,
+  one level up.
+
+### The three, as the tree actually has them
+
+**1. `may_goto` — `BPF_JMP | BPF_JCOND`, `src_reg = BPF_MAY_GOTO`.**
+Encoding is one raw instruction and nothing else: `BPF_JCOND` is `0xe0`,
+`BPF_MAY_GOTO` is `0`, and `verifier.c:19075` requires `dst_reg == 0 && imm == 0`, so
+the insn is `{.code = BPF_JMP|BPF_JCOND, .dst_reg = 0, .src_reg = 0, .off = <target>,
+.imm = 0}`. No BTF, no kfunc, no subprog, no map. NOT in the distro uapi header we
+compile against, so the harness must `#ifndef`-define both constants — the same pattern
+0042 already uses for `BPF_F_TEST_REG_INVARIANTS`.
+What it exercises (`verifier.c:16923`): the verifier queues the fall-through as a new
+state, bumps `queued_st->may_goto_depth`, and — the interesting part — calls
+`widen_imprecise_scalars(env, prev_st, queued_st)` against the previous entry at the
+same instruction found by `find_prev_entry`. That is a DELIBERATE over-approximation
+inserted to force convergence, sitting directly on top of precision marking and state
+pruning. Note also a runtime wrinkle for later: the budget has a timed variant
+(`bpf_check_timed_may_goto`, `bpf_jit_supports_timed_may_goto`), which matters only if
+the family is ever executed rather than just loaded.
+
+**2. Open-coded iterators — `bpf_iter_*` kfuncs, `process_iter_next_call`
+(`verifier.c:8043`).**
+A real back-edge simulated by forking ACTIVE/DRAINED iterator states and relying on
+state convergence to terminate. This is the mechanism most entangled with pruning, and
+the kernel says so in its own words (`states.c`, in `bpf_is_state_visited`): *"BPF
+open-coded iterators loop detection is special. states_maybe_looping() logic is too
+simplistic in detecting states that *might* be equivalent, because it doesn't know
+about ID remapping, so don't even perform it."* A special case in the pruning path,
+justified by an admitted simplification, is the densest target on this list. Cost:
+kfunc calls need `BPF_PSEUDO_KFUNC_CALL` with a BTF id resolved at load time — real new
+machinery for a raw-insn harness with no libbpf.
+
+**3. `bpf_loop` helper — `BPF_FUNC_loop`, `set_loop_callback_state`
+(`verifier.c:10118`).**
+Not a back-edge at all: the verifier does not simulate the loop, it verifies the
+CALLBACK body once as a separate frame with a synthesized state. A different axis
+(callback state and precision across frames), worth its own leg, but it does not answer
+"our first program with a back-edge". Cost: subprogs plus a `BPF_PSEUDO_FUNC`
+relocation for the callback pointer.
+
+### Recommendation: `may_goto` first, iterators second, `bpf_loop` third
+
+`may_goto` is the only one that yields a genuine back-edge at ZERO new harness cost,
+and what it lands on — `widen_imprecise_scalars` + `find_prev_entry` +
+`may_goto_depth` — is a convergence over-approximation, which is precisely the shape
+0042's kernel-vs-kernel differential was built to attack. The instrument transfers
+unchanged: same three loads, same directional predicate, same `freq_states > base_states`
+denominator. It is also the newest of the three and therefore the least fuzzed.
+Iterators are the higher-value target and should be second, funded by whatever the
+`may_goto` leg teaches about back-edge program shapes; their kfunc/BTF machinery is
+worth paying for once, not as the first step into a program shape we have never emitted.
+
+**Observability precondition carries over unchanged** ([[kernel-vs-kernel-differential]]):
+a back-edge family only has teeth if the loop-carried state differs across iterations in
+a way the convergence step must judge, AND a downstream access's safety depends on it.
+A loop whose body leaves the deciding register unchanged is a tautology arm and must be
+excluded, the same way the pure-tnum arm was excluded from `--gen-prune`.
+
 ## OI-12 — Agni's coverage window is unverified, and it is the reason we are leaving the ALU axis
 
 - **Status:** OPEN, raised 2026-09-05 (devlog 0042).
