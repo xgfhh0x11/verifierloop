@@ -60,6 +60,7 @@ impl RecordParser for DemoParser {
                     helper_arg_observations: Vec::new(),
                     runtime_samples: Vec::new(),
                     store_site: None,
+                    prune_probe: None,
                     helper_arg_violations: if accepted {
                         Vec::new()
                     } else {

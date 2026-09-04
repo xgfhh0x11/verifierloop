@@ -2653,6 +2653,300 @@ static void run_probe_pktw_family(void) {
     run_pktw_probe_prog("probe#pktw.trim.o20", 20,         PKTW_M,     20);
 }
 
+
+// ---- pruning-soundness differential (--gen-prune) ---------------------------
+// A NEW ORACLE CLASS: kernel-vs-kernel. Every earlier leg compares the verifier
+// against something WE compute (an invariant, a bound, a runtime observation). This
+// one compares the verifier against ITSELF under a flag the kernel provides for
+// exactly this purpose, so there is no bound parsing and no oracle of ours to be
+// wrong.
+//
+// BPF_F_TEST_STATE_FREQ (states.c: `force_new_state = env->test_state_freq || ...`,
+// then `add_new_state = force_new_state`) makes the verifier record a checkpoint at
+// EVERY instruction. The default heuristic only checkpoints after >= 2 jumps AND
+// >= 8 instructions. So the flag does NOT disable pruning -- it makes pruning MORE
+// aggressive, by handing regsafe()/states_equal() far more candidate pairs.
+//
+// That fixes the direction of the finding:
+//   flagged ACCEPT + default REJECT  ->  a path that produces the rejection was
+//                                        pruned away: a PRUNING SOUNDNESS bug.
+//   flagged REJECT + default ACCEPT  ->  almost certainly a resource artefact
+//                                        (BPF_COMPLEXITY_LIMIT_INSNS, "BPF program
+//                                        is too large", -E2BIG), classified by the
+//                                        reject reason and NOT counted as a finding.
+// A difference in state COUNT is not a finding either -- it is the denominator that
+// proves the flag engaged at all. Identical counts would make a zero finding count
+// meaningless, exactly like store_locations_checked in 0041.
+//
+// For a wrong prune to be OBSERVABLE the program needs three things: convergent
+// control flow, two incoming states that regsafe must genuinely judge (not identical),
+// and a downstream access whose safety DEPENDS on which path was taken. The last one
+// is what turns a wrong prune into a decision flip; without it the bug is silent.
+//
+// Shape: two attacker values (offset source r6, branch selector r9) are read from one
+// map value, so the split does NOT constrain the offset -- each path's state for r6
+// comes purely from its own shaper. The paths converge and store 1 byte at
+// map_value + r6 + 56, which is in bounds iff umax(r6) <= 7. The verifier explores the
+// FALL-THROUGH first (check_cond_jmp_op pushes the jump target for later), so the
+// fall-through shaper is the one that records the checkpoint at the merge -- which is
+// why the ORDER is an axis and not an accident.
+/* Not in every distro's uapi header yet; the value is fixed ABI (uapi/linux/bpf.h). */
+#ifndef BPF_F_TEST_STATE_FREQ
+#define BPF_F_TEST_STATE_FREQ (1U << 3)
+#endif
+#ifndef BPF_F_TEST_REG_INVARIANTS
+#define BPF_F_TEST_REG_INVARIANTS (1U << 7)
+#endif
+
+#define PRUNE_STORE_OFF 56   /* 1-byte store is in bounds iff umax(r6) <= 7 */
+
+static char g_log2[256 * 1024];
+
+enum prune_shaper {
+    SH_N7,   /* r6 &= 7          -> [0,7]        SAFE  */
+    SH_T6,   /* (r6 &= 3) << 1   -> {0,2,4,6}    SAFE, tnum-refined inside [0,7] */
+    SH_W63,  /* r6 &= 63         -> [0,63]       unsafe, strict superset of [0,7] */
+    SH_M39,  /* (r6 &= 7) | 32   -> [32,39]      unsafe, DISJOINT from [0,7] */
+    SH_O19,  /* (r6 &= 15) + 4   -> [4,19]       unsafe, OVERLAPS [0,7] */
+    SH_S56,  /* (r6 &= 7) << 3   -> {0,8,..,56}  unsafe, same umin, holey tnum */
+    SH_A32,  /* r6 &= 63 (32-bit)-> [0,63]       unsafe, via the alu32 path */
+};
+
+static const char *prune_shaper_name(enum prune_shaper s) {
+    switch (s) {
+    case SH_N7:  return "n7";
+    case SH_T6:  return "t6";
+    case SH_W63: return "w63";
+    case SH_M39: return "m39";
+    case SH_O19: return "o19";
+    case SH_S56: return "s56";
+    case SH_A32: return "a32";
+    }
+    return "?";
+}
+
+static int emit_prune_shaper(struct bpf_insn *ins, int n, enum prune_shaper s) {
+    switch (s) {
+    case SH_N7:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7); break;
+    case SH_T6:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 3);
+        ins[n++] = BPF_ALU64_IMM(BPF_LSH, BPF_REG_6, 1); break;
+    case SH_W63:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 63); break;
+    case SH_M39:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7);
+        ins[n++] = BPF_ALU64_IMM(BPF_OR, BPF_REG_6, 32); break;
+    case SH_O19:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 15);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_6, 4); break;
+    case SH_S56:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7);
+        ins[n++] = BPF_ALU64_IMM(BPF_LSH, BPF_REG_6, 3); break;
+    case SH_A32:
+        ins[n++] = BPF_ALU32_IMM(BPF_AND, BPF_REG_6, 63); break;
+    }
+    return n;
+}
+
+/* Is a store at +PRUNE_STORE_OFF in bounds under this shaper's range? */
+static int prune_shaper_is_safe(enum prune_shaper s) {
+    return s == SH_N7 || s == SH_T6;
+}
+
+struct prune_load {
+    int accept;
+    int err;
+    unsigned long states;
+    const char *reason;   /* none | verdict | too_large | too_many_states | efault */
+};
+
+static struct prune_load prune_load_once(const struct bpf_insn *insns, int n,
+                                         uint32_t flags, char *logbuf, size_t logsz) {
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)insns;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = logsz;
+    attr.log_buf = (uint64_t)(unsigned long)logbuf;
+    attr.prog_flags = flags;
+    logbuf[0] = '\0';
+
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int e = errno;
+
+    struct prune_load r;
+    r.accept = fd >= 0;
+    r.err = fd >= 0 ? 0 : e;
+    /* `processed N insns (limit ...) max_states_per_insn M total_states T ...`
+       -- take the LAST occurrence: one summary is printed per subprog. */
+    r.states = 0;
+    for (const char *p = logbuf; (p = strstr(p, "total_states ")) != NULL; p++)
+        r.states = strtoul(p + strlen("total_states "), NULL, 10);
+    if (fd >= 0)
+        r.reason = "none";
+    else if (strstr(logbuf, "BPF program is too large"))
+        r.reason = "too_large";           /* BPF_COMPLEXITY_LIMIT_INSNS, not a finding */
+    else if (strstr(logbuf, "too many states"))
+        r.reason = "too_many_states";     /* BPF_COMPLEXITY_LIMIT_STATES, not a finding */
+    else if (e == EFAULT)
+        r.reason = "efault";              /* REG INVARIANTS VIOLATION path */
+    else
+        r.reason = "verdict";             /* the verifier actually decided */
+    if (fd >= 0)
+        close(fd);
+    return r;
+}
+
+static void run_prune_prog(enum prune_shaper fall, enum prune_shaper taken,
+                           int use_stack, int idx, int map_in, int map_out) {
+    struct bpf_insn ins[64];
+    int n = 0;
+    int jexit[4]; int nx = 0;
+    int jsplit, jmerge;
+
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);                /* key = 0 */
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);         /* offset source  */
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_9, BPF_REG_0, 4);         /* branch selector */
+
+    /* The split tests r9, never r6: the two paths' states for the offset register
+       come purely from their own shapers, not from the branch condition. */
+    jsplit = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_9, 0, 0);
+
+    /* fall-through path -- explored FIRST, so this is the state that checkpoints */
+    n = emit_prune_shaper(ins, n, fall);
+    if (use_stack) {
+        ins[n++] = BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_6, -16);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_6, 0);
+    }
+    jmerge = n; ins[n++] = BPF_JMP_IMM(BPF_JA, 0, 0, 0);
+
+    /* taken path */
+    ins[jsplit].off = n - jsplit - 1;
+    n = emit_prune_shaper(ins, n, taken);
+    if (use_stack) {
+        ins[n++] = BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_6, -16);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_6, 0);
+    }
+
+    /* merge */
+    ins[jmerge].off = n - jmerge - 1;
+    if (use_stack)
+        ins[n++] = BPF_LDX_MEM(BPF_DW, BPF_REG_6, BPF_REG_10, -16);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_0);
+    ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_7, BPF_REG_6);
+    const int store_insn = n;
+    ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_7, PRUNE_STORE_OFF, -1);   /* the deciding access */
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    const int exit0 = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    for (int i = 0; i < nx; i++)
+        ins[jexit[i]].off = exit0 - jexit[i] - 1;
+
+    /* Three loads of the SAME program: default, state-freq, reg-invariants. */
+    struct prune_load base = prune_load_once(ins, n, 0, g_log, sizeof(g_log));
+    struct prune_load freq = prune_load_once(ins, n, BPF_F_TEST_STATE_FREQ,
+                                             g_log2, sizeof(g_log2));
+    struct prune_load inv  = prune_load_once(ins, n, BPF_F_TEST_REG_INVARIANTS,
+                                             g_log2, sizeof(g_log2));
+
+    char name[96];
+    snprintf(name, sizeof(name), "genprune#%s%s-%s#%03d",
+             use_stack ? "stk." : "", prune_shaper_name(fall),
+             prune_shaper_name(taken), idx);
+
+    printf("===PROG %s type=socket_filter ===\n", name);
+    /* The block's RESULT is the DEFAULT load, so every existing stage keeps working. */
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+           base.accept ? "accept" : "reject", base.accept ? 1 : -1, base.err);
+    /* Generator provenance: what each path proves, and where the deciding store is. */
+    printf("STORE insn=%d reg=7 off=%d size=1\n", store_insn, PRUNE_STORE_OFF);
+    /* NOTE the token names: `*_verdict=` and NOT `*_decision=`. The pipeline and its
+       measurement helpers match `decision=` as a SUBSTRING, so `base_decision=accept`
+       would be counted as a fourth program decision. Same collision class as
+       `find("off=")` matching inside `var_off=(...)` in 0041 -- a naming choice, made
+       once, is cheaper than a boundary-aware matcher everywhere downstream. */
+    printf("PRUNE fall=%s taken=%s fall_safe=%d taken_safe=%d stack=%d"
+           " base_verdict=%s base_errno=%d base_states=%lu base_reason=%s"
+           " freq_verdict=%s freq_errno=%d freq_states=%lu freq_reason=%s"
+           " inv_verdict=%s inv_errno=%d inv_reason=%s\n",
+           prune_shaper_name(fall), prune_shaper_name(taken),
+           prune_shaper_is_safe(fall), prune_shaper_is_safe(taken), use_stack,
+           base.accept ? "accept" : "reject", base.err, base.states, base.reason,
+           freq.accept ? "accept" : "reject", freq.err, freq.states, freq.reason,
+           inv.accept ? "accept" : "reject", inv.err, inv.reason);
+    printf("---LOG---\n%s\n---END---\n", g_log);
+}
+
+static void run_generated_prune_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 8; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = RTW_VALUE_SIZE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
+        printf("===PROG genprune type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    /* The axis is the RELATION between the two merging states, crossed with the ORDER
+       (which one checkpoints first). `dang.*` puts the SAFE state on the fall-through,
+       so a wrong prune of the unsafe path would flip the decision to accept -- the
+       only arms where a pruning bug is observable. `ctrl.*` is the mirror: the unsafe
+       state checkpoints first and the safe one is legitimately subsumed, so a prune
+       there is SOUND and proves the mechanism engages. `safe.*` accepts on both paths.
+       A pure-tnum arm (same interval, different tnum) is deliberately ABSENT: the
+       store's safety depends on umax alone, so no tnum difference can flip the
+       decision -- it could only be a vacuous arm. */
+    const struct { enum prune_shaper fall, taken; int stack; } arms[] = {
+        { SH_N7,  SH_N7,  0 },   /* safe.eq    -- identical states, trivial prune */
+        { SH_T6,  SH_N7,  0 },   /* safe.tnum  -- both safe, refined vs interval  */
+        { SH_N7,  SH_W63, 0 },   /* dang.sup   -- superset arrives second         */
+        { SH_N7,  SH_M39, 0 },   /* dang.disj  -- disjoint                        */
+        { SH_N7,  SH_O19, 0 },   /* dang.ovl   -- overlapping                     */
+        { SH_N7,  SH_S56, 0 },   /* dang.shift -- same umin, holey tnum           */
+        { SH_N7,  SH_A32, 0 },   /* dang.alu32 -- 32-bit shaping path             */
+        { SH_T6,  SH_W63, 0 },   /* dang.tnum  -- refined first, wide second      */
+        { SH_W63, SH_N7,  0 },   /* ctrl.sup   -- sound prune (subset second)     */
+        { SH_M39, SH_N7,  0 },   /* ctrl.disj                                     */
+        { SH_O19, SH_N7,  0 },   /* ctrl.ovl                                      */
+        { SH_S56, SH_N7,  0 },   /* ctrl.shift                                    */
+        { SH_A32, SH_N7,  0 },   /* ctrl.alu32                                    */
+        { SH_W63, SH_T6,  0 },   /* ctrl.tnum                                     */
+        { SH_N7,  SH_W63, 1 },   /* stk.dang   -- the judge is stacksafe, not regsafe */
+        { SH_W63, SH_N7,  1 },   /* stk.ctrl                                      */
+    };
+    int idx = 0;
+    for (unsigned i = 0; i < sizeof(arms) / sizeof(arms[0]); i++)
+        run_prune_prog(arms[i].fall, arms[i].taken, arms[i].stack, idx++, map_in, map_out);
+    close(map_in);
+    close(map_out);
+}
+
+
 int main(int argc, char **argv) {
     // Two data sources, kept apart on purpose (different provenance):
     //   (no args) the fixed authoritative program set, pinned by tests
@@ -2727,6 +3021,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-pktw") == 0) {
         run_generated_pktw_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-prune") == 0) {
+        run_generated_prune_family();
         return 0;
     }
 

@@ -85,6 +85,7 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
     let mut log: Vec<&str> = Vec::new();
     let mut runtime_lines: Vec<&str> = Vec::new();
     let mut store_line: Option<&str> = None;
+    let mut prune_line: Option<&str> = None;
 
     for line in repaired.iter().map(|l| l.as_ref()) {
         if line.starts_with("RESULT ") {
@@ -93,6 +94,8 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
             runtime_lines.push(line);
         } else if line.starts_with("STORE ") {
             store_line = Some(line);
+        } else if line.starts_with("PRUNE ") {
+            prune_line = Some(line);
         } else if line.starts_with("---LOG---") {
             in_log = true;
         } else if line.starts_with("---END---") {
@@ -156,6 +159,7 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
         helper_arg_violations: Vec::new(),        // legacy synthetic path
         runtime_samples: parse_runtime_samples(&runtime_lines),
         store_site: store_line.and_then(parse_store_site),
+        prune_probe: prune_line.and_then(parse_prune_probe),
     };
 
     // Record-level parse notes: partial-parse caveats (lower confidence, NOT anomalies).
@@ -737,6 +741,90 @@ fn parse_store_site(line: &str) -> Option<metrics::core::StoreSite> {
         base_reg: base_reg?,
         insn_off: insn_off?,
         size: size?,
+    })
+}
+
+/// Parse the `PRUNE ...` line: the same program's verdict under three load flag
+/// settings, declared by the GENERATOR that ran them.
+///
+/// The verdict tokens are `*_verdict=`, deliberately NOT `*_decision=`: the block's
+/// own decision is matched as the substring `decision=` in several places, so a
+/// `base_decision=accept` token would be counted as an extra program decision. Same
+/// collision class as `find("off=")` matching inside `var_off=(...)`.
+fn parse_prune_probe(line: &str) -> Option<metrics::core::PruneProbe> {
+    let mut fall = None;
+    let mut taken = None;
+    let mut fall_safe = None;
+    let mut taken_safe = None;
+    let mut stack = false;
+    let mut base_accept = None;
+    let mut base_errno = 0i64;
+    let mut base_states = 0u64;
+    let mut base_reason = String::new();
+    let mut freq_accept = None;
+    let mut freq_errno = 0i64;
+    let mut freq_states = 0u64;
+    let mut freq_reason = String::new();
+    let mut inv_accept = None;
+    let mut inv_errno = 0i64;
+    let mut inv_reason = String::new();
+    let verdict = |v: &str| match v {
+        "accept" => Some(true),
+        "reject" => Some(false),
+        _ => None,
+    };
+    for tok in line.split_whitespace() {
+        if let Some(v) = tok.strip_prefix("fall=") {
+            fall = Some(v.to_string());
+        } else if let Some(v) = tok.strip_prefix("taken=") {
+            taken = Some(v.to_string());
+        } else if let Some(v) = tok.strip_prefix("fall_safe=") {
+            fall_safe = v.parse::<i64>().ok().map(|n| n != 0);
+        } else if let Some(v) = tok.strip_prefix("taken_safe=") {
+            taken_safe = v.parse::<i64>().ok().map(|n| n != 0);
+        } else if let Some(v) = tok.strip_prefix("stack=") {
+            stack = v.parse::<i64>().map(|n| n != 0).unwrap_or(false);
+        } else if let Some(v) = tok.strip_prefix("base_verdict=") {
+            base_accept = verdict(v);
+        } else if let Some(v) = tok.strip_prefix("base_errno=") {
+            base_errno = v.parse().unwrap_or(0);
+        } else if let Some(v) = tok.strip_prefix("base_states=") {
+            base_states = v.parse().unwrap_or(0);
+        } else if let Some(v) = tok.strip_prefix("base_reason=") {
+            base_reason = v.to_string();
+        } else if let Some(v) = tok.strip_prefix("freq_verdict=") {
+            freq_accept = verdict(v);
+        } else if let Some(v) = tok.strip_prefix("freq_errno=") {
+            freq_errno = v.parse().unwrap_or(0);
+        } else if let Some(v) = tok.strip_prefix("freq_states=") {
+            freq_states = v.parse().unwrap_or(0);
+        } else if let Some(v) = tok.strip_prefix("freq_reason=") {
+            freq_reason = v.to_string();
+        } else if let Some(v) = tok.strip_prefix("inv_verdict=") {
+            inv_accept = verdict(v);
+        } else if let Some(v) = tok.strip_prefix("inv_errno=") {
+            inv_errno = v.parse().unwrap_or(0);
+        } else if let Some(v) = tok.strip_prefix("inv_reason=") {
+            inv_reason = v.to_string();
+        }
+    }
+    Some(metrics::core::PruneProbe {
+        fall: fall?,
+        taken: taken?,
+        fall_safe: fall_safe?,
+        taken_safe: taken_safe?,
+        stack,
+        base_accept: base_accept?,
+        base_errno,
+        base_states,
+        base_reason,
+        freq_accept: freq_accept?,
+        freq_errno,
+        freq_states,
+        freq_reason,
+        inv_accept: inv_accept?,
+        inv_errno,
+        inv_reason,
     })
 }
 

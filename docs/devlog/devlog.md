@@ -3433,3 +3433,137 @@ iddianın parçası), vakumsuzluk guard'ı, artı iki yeni tanık testi: tanığ
 tanığın kendisi çelişik olurdu ve gerçek bir OOB'yi susturabilirdi) ve tanığın
 AYIRT ETMESİ (aynı eksik sentinel, `executed=1` ile OOB olarak ateşliyor, `executed=0`
 ile ateşlemiyor). Workspace 186 yeşil.
+
+---
+
+## 0042 — Pruning-soundness differential (`--gen-prune`): kernel-vs-kernel, ve "neden 0 divergence"in kök nedeni
+
+### 1. Teşhis — niye altı bacak boyunca hiçbir şey bulamadık
+
+Reviewer'ın sorusu ("eBPF bu kadar alevli bir yüzeyken nasıl hâlâ bir logic bug yok")
+üç sebeple cevaplandı, üçü de ağaçta/literatürde doğrulandı.
+
+**(i) Ω oracle'ımızı kernel zaten içeride koşturuyor.** `reg_bounds_sanity_check()`
+(`verifier.c:2189`) birebir bizim invariant A/B/C'miz:
+```c
+if (range_bounds_violation(reg))        msg = "range bounds violation";
+if (const_tnum_range_mismatch(reg))     msg = "const tnum out of sync with range bounds";
+if (const_tnum_range_mismatch_32(reg))  msg = "const subreg tnum out of sync ...";
+```
+Ve her ALU op'ta (`:16060`), her branch'in dört register'ında (`:16621-24`), her helper
+retval'inde (`:10507`), her LDX'te (`:6703`) çağrılıyor. Desync olursa `verifier_bug()`
+ateşliyor ve `__mark_reg_unbounded()` ile toparlıyor; `BPF_F_TEST_REG_INVARIANTS` (1<<7)
+onu sert `-EFAULT`'a çeviriyor. Yani 0025–0035'in tamamı, kernel'in her instruction'da
+kendi kendine koşturduğu bir assertion'ı dışarıdan yakalamaya çalışıyordu. Bu, ikinci
+pivotu ("consistency oracle'ları consistent-but-wrong'u kaçırır") keskinleştiriyor:
+sadece kaçırmıyorlar — YAKALADIKLARI sınıf da zaten in-tree korunuyor. Consistency
+oracle sınıfı iki yönden de kısır.
+
+**(ii) Aynı eksen akademik olarak da dövülmüş.** Tek-instruction soyut transfer
+fonksiyonları Agni (CAV'23) tarafından SMT'ye çıkarılıp kontrol edilmiş, tnum
+toplama/çarpma soundness'ı ayrıca kanıtlanmış (CGO'22). *(Hafızadan; makalelerin
+varlığından eminim, güncel CI entegrasyonundan değil — OI'ye "Agni hangi kernel
+sürümünü kapsıyor" notu düşüldü, çünkü kanıtlanmış bir sürümün ardından regresyon
+çıkabilir.)*
+
+**(iii) Asıl sebep: input uzayı şekil olarak fakir.** Son 5 yılın bug listesi state
+pruning (`regsafe`/`states_equal`), precision backtracking, callback/loop doğrulama,
+pointer tip geçişleri, speculative yollar. Ortak yapıları: bug İKİ özelliğin
+etkileşimini + ya döngü ya callback ya tam bir pruning çifti gerektiriyor. Biz 15–242
+düz-çizgi program üretiyorduk. `oracle × input` kuralının çarpması: altı bacak boyunca
+oracle büyüdü, input aç kaldı. Kernel'in kendi selftest'leri haritayı bedava veriyor —
+bu bayrakları kimler kullanıyor: `precise.c`, `calls.c`, `iters_looping.c`,
+`verifier_iterating_callbacks.c`, `verifier_live_stack.c`.
+
+### 2. Yeni oracle sınıfı — kernel vs kernel
+
+Bu bacakta karşılaştırmanın İKİ tarafı da kernel'in aynı program üzerindeki kendi
+kararı. Parse ettiğimiz bir bound yok, hesapladığımız bir değer yok — yani yanlış
+olabilecek bir oracle'ımız yok. (0041 tam olarak iki tane böyle bug taşıdı.)
+
+**Yön düzeltmesi — kaynak beni düzeltti.** Önce "TEST_STATE_FREQ pruning'i devre dışı
+bırakır" demiştim; `states.c:1248` tersini söylüyor:
+```c
+force_new_state = env->test_state_freq || bpf_is_force_checkpoint(env, insn_idx) || ...
+add_new_state = force_new_state;
+if (jmps_processed - prev >= 2 && insn_processed - prev >= 8) add_new_state = true;
+```
+Varsayılan sezgisel kural checkpoint'i ancak ≥2 jump VE ≥8 insn sonra koyuyor; bayrak
+HER instruction'da zorluyor. Yani pruning daha **agresif** oluyor, `regsafe` çok daha
+fazla aday çift yargılıyor. Bu, bulgunun yönünü belirliyor:
+
+- **bayraklı ACCEPT + varsayılan REJECT** → reddi üreten yol budandı. Bunu ancak
+  unsound bir `regsafe` yapar. **Bulgu bu.**
+- **bayraklı REJECT + varsayılan ACCEPT** → fazladan checkpoint state sayısını
+  şişiriyor, `BPF_COMPLEXITY_LIMIT_INSNS` (`verifier.c:18348`, "BPF program is too
+  large", `-E2BIG`) devreye girebiliyor. Enstrümanın artefaktı: red sebebine göre
+  sınıflandırılıyor, ayrı sayılıyor, bulgu sayılmıyor. Kaynak-limiti OLMAYAN bir ters
+  flip ise gerçek bir anlaşmazlık ve over-rejection olarak raporlanıyor — tooth 2'nin
+  tüm yönü aklamasını engelleyen şey bu.
+
+**Payda.** Bir çift ancak bayrak state uzayını DEĞİŞTİRDİYSE sayılıyor
+(`freq_states > base_states`). Aynı state'leri gezen iki koşunun anlaşması pruning
+hakkında kanıt değil, hiçbir şeyin denenmediğinin kanıtı. Reviewer "state sayısı farkı
+bulgu değil" derken haklı, ama onu ATMAK yerine payda yapmak gerekiyor — 0041'in
+`store_locations_checked` disiplininin aynısı.
+
+**Üçüncü kanal, bir bayrak biti.** `BPF_F_TEST_REG_INVARIANTS` her load'a ekleniyor:
+varsayılanla temiz yüklenip bayrakla EFAULT veren program, dışarıdan asla
+göremeyeceğimiz bir iç tutarsızlık.
+
+### 3. Input — yanlış prune'un GÖZLEMLENEBİLİR olması için üç şart
+
+(a) birleşen kontrol akışı, (b) `regsafe`'in gerçekten yargılamak zorunda kaldığı iki
+farklı gelen state, (c) hangi yoldan gelindiğine BAĞLI güvenliği olan bir downstream
+erişim. Üçüncüsü yoksa yanlış prune kararı değiştirmez, bug sessiz kalır.
+
+İki attacker değeri tek map value'dan okunuyor (offset kaynağı r6, branch seçici r9),
+böylece **split r6'yı kısıtlamıyor** — her yolun r6 state'i yalnızca kendi shaper'ından
+geliyor. Yollar birleşip `map_value + r6 + 56`'ya 1 byte yazıyor; sınır içi ⟺
+`umax(r6) <= 7`. Verifier FALL-THROUGH'u önce geziyor (`check_cond_jmp_op` jump
+hedefini stack'e itiyor), yani checkpoint'i fall-through kaydediyor — ORDER bu yüzden
+bir eksen, kaza değil.
+
+Shaper'lar: `n7`=[0,7] güvenli, `t6`={0,2,4,6} güvenli (tnum-refined), `w63`=[0,63],
+`m39`=[32,39] (ayrık), `o19`=[4,19] (örtüşen), `s56`={0,8,..,56} (aynı umin, delikli
+tnum), `a32`=[0,63] 32-bit yoldan. 16 program: 2 `safe.*` + 6 `dang.*` (güvenli olan
+önce checkpoint'liyor → yanlış prune kararı flip ederdi) + 6 `ctrl.*` (ayna: geniş olan
+önce, dar olan meşru şekilde kapsanıyor → sound prune, mekanizmanın çalıştığının kanıtı)
++ 2 `stk.*` (fark register'da değil STACK SLOT'ta → yargıç `regsafe` değil `stacksafe`).
+
+**Saf-tnum kolu bilerek YOK:** store'un güvenliği yalnız `umax`'a bağlı, dolayısıyla bir
+tnum farkı kararı flip EDEMEZ — vakum bir kol olurdu. (0039'un tautology dışlama
+kuralının aynısı.)
+
+### 4. Sonuç
+
+**16 program, 2 accept / 14 reject** (türetmeyle birebir: accept ⟺ iki yol da güvenli),
+**`prune_pairs_checked=16`, `finding_count=0`, `prune_resource_artifacts=0`,
+`parser_unrecognized=0`.** Üç yükleme de (varsayılan / state-freq / reg-invariants) her
+programda aynı kararı verdi, ve bayrak HER programda state uzayını büyüttü
+(base 1–3 → freq 4–7), yani deney gerçekten koştu.
+
+Dört diş de ateşliyor: (1) ekilen bayraklı-accept + varsayılan-reject →
+`prune_soundness_desync` bir kez, (2) ekilen `freq_reason=too_large` ters flip → bulgu
+DEĞİL ama artefakt olarak sayılıyor, (3) kaynak-sebepsiz ters flip →
+`prune_verdict_disagreement`, (4) ekilen `inv_reason=efault` →
+`reg_invariants_violation`. Artı payda guard'ı: `freq_states == base_states` olan çift
+paydadan düşüyor.
+
+### 5. Yol boyunca yakalanan: token çarpışması, ikinci kez
+
+İlk capture `records=16 (accept=8 reject=56)` verdi — 64 = 16×4. Sebep:
+`measure_log.rs` `text.matches("decision=accept")` diye ALT-DİZGİ sayıyor, ve benim
+`base_decision=accept` token'ım onu içeriyor. **0041'deki `find("off=")`'ın
+`var_off=(...)` içinde eşleşmesinin birebir aynı sınıfı, iki leg arayla.** İki taraftan
+da düzeltildi: token'lar `*_verdict=` olarak yeniden adlandırıldı (çarpışamayacak isim,
+bir kez seçilir), ve sayaç `RESULT decision=` diye çapalandı. Ders: bu projede yeni bir
+çıktı satırı eklerken mevcut alt-dizgi konvansiyonlarına karşı isim çakışması kontrolü
+artık rutin olmalı.
+
+Pinlendi: `crates/pipeline/tests/prune_calibration.rs` (9 test), fixture
+`fixtures/volume/gen-prune-16.log`; runner `scripts/run-prune.sh`. Workspace 195 yeşil.
+
+**Sıradaki:** loop/iterator input'ları (kernel'in kendi tehlike haritası oraya işaret
+ediyor: `iters_looping.c`, `verifier_iterating_callbacks.c`), sonra SMT — ama `regsafe`'e
+nişanlı (γ(new) ⊆ γ(old) refinement iddiası), ALU transfer fonksiyonlarına değil.

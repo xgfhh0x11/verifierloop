@@ -219,6 +219,59 @@ ateşler, (4) tanık AYIRT ediyor: aynı eksik sentinel `executed=1` ile OOB ate
 (`umax-umin<=56`). Pinlendi: `store_location_calibration.rs` (9 test), fixture
 `fixtures/volume/gen-loc-15.log`; runner `scripts/run-loc.sh`.
 
+### 2c — Pruning-soundness differential (`--gen-prune`, devlog 0042) — DONE, YENİ ORACLE SINIFI
+
+İlk **kernel-vs-kernel** bacağı: karşılaştırmanın iki tarafı da kernel'in aynı program
+üzerindeki kendi kararı, yani parse edilen bir bound ya da hesaplanan bir değer YOK —
+yanlış olabilecek bir oracle'ımız yok (0041 tam olarak iki tane böyle bug taşımıştı).
+Ve ilk kez **state pruning**e nişanlı: `regsafe`/`states_equal` (`states.c:507`, `:980`)
+iki soyut state arasındaki İLİŞKİYİ yargılıyor; ne iç-tutarlılık ne runtime-değer
+oracle'ı oraya ulaşabiliyor.
+
+**Bu bacağın var olma nedeni = "neden 0 divergence"in kök nedeni.**
+`reg_bounds_sanity_check()` (`verifier.c:2189`) birebir bizim invariant A/B/C'miz
+(`range_bounds_violation`, `const_tnum_range_mismatch`, `const_tnum_range_mismatch_32`)
+ve her ALU op'ta / her branch'in dört register'ında / her helper retval'inde / her
+LDX'te koşuyor. Yani 0025–0035 boyunca kernel'in kendi kendine koşturduğu bir
+assertion'ı dışarıdan yakalamaya çalışmışız. Consistency oracle sınıfı iki yönden kısır:
+kaçırdığı sınıf runtime'a gidiyor, yakaladığı sınıf zaten in-tree korunuyor.
+
+**Enstrüman ve YÖN.** `BPF_F_TEST_STATE_FREQ` pruning'i kapatmıyor, AÇIYOR
+(`states.c:1248`: `force_new_state = env->test_state_freq || ...` → her instruction'da
+checkpoint; varsayılan sezgisel ≥2 jump VE ≥8 insn bekliyor). Predikat bu yüzden yönlü:
+**bayraklı ACCEPT + varsayılan REJECT = pruning soundness bug'ı** (reddi üreten yol
+budandı — bunu ancak unsound `regsafe` yapar). Ters yön (bayraklı REJECT + varsayılan
+ACCEPT) fazladan checkpoint'in state sayısını şişirmesinden doğan kaynak artefaktı
+(`BPF_COMPLEXITY_LIMIT_INSNS`, `verifier.c:18348`); red sebebine göre sınıflandırılıp
+AYRI sayılıyor, bulgu sayılmıyor — ama kaynak-limiti OLMAYAN ters flip gerçek bir
+over-rejection olarak raporlanıyor.
+
+**Payda:** bir çift ancak `freq_states > base_states` ise sayılıyor. State sayısı farkı
+ne gürültü ne bulgu — deneyin koştuğunun KANITI (0041'in `store_locations_checked`
+disiplini).
+
+**Üçüncü kanal:** `BPF_F_TEST_REG_INVARIANTS` (1<<7) kernel'in kendi Ω'sını sert
+`-EFAULT`'a çeviriyor; varsayılanla temiz yüklenip bayrakla EFAULT veren program
+dışarıdan görülemeyecek bir iç tutarsızlık.
+
+**Input — yanlış prune'un gözlemlenebilir olma şartı:** (a) birleşen akış, (b) `regsafe`'in
+yargılamak zorunda olduğu iki farklı gelen state, (c) hangi yoldan gelindiğine bağlı
+güvenliği olan downstream erişim. İki attacker değeri (offset r6, seçici r9) tek map
+value'dan okunuyor → split r6'yı kısıtlamıyor. Store `map_value + r6 + 56`, sınır içi ⟺
+`umax(r6) <= 7`. Verifier fall-through'u önce gezdiği için checkpoint'i o kaydediyor —
+ORDER eksen. Shaper'lar: n7/t6 (güvenli) × w63/m39/o19/s56/a32 (ayrık/örtüşen/delikli
+tnum/32-bit). 16 program = 2 safe + 6 dang + 6 ctrl + 2 stk (`stacksafe` yargıç).
+**Saf-tnum kolu bilerek YOK:** güvenlik yalnız `umax`'a bağlı, tnum farkı kararı flip
+edemez → vakum olurdu (0039'un tautology dışlama kuralı).
+
+**ÖLÇÜLDÜ (2026-09-05): 16 program, 2 accept / 14 reject, `prune_pairs_checked=16`,
+`finding_count=0`, `prune_resource_artifacts=0`, `parser_unrecognized=0`** — üç yükleme
+de her programda aynı fikirde, ve bayrak HER programda state uzayını büyüttü (base 1–3 →
+freq 4–7). Dört diş: soundness flip / kaynak artefaktı sayılıyor ama bulgu değil /
+kaynak-sebepsiz ters flip ateşliyor / REG_INVARIANTS EFAULT ateşliyor. Artı payda
+guard'ı. Pinlendi: `prune_calibration.rs` (9 test), fixture `gen-prune-16.log`, runner
+`scripts/run-prune.sh`.
+
 ---
 
 ## 3. Kapsama matrisi — asıl harita

@@ -187,6 +187,19 @@ pub struct DiffSummary {
     /// could, which is a strictly stronger question.
     #[serde(default)]
     pub store_locations_checked: u64,
+    /// Pruning differentials the check could actually EVALUATE — the denominator for
+    /// the kernel-vs-kernel leg. A pair only counts once it is known that the flag
+    /// CHANGED the state space (`freq_states > base_states`); if the flagged load
+    /// explored no more states than the default, nothing was pruned differently and
+    /// agreement between the two proves nothing.
+    #[serde(default)]
+    pub prune_pairs_checked: u64,
+    /// Differentials that flipped in the RESOURCE direction (flagged rejects, default
+    /// accepts, and the flagged rejection is a complexity limit). Reported next to
+    /// the findings, never folded into them: state-freq inflates the state count by
+    /// construction, so this direction is an expected artefact of the instrument.
+    #[serde(default)]
+    pub prune_resource_artifacts: u64,
 }
 
 /// The DIFF_FINDINGS payload for a period.
@@ -254,6 +267,8 @@ pub fn run(
     let mut runtime_checked = 0u64;
     let mut runtime_writes_checked = 0u64;
     let mut store_locations_checked = 0u64;
+    let mut prune_pairs_checked = 0u64;
+    let mut prune_resource_artifacts = 0u64;
     for (idx, record) in metrics.records.iter().enumerate() {
         let idx = idx as u64;
         helper_args_observed += record.core.helper_arg_observations.len() as u64;
@@ -262,6 +277,13 @@ pub fn run(
         check_runtime_ground_truth(idx, record, &mut findings, &mut runtime_checked);
         check_runtime_write_safety(idx, record, &mut findings, &mut runtime_writes_checked);
         check_store_location(idx, record, &mut findings, &mut store_locations_checked);
+        check_prune_differential(
+            idx,
+            record,
+            &mut findings,
+            &mut prune_pairs_checked,
+            &mut prune_resource_artifacts,
+        );
         check_helper_proto(idx, record, ground_truth, &mut findings);
         check_helper_observations(
             idx,
@@ -292,6 +314,8 @@ pub fn run(
         runtime_checked,
         runtime_writes_checked,
         store_locations_checked,
+        prune_pairs_checked,
+        prune_resource_artifacts,
     };
 
     let out = DiffFindings {
@@ -688,6 +712,113 @@ fn check_store_location(
     }
 }
 
+/// (Kernel vs kernel) Compare the SAME program's verdict with and without
+/// `BPF_F_TEST_STATE_FREQ`, which forces a verifier checkpoint at every instruction
+/// instead of the default "at least 2 jumps and 8 instructions" heuristic
+/// (`states.c`: `force_new_state = env->test_state_freq || ...`). The flag makes
+/// pruning MORE aggressive, not less: `regsafe`/`states_equal` are handed far more
+/// candidate pairs to judge.
+///
+/// Nothing here is a bound we parsed or a value we computed — both sides of the
+/// comparison are the kernel's own verdict — so this leg has no oracle of ours that
+/// can be wrong. That also makes it the first detector aimed at state pruning, the
+/// densest historical bug region and one no internal-consistency or runtime-value
+/// oracle can reach.
+///
+/// THE PREDICATE IS DIRECTIONAL, and that matters more than it looks:
+///   * flagged ACCEPT + default REJECT — the extra checkpoints let the verifier prune
+///     away a path that produced the rejection. Only an UNSOUND `regsafe` can do
+///     that, so this is the finding.
+///   * flagged REJECT + default ACCEPT — the extra checkpoints inflate the state
+///     count, so `BPF_COMPLEXITY_LIMIT_INSNS` ("BPF program is too large", -E2BIG) or
+///     the states limit can reject a program the default run accepts. That is an
+///     artefact of the instrument, counted separately and never as a finding. A
+///     reject in this direction that is NOT a resource limit is a real disagreement
+///     and is reported as one — an over-rejection is still the verifier contradicting
+///     itself, just not the soundness half.
+///
+/// The denominator only counts a pair once the flag DEMONSTRABLY changed the state
+/// space (`freq_states > base_states`). Agreement between two runs that explored the
+/// same states is not evidence about pruning; it is evidence that nothing was tried.
+fn check_prune_differential(
+    idx: u64,
+    record: &MetricRecord,
+    out: &mut Vec<DivergenceFinding>,
+    checked: &mut u64,
+    artifacts: &mut u64,
+) {
+    let p = match &record.core.prune_probe {
+        Some(p) => p,
+        None => return,
+    };
+    // The kernel's OWN bounds sanity check (reg_bounds_sanity_check), promoted from
+    // warn-and-recover to a hard -EFAULT. This is independent of the pruning
+    // question, and it is checked even when the flag changed nothing: an EFAULT here
+    // is the verifier reporting an internal inconsistency about ITSELF.
+    if p.inv_reason == "efault" && p.base_accept {
+        out.push(DivergenceFinding {
+            record_index: Some(idx),
+            source: GroundTruthSource::LogicalInvariant,
+            kind: "reg_invariants_violation".to_string(),
+            aspect: "bounds".to_string(),
+            expected: "a program the verifier accepts also passes its own reg_bounds_sanity_check"
+                .to_string(),
+            observed: format!(
+                "accepted by default, -EFAULT under BPF_F_TEST_REG_INVARIANTS (errno={})",
+                p.inv_errno
+            ),
+            detail: "the kernel's own register-bounds invariant fired on a program it otherwise accepts"
+                .to_string(),
+        });
+    }
+    if p.freq_states <= p.base_states {
+        return; // the flag changed nothing here: this pair proves nothing either way
+    }
+    *checked += 1;
+    if p.base_accept == p.freq_accept {
+        return;
+    }
+    if p.freq_accept && !p.base_accept {
+        // The soundness direction.
+        out.push(DivergenceFinding {
+            record_index: Some(idx),
+            source: GroundTruthSource::LogicalInvariant,
+            kind: "prune_soundness_desync".to_string(),
+            aspect: "pruning".to_string(),
+            expected: "a program's verdict does not depend on how often the verifier checkpoints"
+                .to_string(),
+            observed: format!(
+                "fall={} taken={} (fall_safe={} taken_safe={}, stack={}): rejected by default                  ({} states) but ACCEPTED with BPF_F_TEST_STATE_FREQ ({} states)",
+                p.fall, p.taken, p.fall_safe, p.taken_safe, p.stack,
+                p.base_states, p.freq_states
+            ),
+            detail: "extra checkpoints let the verifier prune away the path that produced the rejection"
+                .to_string(),
+        });
+        return;
+    }
+    // The reverse direction: classify before counting.
+    if p.freq_reason == "too_large" || p.freq_reason == "too_many_states" {
+        *artifacts += 1;
+        return;
+    }
+    out.push(DivergenceFinding {
+        record_index: Some(idx),
+        source: GroundTruthSource::LogicalInvariant,
+        kind: "prune_verdict_disagreement".to_string(),
+        aspect: "pruning".to_string(),
+        expected: "a program's verdict does not depend on how often the verifier checkpoints"
+            .to_string(),
+        observed: format!(
+            "fall={} taken={}: accepted by default ({} states) but REJECTED with \
+             BPF_F_TEST_STATE_FREQ ({} states, reason={}, errno={})",
+            p.fall, p.taken, p.base_states, p.freq_states, p.freq_reason, p.freq_errno
+        ),
+        detail: "the flagged run rejected for a reason that is not a complexity limit — an over-rejection, not the soundness half"
+            .to_string(),
+    });
+}
+
 fn check_runtime_write_safety(
     idx: u64,
     record: &MetricRecord,
@@ -1029,6 +1160,7 @@ mod tests {
                 helper_arg_observations: Vec::new(),
                 runtime_samples: Vec::new(),
                 store_site: None,
+                prune_probe: None,
                 helper_arg_violations: Vec::new(),
             },
             counterfactual: CounterfactualLayer::default(),

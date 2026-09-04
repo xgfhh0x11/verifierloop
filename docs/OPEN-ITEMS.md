@@ -240,6 +240,24 @@ both volume captures.)*
 
 ---
 
+## OI-12 — Agni's coverage window is unverified, and it is the reason we are leaving the ALU axis
+
+- **Status:** OPEN, raised 2026-09-05 (devlog 0042).
+- The strategic decision to stop growing the oracle on single-instruction ALU transfer
+  functions rests partly on those operators already being SMT-checked by Agni (CAV'23)
+  and the tnum soundness proofs (CGO'22). That claim is from memory: the papers exist,
+  but WHICH kernel versions they covered, and whether anything equivalent runs in
+  current CI, is unverified. A proof about one version says nothing about a later
+  regression in the same operators.
+- **Why it matters:** if the coverage window is old, the ALU axis is not as closed as
+  the 0042 diagnosis assumes, and our existing families would be worth re-pointing at
+  operators added or rewritten since. If it is current and continuous, the axis stays
+  closed and the input-shape pivot is unambiguously right.
+- **Cheap resolution:** read the Agni paper's evaluation section for the kernel range,
+  and grep the tree for any in-tree equivalent. Secondary to the loop/iterator work —
+  it refines a decision already made for independent reasons (reason (iii), the shape
+  poverty of our input space, stands on its own).
+
 ## OI-9 — The targeted family covers one program SHAPE, not the input space
 
 - **Status:** OPEN, **NARROWED 2026-09-01 by devlog 0026.** The 32<->64 half is done;

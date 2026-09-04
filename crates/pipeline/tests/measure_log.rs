@@ -36,8 +36,11 @@ fn measure_whole_capture() {
     let out = diff::run(&period, &norm, &NoGroundTruth).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 
-    let accept = text.matches("decision=accept").count();
-    let reject = text.matches("decision=reject").count();
+    // Anchor on the RESULT line: `decision=` alone is a substring of any token that
+    // ENDS in it (a family that reports several loads per program writes e.g.
+    // `base_verdict=`), and a loose match silently inflates the count.
+    let accept = text.matches("RESULT decision=accept").count();
+    let reject = text.matches("RESULT decision=reject").count();
     let unrecognized = norm.unparsed.iter()
         .filter(|u| u.kind == UnparsedKind::Unrecognized).count();
 
@@ -47,6 +50,11 @@ fn measure_whole_capture() {
     eprintln!("MEASURE runtime_checked={}", out.summary.runtime_checked);
     eprintln!("MEASURE runtime_writes_checked={}", out.summary.runtime_writes_checked);
     eprintln!("MEASURE store_locations_checked={}", out.summary.store_locations_checked);
+    eprintln!("MEASURE prune_pairs_checked={}", out.summary.prune_pairs_checked);
+    eprintln!(
+        "MEASURE prune_resource_artifacts={}",
+        out.summary.prune_resource_artifacts
+    );
     eprintln!("MEASURE tnum_bounds_checked={}", out.summary.tnum_bounds_checked);
     eprintln!("MEASURE finding_count={}", out.summary.finding_count);
     eprintln!("MEASURE parser_unrecognized={unrecognized}");

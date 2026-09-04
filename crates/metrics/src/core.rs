@@ -185,6 +185,9 @@ pub struct CoreMetrics {
     /// byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store_site: Option<StoreSite>,
+    /// The pruning-soundness differential for this program, when the harness ran one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prune_probe: Option<PruneProbe>,
 }
 
 /// The store instruction's coordinates, declared by the program generator.
@@ -246,4 +249,48 @@ pub struct RuntimeSample {
     /// True if the harness could not execute this sample (skipped by the oracle).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub error: bool,
+}
+
+/// One PRUNING-SOUNDNESS differential (--gen-prune): the SAME program loaded three
+/// times, and what the kernel said each time. This is a kernel-vs-kernel oracle —
+/// nothing here is a bound we parsed or a value we computed, so there is no oracle of
+/// ours that can be wrong; the only question is whether the verifier agrees with
+/// itself when its own pruning frequency changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PruneProbe {
+    /// The offset shaper on the FALL-THROUGH path — explored first, so this is the
+    /// state that records the checkpoint the other path is then judged against.
+    pub fall: String,
+    /// The offset shaper on the branch-taken path — the one that may be pruned.
+    pub taken: String,
+    /// Whether the deciding store is in bounds under each path's range. The correct
+    /// verdict is accept iff BOTH are safe: a wrong prune of an unsafe path is what
+    /// would turn a reject into an accept.
+    pub fall_safe: bool,
+    pub taken_safe: bool,
+    /// Whether the two states differ in a STACK SLOT rather than a register, i.e.
+    /// whether `stacksafe` or `regsafe` is the judge.
+    pub stack: bool,
+    /// Default load: no flags.
+    pub base_accept: bool,
+    pub base_errno: i64,
+    pub base_states: u64,
+    pub base_reason: String,
+    /// BPF_F_TEST_STATE_FREQ: a checkpoint at EVERY instruction, so pruning is
+    /// attempted far more often than the default heuristic allows.
+    pub freq_accept: bool,
+    pub freq_errno: i64,
+    pub freq_states: u64,
+    /// Why the flagged load rejected: `verdict` (the verifier decided) vs
+    /// `too_large` / `too_many_states` (a resource limit the extra checkpoints
+    /// pushed it into) vs `efault` vs `none`. The distinction is what keeps the
+    /// reverse direction of the differential out of the finding count.
+    pub freq_reason: String,
+    /// BPF_F_TEST_REG_INVARIANTS: the kernel's own bounds sanity check
+    /// (`reg_bounds_sanity_check`) promoted from a warn-and-recover to a hard
+    /// -EFAULT. Accepting by default but faulting under this flag is a desync
+    /// that is invisible from outside the kernel.
+    pub inv_accept: bool,
+    pub inv_errno: i64,
+    pub inv_reason: String,
 }
