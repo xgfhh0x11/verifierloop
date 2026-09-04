@@ -30,6 +30,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <linux/bpf.h>
+#include <linux/btf.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -3088,6 +3089,421 @@ static void run_loop_prog(enum loop_body body, int init_mask, int idx,
     printf("---LOG---\n%s\n---END---\n", g_log);
 }
 
+/* Residue sweep shared by every loop family whose entry state is `input & 7`: the
+   shared RT_INPUTS collapses to only five distinct residues, so seven of its twelve
+   runs would buy nothing. Declared here because both --gen-iter and --gen-loopr use it. */
+static const uint32_t LOOPR_INPUTS[] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+#define LOOPR_INPUTS_N ((int)(sizeof(LOOPR_INPUTS) / sizeof(LOOPR_INPUTS[0])))
+
+// ---- open-coded iterators: BTF resolution + probe (--probe-iter) ------------
+// The third loop mechanism from OI-13, and the one the kernel itself flags as risky:
+// `bpf_is_state_visited` (states.c) special-cases iterator loop detection with the
+// comment that `states_maybe_looping()` is "too simplistic in detecting states that
+// *might* be equivalent, because it doesn't know about ID remapping, so don't even
+// perform it". A special case in the pruning path, justified by an admitted
+// simplification, is the densest target on the list.
+//
+// The cost is real and it is why this is a PROBE first: an iterator loop is built from
+// kfunc calls, and a kfunc call is `BPF_CALL` with `src_reg = BPF_PSEUDO_KFUNC_CALL` and
+// `imm` = the function's BTF id -- a number that only exists at load time, in the
+// running kernel's own BTF. With no libbpf, the harness has to read
+// /sys/kernel/btf/vmlinux and walk the type section itself.
+//
+// The walk is the fiddly part: every BTF type is a fixed 12-byte header followed by
+// kind-specific trailing data, so skipping a type wrong desynchronises every id after
+// it -- and a wrong id is not a load error, it is a call to a DIFFERENT function. The
+// distro header we compile against stops at BTF_KIND_FLOAT, so the three kinds added
+// since (DECL_TAG, TYPE_TAG, ENUM64) are defined here; without them the walk would
+// silently drift on any modern vmlinux.
+#ifndef BTF_KIND_DECL_TAG
+#define BTF_KIND_DECL_TAG 17
+#endif
+#ifndef BTF_KIND_TYPE_TAG
+#define BTF_KIND_TYPE_TAG 18
+#endif
+#ifndef BTF_KIND_ENUM64
+#define BTF_KIND_ENUM64 19
+#endif
+
+static char *g_btf;
+static unsigned g_btf_len;
+
+static int btf_load_vmlinux(void) {
+    if (g_btf) return 0;
+    FILE *f = fopen("/sys/kernel/btf/vmlinux", "rb");
+    if (!f) return -1;
+    unsigned cap = 1u << 24, len = 0;
+    char *buf = malloc(cap);
+    if (!buf) { fclose(f); return -1; }
+    size_t r;
+    while ((r = fread(buf + len, 1, cap - len, f)) > 0) {
+        len += (unsigned)r;
+        if (len == cap) break;
+    }
+    fclose(f);
+    g_btf = buf; g_btf_len = len;
+    return 0;
+}
+
+/* Trailing bytes after the 12-byte btf_type header, per kind. */
+static long btf_type_tail(unsigned kind, unsigned vlen) {
+    switch (kind) {
+    case BTF_KIND_INT:        return 4;
+    case BTF_KIND_ARRAY:      return 12;                 /* struct btf_array */
+    case BTF_KIND_STRUCT:
+    case BTF_KIND_UNION:      return (long)vlen * 12;    /* struct btf_member */
+    case BTF_KIND_ENUM:       return (long)vlen * 8;     /* struct btf_enum */
+    case BTF_KIND_FUNC_PROTO: return (long)vlen * 8;     /* struct btf_param */
+    case BTF_KIND_VAR:        return 4;                  /* struct btf_var */
+    case BTF_KIND_DATASEC:    return (long)vlen * 12;    /* struct btf_var_secinfo */
+    case BTF_KIND_DECL_TAG:   return 4;                  /* struct btf_decl_tag */
+    case BTF_KIND_ENUM64:     return (long)vlen * 12;    /* struct btf_enum64 */
+    default:                  return 0;                  /* PTR, FWD, TYPEDEF, CONST,
+                                                            VOLATILE, RESTRICT, FUNC,
+                                                            FLOAT, TYPE_TAG */
+    }
+}
+
+/* Resolve a BTF_KIND_FUNC by name -> its BTF id, or -1. */
+static int btf_find_func_id(const char *want) {
+    if (btf_load_vmlinux() < 0) return -1;
+    if (g_btf_len < sizeof(struct btf_header)) return -1;
+    const struct btf_header *h = (const void *)g_btf;
+    if (h->magic != 0xeB9F) return -1;
+    const char *types = g_btf + h->hdr_len + h->type_off;
+    const char *tend  = types + h->type_len;
+    const char *strs  = g_btf + h->hdr_len + h->str_off;
+    const char *p = types;
+    int id = 0;
+    while (p + 12 <= tend) {
+        id++;
+        unsigned name_off, info;
+        memcpy(&name_off, p, 4);
+        memcpy(&info, p + 4, 4);
+        unsigned kind = BTF_INFO_KIND(info);
+        unsigned vlen = info & 0xffff;
+        if (kind == BTF_KIND_FUNC && name_off &&
+            strcmp(strs + name_off, want) == 0)
+            return id;
+        p += 12 + btf_type_tail(kind, vlen);
+    }
+    return -1;
+}
+
+#ifndef BPF_PSEUDO_KFUNC_CALL
+#define BPF_PSEUDO_KFUNC_CALL 2
+#endif
+#define BPF_KFUNC_CALL(BTF_ID)                                                 \
+    ((struct bpf_insn){.code = BPF_JMP | BPF_CALL,                             \
+                       .dst_reg = 0, .src_reg = BPF_PSEUDO_KFUNC_CALL,         \
+                       .off = 0, .imm = (BTF_ID)})
+
+/* struct bpf_iter_num is 8 bytes, 8-aligned (uapi/linux/bpf.h), so the iterator lives
+   in the stack slot at fp-8 and the verifier tracks that slot's iterator state. */
+#define ITER_SLOT 8
+
+struct iter_ids { int new_id, next_id, destroy_id; };
+
+static int iter_resolve(struct iter_ids *out) {
+    out->new_id     = btf_find_func_id("bpf_iter_num_new");
+    out->next_id    = btf_find_func_id("bpf_iter_num_next");
+    out->destroy_id = btf_find_func_id("bpf_iter_num_destroy");
+    return (out->new_id > 0 && out->next_id > 0 && out->destroy_id > 0) ? 0 : -1;
+}
+
+/* Emit the canonical open-coded iterator loop, with `body` shaping r6 each iteration.
+   Layout:
+       r1 = fp-8; r2 = start; r3 = end; call bpf_iter_num_new
+   head:
+       r1 = fp-8; call bpf_iter_num_next; if r0 == 0 goto done
+       <body>
+       goto head
+   done:
+       r1 = fp-8; call bpf_iter_num_destroy                                        */
+static int emit_iter_loop(struct bpf_insn *ins, int n, const struct iter_ids *ids,
+                          int start, int end, enum loop_body body) {
+    ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -ITER_SLOT);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_2, start);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_3, end);
+    ins[n++] = BPF_KFUNC_CALL(ids->new_id);
+
+    const int head = n;
+    ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -ITER_SLOT);
+    ins[n++] = BPF_KFUNC_CALL(ids->next_id);
+    const int jdone = n;
+    ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    n = emit_loop_body(ins, n, body);
+    const int jback = n;
+    ins[jback] = BPF_JMP_IMM(BPF_JA, 0, 0, head - jback - 1);
+    n++;
+    ins[jdone].off = n - jdone - 1;
+
+    ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -ITER_SLOT);
+    ins[n++] = BPF_KFUNC_CALL(ids->destroy_id);
+    return n;
+}
+
+// ---- open-coded iterator family (--gen-iter) --------------------------------
+// The SAME loop bodies as --gen-loop, driven by a DIFFERENT loop mechanism. That makes
+// the leg a mechanism differential on top of everything else: both are back-edges over
+// the same transfer function, so for a body whose reachable set does not depend on the
+// trip count the two mechanisms must agree. Where they legitimately DIFFER is the
+// interesting part -- an open-coded iterator over [0,8) is a BOUNDED loop, while
+// may_goto's count is unbounded, so a body that grows the offset is bounded here and not
+// there. The `.o48` arms exist to expose exactly that: at store offset 48 the access is
+// in bounds iff umax(r6) <= 15, which an 8-trip `inc` satisfies ([0,7] entry + at most 8
+// increments) and an unbounded may_goto loop cannot.
+//
+// Iterators are also CHEAP to execute: at most 8 iterations, with none of may_goto's
+// 250ms time budget (0044), so the runtime store-location oracle rides along for free.
+// Every accepted program is executed over the full residue sweep and the landing site is
+// compared against what the verifier proved -- the strictly stronger question, now on
+// the mechanism the kernel itself special-cases in its pruning path.
+static void run_iter_prog(const struct iter_ids *ids, enum loop_body body,
+                          int store_off, int idx, int map_in, int map_out) {
+    struct bpf_insn ins[80];
+    int n = 0, jexit[4], nx = 0;
+
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -16, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -16);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);
+    ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7);          /* entry invariant [0,7] */
+
+    n = emit_iter_loop(ins, n, ids, 0, 8, body);              /* at most 8 trips */
+
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -16, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -16);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_0);
+    ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_7, BPF_REG_6);
+    const int store_insn = n;
+    ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_7, store_off, -1);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);                   /* witness: store ran */
+    ins[n++] = BPF_EXIT_INSN();
+    const int exit0 = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    for (int i = 0; i < nx; i++) ins[jexit[i]].off = exit0 - jexit[i] - 1;
+
+    /* 0042's instrument, unchanged, plus a fourth load that keeps the fd for running. */
+    struct prune_load base = prune_load_once(ins, n, 0, g_log, sizeof(g_log));
+    struct prune_load freq = prune_load_once(ins, n, BPF_F_TEST_STATE_FREQ,
+                                             g_log2, sizeof(g_log2));
+    struct prune_load inv  = prune_load_once(ins, n, BPF_F_TEST_REG_INVARIANTS,
+                                             g_log2, sizeof(g_log2));
+
+    g_log[0] = '\0';
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)ins;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = sizeof(g_log);
+    attr.log_buf = (uint64_t)(unsigned long)g_log;
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int e = errno;
+
+    char name[96];
+    snprintf(name, sizeof(name), "geniter#%s.o%d#%03d", loop_body_name(body), store_off, idx);
+    printf("===PROG %s type=socket_filter ===\n", name);
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+           fd >= 0 ? "accept" : "reject", fd, fd >= 0 ? 0 : e);
+    printf("STORE insn=%d reg=7 off=%d size=1\n", store_insn, store_off);
+    printf("PRUNE fall=%s taken=o%d fall_safe=%d taken_safe=%d stack=0"
+           " base_verdict=%s base_errno=%d base_states=%lu base_reason=%s"
+           " freq_verdict=%s freq_errno=%d freq_states=%lu freq_reason=%s"
+           " inv_verdict=%s inv_errno=%d inv_reason=%s\n",
+           loop_body_name(body), store_off, base.accept, base.accept,
+           base.accept ? "accept" : "reject", base.err, base.states, base.reason,
+           freq.accept ? "accept" : "reject", freq.err, freq.states, freq.reason,
+           inv.accept ? "accept" : "reject", inv.err, inv.reason);
+    printf("LOOP body=%s init_mask=7 store_off=%d\n", loop_body_name(body), store_off);
+
+    if (fd >= 0) {
+        unsigned char pkt[64];
+        memset(pkt, 0, sizeof(pkt));
+        for (int i = 0; i < LOOPR_INPUTS_N; i++) {
+            uint32_t in = LOOPR_INPUTS[i];
+            unsigned char zero[RTW_VALUE_SIZE];
+            memset(zero, 0, sizeof(zero));
+            int ue = rt_map_set(map_in, 0, in);
+            int ze = rt_map_set_bytes(map_out, 0, zero);
+            union bpf_attr t;
+            memset(&t, 0, sizeof(t));
+            t.test.prog_fd = fd;
+            t.test.data_in = (uint64_t)(unsigned long)pkt;
+            t.test.data_size_in = sizeof(pkt);
+            t.test.repeat = 1;
+            int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+            unsigned char out[RTW_VALUE_SIZE];
+            memset(out, 0, sizeof(out));
+            int ge = rt_map_get(map_out, 0, out);
+            if (r < 0 || ue < 0 || ze < 0 || ge < 0) {
+                printf("RUNTIME input=0x%08x error=1 testrun_errno=%d\n",
+                       in, r < 0 ? errno : 0);
+                continue;
+            }
+            int off = -1;
+            for (int b = 0; b < RTW_VALUE_SIZE; b++)
+                if (out[b] == RTW_SENTINEL) { off = b; break; }
+            int executed = (t.test.retval == 1);
+            if (off < 0)
+                printf("RUNTIME input=0x%08x store_off=none store_len=0 store_size=1"
+                       " executed=%d\n", in, executed);
+            else {
+                int len = 0;
+                for (int b = off; b < RTW_VALUE_SIZE && out[b] == RTW_SENTINEL; b++) len++;
+                printf("RUNTIME input=0x%08x store_off=%d store_len=%d store_size=1"
+                       " executed=%d\n", in, off, len, executed);
+            }
+        }
+        close(fd);
+    }
+    printf("---LOG---\n%s\n---END---\n", g_log);
+}
+
+static void run_generated_iter_family(void) {
+    struct iter_ids ids;
+    if (iter_resolve(&ids) < 0) {
+        printf("===PROG geniter type=socket_filter ===\n"
+               "RESULT decision=error btf_resolve_failed errno=%d\n---LOG---\n---END---\n",
+               errno);
+        return;
+    }
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 8; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = RTW_VALUE_SIZE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
+        printf("===PROG geniter type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    /* Ten bodies at offset 56 -- directly comparable to --gen-loop's may_goto table --
+       plus the two `.o48` arms where BOUNDEDNESS decides: at 48 the access is in bounds
+       iff umax(r6) <= 15, which an 8-trip `inc` can satisfy and an unbounded loop
+       cannot. */
+    const struct { enum loop_body body; int off; } arms[] = {
+        { LB_NOP,     56 }, { LB_MASK,    56 }, { LB_INCMASK, 56 }, { LB_MASKINC, 56 },
+        { LB_SHR,     56 }, { LB_XOR3,    56 }, { LB_COND,    56 }, { LB_INC,     56 },
+        { LB_SHL,     56 }, { LB_ADD8,    56 },
+        { LB_INC,     48 }, { LB_NOP,     48 },
+    };
+    int idx = 0;
+    for (unsigned i = 0; i < sizeof(arms) / sizeof(arms[0]); i++)
+        run_iter_prog(&ids, arms[i].body, arms[i].off, idx++, map_in, map_out);
+    close(map_in);
+    close(map_out);
+}
+
+/* --probe-iter: does the kfunc/BTF machinery work at all, and is there a decision
+   surface? Reports the resolved ids so a WRONG id (which is not a load error, just a
+   call to another function) is visible rather than silent. */
+static void run_probe_iter(void) {
+    struct iter_ids ids;
+    if (iter_resolve(&ids) < 0) {
+        printf("CHANNEL btf=fail new=%d next=%d destroy=%d\n",
+               ids.new_id, ids.next_id, ids.destroy_id);
+        return;
+    }
+    printf("CHANNEL btf=ok new=%d next=%d destroy=%d btf_bytes=%u\n",
+           ids.new_id, ids.next_id, ids.destroy_id, g_btf_len);
+
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = RTW_VALUE_SIZE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_out < 0) { printf("CHANNEL error=map_create errno=%d\n", errno); return; }
+
+    /* arm 0: bare loop, no store -- does the mechanism verify at all?
+       arm 1: accumulate then mask, then store: is there a decision surface?
+       arm 2: accumulate WITHOUT mask, then store: the unsound-fixpoint shape. */
+    for (int arm = 0; arm < 3; arm++) {
+        struct bpf_insn ins[64];
+        int n = 0, jexit[2], nx = 0;
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_6, 0);
+        n = emit_iter_loop(ins, n, &ids, 0, 8,
+                           arm == 1 ? LB_INCMASK : LB_INC);
+        if (arm > 0) {
+            ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -16, 0);
+            ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+            ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -16);
+            ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM,
+                                         .dst_reg = BPF_REG_1,
+                                         .src_reg = BPF_PSEUDO_MAP_FD, .off = 0,
+                                         .imm = map_out};
+            ins[n++] = (struct bpf_insn){0};
+            ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+            jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+            ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_0);
+            ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_7, BPF_REG_6);
+            ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_7, LOOP_STORE_OFF, -1);
+        }
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+        ins[n++] = BPF_EXIT_INSN();
+        if (nx) {
+            /* Only emit the null-path exit when something actually BRANCHES to it.
+               Arm 0 has no map lookup, so an unconditional trailing block would be
+               unreachable and the verifier rejects before walking a single insn
+               ("processed 0 insns", EINVAL) -- a malformed probe, not a signal. */
+            const int exit0 = n;
+            ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+            ins[n++] = BPF_EXIT_INSN();
+            for (int i = 0; i < nx; i++) ins[jexit[i]].off = exit0 - jexit[i] - 1;
+        }
+
+        g_log[0] = '\0';
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 1;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        int e = errno;
+        const char *tail = "";
+        if (fd < 0) {
+            /* last non-empty line of the log = the reason */
+            static char why[256];
+            const char *nl = g_log, *last = g_log;
+            for (const char *q = g_log; *q; q++) if (*q == '\n' && q[1]) last = q + 1;
+            (void)nl;
+            snprintf(why, sizeof(why), "%s", last);
+            for (char *q = why; *q; q++) if (*q == '\n') { *q = '\0'; break; }
+            tail = why;
+        }
+        printf("CHANNEL arm=%d insns=%d verdict=%s errno=%d reason=\"%s\"\n",
+               arm, n, fd >= 0 ? "accept" : "reject", fd >= 0 ? 0 : e, tail);
+        if (fd >= 0) close(fd);
+    }
+    close(map_out);
+}
+
 // ---- loop fixpoint vs runtime (--gen-loopr) ---------------------------------
 // 0043 asked whether a back-edge program's VERDICT survives a change in checkpoint
 // frequency. This asks the strictly stronger question 0041 introduced, now on a loop:
@@ -3115,8 +3531,6 @@ static void run_loop_prog(enum loop_body body, int init_mask, int idx,
 // run. The oracle asks for MEMBERSHIP in the verifier's proven set, never equality, so
 // each run samples the fixpoint at a fresh point. Nothing downstream may assert an exact
 // store_off for these arms.
-static const uint32_t LOOPR_INPUTS[] = { 0, 1, 2, 3, 4, 5, 6, 7 };
-#define LOOPR_INPUTS_N ((int)(sizeof(LOOPR_INPUTS) / sizeof(LOOPR_INPUTS[0])))
 
 static void run_loopr_prog(enum loop_body body, int idx, int map_in, int map_out) {
     struct bpf_insn ins[64];
@@ -3541,6 +3955,14 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-loopr") == 0) {
         run_generated_loopr_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-iter") == 0) {
+        run_probe_iter();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-iter") == 0) {
+        run_generated_iter_family();
         return 0;
     }
 

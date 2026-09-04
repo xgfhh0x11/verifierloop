@@ -3721,3 +3721,90 @@ yok. Workspace 210 yeşil.
 
 **Sıradaki:** açık iteratorler (OI-13'ün ikinci sırası; `BPF_PSEUDO_KFUNC_CALL` +
 load-time BTF makinesi gerekiyor).
+
+---
+
+## 0045 — Açık iteratorler (`--gen-iter`): kernel'in kendi pruning yolunda özel-durum yaptığı mekanizma
+
+### 1. Neden bu mekanizma
+
+OI-13'ün ikinci sırası, ve listedeki en yoğun hedef — çünkü kernel riski kendi ağzıyla
+söylüyor. `bpf_is_state_visited` (states.c) iteratorler için olağan loop detection'ını
+ATLIYOR: *"BPF open-coded iterators loop detection is special. states_maybe_looping()
+logic is too simplistic in detecting states that might be equivalent, because it doesn't
+know about ID remapping, so don't even perform it."* Pruning yolunda, itiraf edilmiş bir
+basitleştirmeyle gerekçelendirilmiş bir özel durum.
+
+### 2. Ödenen altyapı: BTF
+
+Iterator döngüsü kfunc çağrılarından kuruluyor, kfunc çağrısı ise
+`src_reg = BPF_PSEUDO_KFUNC_CALL` ve `imm` = fonksiyonun **BTF id**'si — yalnız çalışan
+kernel'de var olan bir sayı. libbpf olmadığı için harness `/sys/kernel/btf/vmlinux`'u
+okuyup tip bölümünü kendisi yürüyor. Yürüyüş affetmiyor: her tip 12-byte başlık + kind'a
+özgü kuyruk, bir tipi yanlış atlarsan **ondan sonraki bütün id'ler kayıyor** — ve yanlış
+id load hatası değil, *başka bir fonksiyonu çağırmak*. Derlediğimiz distro header'ı
+`BTF_KIND_FLOAT`'ta bitiyor, o yüzden DECL_TAG/TYPE_TAG/ENUM64 harness'te tanımlandı;
+onlarsız yürüyüş modern bir vmlinux'ta sessizce kayardı.
+
+Probe (`--probe-iter`) çözülen id'leri **basıyor** — tam da sessiz kayma görünür olsun
+diye: `new=83158 next=83159 destroy=83156`, 6.8 MB BTF. Üç kol: çıplak döngü kabul,
+maskeli birikimci + store kabul, sınırsız birikimci + store red. Kabuller id'lerin doğru
+olduğunun kanıtı.
+
+*(Probe'un ilk koşusunda `arm=0` EINVAL / "processed 0 insns" verdi. Bulgu değil: o kolda
+map lookup yok, dolayısıyla sondaki null-path bloğuna hiç dallanılmıyordu → ulaşılamaz
+insn. Blok artık yalnız ona dallanan bir şey varsa basılıyor.)*
+
+### 3. Üç oracle bedavaya biniyor
+
+Yeni oracle YOK: 0042'nin üç-yüklemeli pruning differential'ı, 0041'in store-location
+kontrolü, 0037'nin write-safety kontrolü — üçü de değişmeden. Iteratorler en fazla sekiz
+tur ve may_goto'nun 250 ms bütçesi (0044) yok, yani runtime yarısı burada neredeyse
+bedava.
+
+### 4. Sonuç
+
+**12 program, 7 kabul / 5 red, `store_locations_checked=56`, `runtime_writes_checked=56`,
+`prune_pairs_checked=12`, `finding_count=0`, `parser_unrecognized=0`.** Iterator state
+makinesi gerçekten çalıştı: **120 `state=active` + 25 `state=drained`** — vakum değil.
+
+**Mekanizma differential'ı:** `.o56` karar tablosu 0043'ün may_goto tablosuyla **on
+gövdenin onunda da aynı**. İki farklı back-edge mekanizması, aynı transfer fonksiyonu,
+aynı karar — biri yanlış yakınsasaydı burada ayrışırlardı. Bu, ailelerarası bir test
+olarak pinlendi.
+
+### 5. Capture türetmeyi yine düzeltti — ve bu sefer verifier hakkında bir OLGU çıktı
+
+`.o48` kolları mekanizma-duyarlı çift olarak tasarlanmıştı: offset 48'de erişim
+`umax(r6) <= 15` ise sınır içi, ve 8 turluk bir `inc` bunu sağlamalı ([0,7] giriş + en
+fazla 8 artış), sınırsız bir may_goto döngüsü sağlayamaz. **Reddedildi.** Log nedenini
+söylüyor:
+
+```
+fp-8=iter_num(id=1,state=active,depth=8)  R6=[7,14]
+fp-8=iter_num(id=1,state=active,depth=9)  R6=[8,15] → +1 → [9,16]
+```
+
+**Verifier iterator DERİNLİĞİNİ takip ediyor, ama sabit `[0,8)` aralığını trip sayısını
+sınırlamak için KULLANMIYOR** — durmayı state yakınsamasından bekliyor, dolayısıyla
+gerçekte mümkün olandan fazla tur geziyor, depth 9'da r6 [9,16]'ya çıkıyor ve `umax=16`
+üzerinden reddediyor. Runtime'da döngü tam 8 tur dönüyor, yani program aslında güvenli.
+Bu bir **over-rejection**: güvenli yönde imprecision, hata değil. Olgu olarak pinlendi
+(`nop.o48` aynı offset'te kabul ediliyor, yani kol vakum değil).
+
+### 6. Testler
+
+`iterator_calibration.rs` 8 test: iterator state makinesinin gerçekten çalıştığı
+(active VE drained), BTF çözümünün çalışan id ürettiği, **mekanizma differential'ı**
+(on ortak gövde), headline (56 kontrol, 0 bulgu), `.o48` olgusunun pinlenmesi, 0041
+dişinin BU capture'da ateşlediği, runtime'ın yalnız kanıtlanmış pencerelerde kaldığı, ve
+parser kör noktası yok. Workspace 218 yeşil.
+
+*(Yol boyunca test kendi hatasını yakaladı: mekanizma karşılaştırmasının filtresi gövde
+adına bakıyordu, ama `inc` ve `nop`'un hem `.o56` hem `.o48` kolu var → 10 yerine 12
+karşılaştırma. Filtre kolun kendi etiketine çevrildi.)*
+
+**Sıradaki:** iterator ailesinin asıl hedefi olan ID-REMAPPING — `states.c`'nin
+"too simplistic ... doesn't know about ID remapping" dediği şey; iki iterator (ya da
+iterator + refcounted pointer) arasında id eşlemesi gerektiren şekiller, ki bu ailenin
+tek-iterator şekli oraya henüz dokunmuyor.
