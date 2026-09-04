@@ -306,6 +306,23 @@ a way the convergence step must judge, AND a downstream access's safety depends 
 A loop whose body leaves the deciding register unchanged is a tautology arm and must be
 excluded, the same way the pure-tnum arm was excluded from `--gen-prune`.
 
+## OI-13b — The idmap exhaustion path is NOT reachable from our shapes (derived, closed)
+
+- **Status:** CLOSED by derivation 2026-09-05, recorded so the leg is not attempted again.
+- `check_ids` fails verification when its table fills (states.c:349-353, "the map can be
+  exhausted ... fail the verification by treating the states as not equivalent"), which
+  looked like a testable boundary after 0047.
+- **It is not reachable.** `BPF_ID_MAP_SIZE = (MAX_BPF_REG + MAX_BPF_STACK/BPF_REG_SIZE
+  + MAX_STACK_ARG_SLOTS) * MAX_CALL_FRAMES = (11 + 64 + 7) * 16 = 1312`. The id-carrying
+  slots a program can actually populate are registers plus spilled stack slots: 11 + 64 =
+  75 per frame, so 1200 even at the maximum call depth of 16 — below the capacity by
+  construction. The kernel's own comment says the same thing: exhaustion needs
+  "referenced dynptrs [that] acquire intermediate references that do not live in either",
+  a path our shapes do not build.
+- **Consequence:** any exhaustion family built from linked scalars, spills or call depth
+  would be vacuous. If this is ever revisited it has to come through referenced dynptrs,
+  which is its own infrastructure step.
+
 ## OI-12 — Agni's coverage window is unverified, and it is the reason we are leaving the ALU axis
 
 - **Status:** OPEN, raised 2026-09-05 (devlog 0042).

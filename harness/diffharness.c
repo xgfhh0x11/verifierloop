@@ -3252,6 +3252,227 @@ static int emit_iter_loop(struct bpf_insn *ins, int n, const struct iter_ids *id
     return n;
 }
 
+// ---- multi-frame states / subprogs (--gen-frame) ----------------------------
+// Every program this project has generated so far lives in ONE frame. `states_equal`
+// opens with `if (old->curframe != cur->curframe) return false` and then compares each
+// frame in turn, so the whole multi-frame half of state comparison has never been
+// touched -- and `calls.c` is on the kernel's own danger list (it is one of the files
+// that sets BPF_F_TEST_STATE_FREQ).
+//
+// A subprog call needs no BTF and no kfunc: `BPF_CALL` with `src_reg = BPF_PSEUDO_CALL`
+// and `imm` = the pc-relative offset of the callee. The interesting question is what
+// crosses the boundary. Only r1-r5 are passed; the callee's r6-r9 start uninitialised.
+// If a scalar's link ID survives into the callee's argument register, then narrowing one
+// argument narrows the other through sync_linked_regs -- INSIDE a different frame from
+// the one where the link was formed. If it does not survive, the callee sees two
+// independent scalars.
+//
+// The family answers that by construction rather than by assumption, using the same
+// paired design as 0046: link on ONE path versus link on BOTH. If both variants reject,
+// ids do not cross the frame boundary. If one-path rejects while both-path accepts, they
+// do -- and the caller's differing linkage is something `states_equal` must distinguish
+// while comparing two frames rather than one.
+enum frame_shape {
+    FRM_NOLINK,    /* no link at all -- baseline                                   */
+    FRM_ONE,       /* link on the fall-through path only                           */
+    FRM_BOTH,      /* link on both paths                                           */
+};
+
+static const char *frame_shape_name(enum frame_shape f) {
+    switch (f) {
+    case FRM_NOLINK: return "nolink";
+    case FRM_ONE:    return "one";
+    case FRM_BOTH:   return "both";
+    }
+    return "?";
+}
+
+/* `use_arg1` stores through the argument the callee narrows directly, which must be safe
+   whatever the ids say -- the control that fences the result from the other side. */
+static void run_frame_prog(enum frame_shape shape, int use_arg1, int store_off,
+                           int idx, int map_in, int map_out) {
+    struct bpf_insn ins[96];
+    int n = 0, jexit[4], nx = 0;
+
+    /* ---- caller frame ---- */
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_0, 4);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_0, 8);   /* path selector */
+
+    const int jsplit = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_8, 0, 0);
+    if (shape != FRM_NOLINK)
+        ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_6);       /* link, fall-through */
+    const int jmerge = n; ins[n++] = BPF_JMP_IMM(BPF_JA, 0, 0, 0);
+    ins[jsplit].off = n - jsplit - 1;
+    if (shape == FRM_BOTH)
+        ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_6);       /* link, taken path */
+    ins[jmerge].off = n - jmerge - 1;
+
+    ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_6);           /* arg 1 */
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_7);           /* arg 2 */
+    const int jcall = n; ins[n++] = (struct bpf_insn){0};     /* patched below */
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);
+    ins[n++] = BPF_EXIT_INSN();
+    const int exit0 = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    for (int i = 0; i < nx; i++)
+        ins[jexit[i]].off = exit0 - jexit[i] - 1;
+
+    /* ---- callee frame: narrows arg1, stores through the chosen arg ---- */
+    const int sub = n;
+    ins[jcall] = (struct bpf_insn){.code = BPF_JMP | BPF_CALL, .dst_reg = 0,
+                                   .src_reg = BPF_PSEUDO_CALL, .off = 0,
+                                   .imm = sub - jcall - 1};
+    int sexit[4]; int sx = 0;
+    ins[n++] = BPF_MOV64_REG(BPF_REG_6, BPF_REG_1);           /* keep args across the */
+    ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_2);           /* upcoming helper call */
+    /* Names r6 (= arg1) only: r7 can be narrowed ONLY through a shared id that survived
+       the frame boundary. */
+    sexit[sx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JGT, BPF_REG_6, 7, 0);
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    sexit[sx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_3, BPF_REG_0);
+    ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_3, use_arg1 ? BPF_REG_6 : BPF_REG_7);
+    const int store_insn = n;
+    ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_3, store_off, -1);
+    const int sexit0 = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    for (int i = 0; i < sx; i++)
+        ins[sexit[i]].off = sexit0 - sexit[i] - 1;
+
+    struct prune_load base = prune_load_once(ins, n, 0, g_log, sizeof(g_log));
+    struct prune_load freq = prune_load_once(ins, n, BPF_F_TEST_STATE_FREQ,
+                                             g_log2, sizeof(g_log2));
+    struct prune_load inv  = prune_load_once(ins, n, BPF_F_TEST_REG_INVARIANTS,
+                                             g_log2, sizeof(g_log2));
+
+    g_log[0] = '\0';
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)ins;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = sizeof(g_log);
+    attr.log_buf = (uint64_t)(unsigned long)g_log;
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int e = errno;
+
+    char name[96];
+    snprintf(name, sizeof(name), "genframe#%s.a%d#%03d",
+             frame_shape_name(shape), use_arg1 ? 1 : 2, idx);
+    printf("===PROG %s type=socket_filter ===\n", name);
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+           fd >= 0 ? "accept" : "reject", fd, fd >= 0 ? 0 : e);
+    printf("STORE insn=%d reg=3 off=%d size=1\n", store_insn, store_off);
+    printf("FRAME shape=%s store_arg=%d sub_at=%d store_off=%d\n",
+           frame_shape_name(shape), use_arg1 ? 1 : 2, sub, store_off);
+    printf("PRUNE fall=%s taken=a%d fall_safe=%d taken_safe=%d stack=0"
+           " base_verdict=%s base_errno=%d base_states=%lu base_reason=%s"
+           " freq_verdict=%s freq_errno=%d freq_states=%lu freq_reason=%s"
+           " inv_verdict=%s inv_errno=%d inv_reason=%s\n",
+           frame_shape_name(shape), use_arg1 ? 1 : 2, base.accept, base.accept,
+           base.accept ? "accept" : "reject", base.err, base.states, base.reason,
+           freq.accept ? "accept" : "reject", freq.err, freq.states, freq.reason,
+           inv.accept ? "accept" : "reject", inv.err, inv.reason);
+
+    if (fd >= 0) {
+        unsigned char pkt[64];
+        memset(pkt, 0, sizeof(pkt));
+        for (int i = 0; i < LOOPR_INPUTS_N; i++) {
+            uint32_t in = LOOPR_INPUTS[i];
+            unsigned char zero[RTW_VALUE_SIZE], val[16];
+            memset(zero, 0, sizeof(zero));
+            memset(val, 0, sizeof(val));
+            memcpy(val + 0, &in, 4);
+            memcpy(val + 4, &in, 4);
+            uint32_t sel = i & 1;
+            memcpy(val + 8, &sel, 4);
+            int ue = rt_map_set_bytes(map_in, 0, val);
+            int ze = rt_map_set_bytes(map_out, 0, zero);
+            union bpf_attr t;
+            memset(&t, 0, sizeof(t));
+            t.test.prog_fd = fd;
+            t.test.data_in = (uint64_t)(unsigned long)pkt;
+            t.test.data_size_in = sizeof(pkt);
+            t.test.repeat = 1;
+            int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+            unsigned char out[RTW_VALUE_SIZE];
+            memset(out, 0, sizeof(out));
+            int ge = rt_map_get(map_out, 0, out);
+            if (r < 0 || ue < 0 || ze < 0 || ge < 0) {
+                printf("RUNTIME input=0x%08x error=1 testrun_errno=%d\n",
+                       in, r < 0 ? errno : 0);
+                continue;
+            }
+            int off = -1;
+            for (int b = 0; b < RTW_VALUE_SIZE; b++)
+                if (out[b] == RTW_SENTINEL) { off = b; break; }
+            /* The caller returns 1 only after the subprog returned, so the witness still
+               means "the store path ran" -- the callee's own exit clears r0 to 0 first. */
+            int executed = (off >= 0);
+            if (off < 0)
+                printf("RUNTIME input=0x%08x store_off=none store_len=0 store_size=1"
+                       " executed=%d\n", in, executed);
+            else {
+                int len = 0;
+                for (int b = off; b < RTW_VALUE_SIZE && out[b] == RTW_SENTINEL; b++) len++;
+                printf("RUNTIME input=0x%08x store_off=%d store_len=%d store_size=1"
+                       " executed=%d\n", in, off, len, executed);
+            }
+        }
+        close(fd);
+    }
+    printf("---LOG---\n%s\n---END---\n", g_log);
+}
+
+static void run_generated_frame_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 16; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = RTW_VALUE_SIZE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
+        printf("===PROG genframe type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    const struct { enum frame_shape shape; int use_arg1; } arms[] = {
+        { FRM_NOLINK, 0 },   /* baseline: arg2 never narrowed                     */
+        { FRM_NOLINK, 1 },   /* control:  store through the narrowed arg1         */
+        { FRM_ONE,    0 },   /* THE SHAPE: link on one path, store through arg2   */
+        { FRM_BOTH,   0 },   /* the answer: does the link cross the frame at all? */
+        { FRM_ONE,    1 },   /* control                                           */
+        { FRM_BOTH,   1 },   /* control                                           */
+    };
+    int idx = 0;
+    for (unsigned i = 0; i < sizeof(arms) / sizeof(arms[0]); i++)
+        run_frame_prog(arms[i].shape, arms[i].use_arg1, 48, idx++, map_in, map_out);
+    close(map_in);
+    close(map_out);
+}
+
 // ---- id-map BIJECTION / partition structure (--gen-idpart) ------------------
 // 0046 asked whether a link is PRESENT. This asks whether the mapping between the two
 // states' ids is a BIJECTION, which is the actual contract of check_ids (states.c:319):
@@ -4472,6 +4693,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-idpart") == 0) {
         run_generated_idpart_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-frame") == 0) {
+        run_generated_frame_family();
         return 0;
     }
 

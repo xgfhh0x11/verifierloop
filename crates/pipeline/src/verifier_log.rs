@@ -513,12 +513,41 @@ fn parse_register_evolution(log: &[&str]) -> Vec<RegSnapshot> {
         };
         let rest = t[colon + 1..].trim_start();
 
+        // A program with subprogs prefixes every state with its call depth, and the
+        // prefix sits in BOTH shapes:
+        //   33: frame1: R3=map_value(...) R7=scalar(id=1,...)
+        //   23: (25) if r6 > 0x7 ; frame1: R6=scalar(id=1,...)
+        // It has to come off BEFORE the full-state / instruction-line decision, because
+        // `frame1: R3=...` does not look like a register token and would otherwise fall
+        // through to the `;` branch and be dropped. This fails SILENTLY — an empty
+        // register evolution, not an unrecognized line — so the only symptom is a
+        // denominator of zero, which is exactly how it surfaced: `--gen-frame` reported
+        // store_locations_checked = 0 on a log full of frame1 states.
+        //
+        // The frame index is deliberately not carried into the snapshot. Instruction
+        // indices are unique across a program's subprograms, so an instruction belongs to
+        // exactly one subprogram; and if a future family ever reaches one instruction at
+        // two call depths, the claims merge — which since 0047 the store-location check
+        // treats as a UNION, the conservative direction.
+        fn strip_frame(st: &str) -> &str {
+            let after = match st.strip_prefix("frame") {
+                Some(a) => a,
+                None => return st,
+            };
+            let digits = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+            if digits == 0 || !after[digits..].starts_with(':') {
+                return st;
+            }
+            after[digits + 1..].trim_start()
+        }
+        let rest = strip_frame(rest);
+
         // (a) full-state line: "R1=ctx() R10=fp0"  (starts with a reg token)
         // (b) instruction line: "(b7) r0 = 0 ; R0=0"  (state after ';')
         let state = if looks_like_reg_token_start(rest) {
             Some(rest)
         } else {
-            rest.find(';').map(|s| rest[s + 1..].trim())
+            rest.find(';').map(|s| strip_frame(rest[s + 1..].trim()))
         };
 
         if let Some(ss) = state {

@@ -3970,3 +3970,79 @@ Workspace 231 yeşil.
 **Sıradaki:** `BPF_ID_MAP_SIZE` tükenmesi — `check_ids` tablo dolduğunda state'leri
 denk-değil sayıyor (`return false`), yani sınır aşıldığında pruning tamamen duruyor. O
 sınırın nerede olduğu ve aşıldığında ne olduğu ölçülebilir.
+
+---
+
+## 0048 — Çok-frame'li state'ler (`--gen-frame`): subprog boyutu, ve sessiz bir parser deliği
+
+### 1. Önce kapatılan bir kapı: idmap tükenmesi kurulabilir DEĞİL
+
+0047'nin sonunda "sıradaki `BPF_ID_MAP_SIZE` tükenmesi" demiştim. Türetme onu kapattı:
+`BPF_ID_MAP_SIZE = (MAX_BPF_REG + MAX_BPF_STACK/BPF_REG_SIZE + MAX_STACK_ARG_SLOTS) ×
+MAX_CALL_FRAMES = (11 + 64 + 7) × 16 = **1312**`. Bir programın gerçekten doldurabileceği
+id taşıyan slotlar register'lar + spill edilmiş stack slotları = frame başına 11 + 64 =
+**75**, yani maksimum çağrı derinliğinde bile 1200 < 1312. Kernel'in kendi yorumu da aynı
+şeyi söylüyor: tükenme "referenced dynptrs [that] acquire intermediate references that do
+not live in either" gerektiriyor. Linkli skalerlerden, spill'lerden veya çağrı
+derinliğinden kurulacak her tükenme ailesi **vakum** olurdu. OI-13b olarak kaydedildi ki
+bir daha denenmesin.
+
+### 2. Dokunulmamış boyut: subprog
+
+Bu projenin ürettiği her program TEK frame'deydi. `states_equal`
+`if (old->curframe != cur->curframe) return false` ile açılıp sonra her frame'i sırayla
+karşılaştırıyor — yani state karşılaştırmasının çok-frame'li yarısı hiç sınanmamıştı. Ve
+`calls.c` kernel'in kendi tehlike listesinde (BPF_F_TEST_STATE_FREQ kuran dosyalardan
+biri).
+
+Subprog çağrısı BTF ya da kfunc istemiyor: `BPF_CALL` + `src_reg = BPF_PSEUDO_CALL` +
+`imm` = callee'nin pc-göreli offset'i. Asıl soru sınırı NEYİN geçtiği: yalnız r1-r5
+geçiyor, callee'nin r6-r9'u tanımsız başlıyor. Bir skalerin link id'si argüman
+register'ına sağ kalırsa, bir argümanı daraltmak diğerini `sync_linked_regs` üzerinden
+**linkin kurulduğundan FARKLI bir frame içinde** daraltır.
+
+### 3. Cevap: evet, geçiyor
+
+Aile bunu varsayımla değil inşayla cevaplıyor — 0046'nın eşleme deseniyle:
+`one.a2` **red**, `both.a2` **KABUL**. Id'ler sınırda dursaydı ikisi de reddedilirdi;
+bu eşleme bacağın vakumsuzluk kanıtı. Log doğrudan gösteriyor:
+
+```
+22: (bf) r7 = r2      ; frame1: R7=scalar(id=1,…)
+23: (25) if r6 > 0x7  ; frame1: R6=scalar(id=1,…umax=7…) R7=scalar(id=1,…umax=7…)
+```
+frame0'da basılan id, frame1'de yaşıyor ve bir argümanı diğeri üzerinden daraltıyor.
+
+**6 program, 4 kabul / 2 red**, `store_locations_checked=32`, `runtime_writes_checked=32`,
+`prune_pairs_checked=6`, `finding_count=0`, `parser_unrecognized=0`.
+
+### 4. Sessiz parser deliği — ve payda kuralının bedelini ödediği yer
+
+İlk capture `store_locations_checked = **0**` verdi, oysa log frame1 state'leriyle doluydu.
+Sebep: verifier her çok-frame'li state'i `frameN:` ile önekliyor, ve önek register
+token'larının ÖNÜNDE duruyor:
+```
+33: frame1: R3=map_value(ks=4,vs=64,…)
+```
+Bu yüzden tam-state satırı "tam-state satırı gibi görünmüyor", `;` koluna düşüyor, `;`
+bulunmayınca atılıyor. Ve **sessizce** başarısız oluyor — tanınmayan satır değil, boş bir
+register evolution — yani `parser_unrecognized` 0 kalıyor ve tek belirti sıfır payda.
+
+İlk düzeltmem yetmedi: öneki state çıkarımından *sonra* soymuştum, oysa önek (a)/(b)
+kararından ÖNCE kalkmalı. Düzeltilince payda 0 → 32, ve `tnum_bounds_checked` 131 → 142
+(frame1 state'leri artık invariant kontrollerini de besliyor).
+
+**"Sıfır bulgu ancak iddia OKUNMUŞSA anlamlı" kuralı olmasaydı bu bacak hiçbir şey
+görmeden temiz sonuç raporlayacaktı.** Kural 0041'de konmuştu; bedelini burada ödedi.
+
+Frame indeksi bilerek snapshot'a taşınmıyor: instruction indeksleri bir programın
+subprog'ları arasında benzersiz, yani bir insn tam olarak bir subprog'a ait. İleride aynı
+insn iki farklı çağrı derinliğinde görülürse iddialar birleşir — 0047'den beri
+store-location kontrolü zaten BİRLEŞİM kullanıyor, yani muhafazakâr yön.
+
+### 5. Testler
+
+`frame_calibration.rs` 6 test: cevabın kendisi (one red / both kabul + üç kontrol),
+caller'da basılan id'nin callee frame'inde görünürlüğü, **paydanın gerçekten okunduğu**,
+callee frame register'larının bounds'la pipeline'a ulaştığı, dişin callee frame'i içinde
+ateşlediği, ve parser kör noktası yok. Workspace 237 yeşil.
