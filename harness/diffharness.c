@@ -46,6 +46,12 @@
 #define BPF_MOV64_IMM(DST, IMM)                                                \
     ((struct bpf_insn){.code = BPF_ALU64 | BPF_MOV | BPF_K,                    \
                        .dst_reg = DST, .src_reg = 0, .off = 0, .imm = IMM})
+/* 32-bit register move: the alu32 form zero-extends, which is exactly why the verifier
+   keeps BPF_ADD_CONST32 and BPF_ADD_CONST64 as distinct link flags and refuses to prune
+   across them. */
+#define BPF_MOV32_REG(DST, SRC)                                                \
+    ((struct bpf_insn){.code = BPF_ALU | BPF_MOV | BPF_X,                      \
+                       .dst_reg = DST, .src_reg = SRC, .off = 0, .imm = 0})
 #define BPF_MOV64_REG(DST, SRC)                                                \
     ((struct bpf_insn){.code = BPF_ALU64 | BPF_MOV | BPF_X,                    \
                        .dst_reg = DST, .src_reg = SRC, .off = 0, .imm = 0})
@@ -3246,6 +3252,253 @@ static int emit_iter_loop(struct bpf_insn *ins, int n, const struct iter_ids *id
     return n;
 }
 
+// ---- scalar ID remapping (--gen-idmap) --------------------------------------
+// THE thing states.c calls "too simplistic". `check_ids()` (states.c:319) builds a
+// BIJECTIVE old<->cur id mapping while comparing two states, and `check_scalar_ids()`
+// wraps it for scalars. The kernel's own comment in regsafe spells out why it must
+// exist, and it is a program, not a hypothetical:
+//
+//   1: r6 = ... unbound scalar, ID=a ...
+//   2: r7 = ... unbound scalar, ID=b ...
+//   3: if (r6 > r7) goto +1
+//   4: r6 = r7                 <- both now carry id=b: LINKED
+//   5: if (r6 > X) goto ...    <- sync_linked_regs narrows r7 too, because they share id
+//   6: ... memory operation using r7 ...
+//
+// Instruction 6 is reached in TWO states: I. r6{id=b}, r7{id=b} via 1-6, and
+// II. r6{id=a}, r7{id=b} via 1-4,6. In state II the bound check at 5 never touched r7,
+// so the memory operation is unsafe. If check_ids() equated the two, state II would be
+// PRUNED against state I and the unsafe access accepted. That is a decision-flipping
+// shape, which is what makes it testable at all.
+//
+// The axis is HOW the link is formed, because each form carries a different id:
+//   * plain `rX = rY` mints an id on the source (assign_scalar_id_before_mov,
+//     verifier.c:3470) and copies it, so both registers share a bare id;
+//   * `rX = rY; rY += const` additionally sets BPF_ADD_CONST64 (bit 31) with a delta,
+//     so the two registers carry id and id|flag -- and check_scalar_ids must map BOTH
+//     the compound and the base id consistently;
+//   * the 32-bit form sets BPF_ADD_CONST32 (bit 30) instead, and the kernel refuses to
+//     prune across differing flag types because alu32 zero-extends and alu64 does not.
+//
+// Every arm pairs a REJECT shape (the link exists on one path only, so one state
+// arrives unnarrowed) with an ACCEPT control (the link exists on both paths, or the
+// store uses the register that is narrowed directly). Without the controls a reject
+// would only prove the shape is unsafe, not that linkage is what decides it.
+//
+// 0042's instrument rides along unchanged and is an especially good fit here:
+// BPF_F_TEST_STATE_FREQ multiplies the pruning attempts, so an id-mapping mistake has
+// far more chances to be exercised with the flag than without.
+enum idmap_link {
+    IDL_NONE,      /* no link at all -- baseline: r7 is never narrowed          */
+    IDL_MOV,       /* r7 = r6            bare shared id                          */
+    IDL_ADDC64,    /* r7 = r6; r7 += 4   id | BPF_ADD_CONST64, delta 4           */
+    IDL_ADDC32,    /* w7 = w6; w7 += 4   id | BPF_ADD_CONST32                    */
+};
+
+static const char *idmap_link_name(enum idmap_link l) {
+    switch (l) {
+    case IDL_NONE:   return "nolink";
+    case IDL_MOV:    return "mov";
+    case IDL_ADDC64: return "addc64";
+    case IDL_ADDC32: return "addc32";
+    }
+    return "?";
+}
+
+static int emit_idmap_link(struct bpf_insn *ins, int n, enum idmap_link l) {
+    switch (l) {
+    case IDL_NONE:
+        break;
+    case IDL_MOV:
+        ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_6); break;
+    case IDL_ADDC64:
+        ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_6);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_7, 4); break;
+    case IDL_ADDC32:
+        ins[n++] = BPF_MOV32_REG(BPF_REG_7, BPF_REG_6);
+        ins[n++] = BPF_ALU32_IMM(BPF_ADD, BPF_REG_7, 4); break;
+    }
+    return n;
+}
+
+/* `both` = emit the link on BOTH paths (the control); otherwise only on the
+   fall-through, so the two states arriving at the narrowing check differ in exactly
+   their id structure. `use_r6` stores through the register the check narrows directly,
+   which must be safe no matter what the ids say. */
+static void run_idmap_prog(enum idmap_link link, int both, int use_r6, int store_off,
+                           int idx, int map_in, int map_out) {
+    struct bpf_insn ins[80];
+    int n = 0, jexit[4], nx = 0;
+
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);   /* scalar A */
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_0, 4);   /* scalar B */
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_9, BPF_REG_0, 8);   /* path selector */
+
+    /* The split tests r9 alone, so neither scalar is constrained by the branch and the
+       only difference between the two arriving states is the LINK. */
+    const int jsplit = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_9, 0, 0);
+    n = emit_idmap_link(ins, n, link);                        /* fall-through path */
+    const int jmerge = n; ins[n++] = BPF_JMP_IMM(BPF_JA, 0, 0, 0);
+    ins[jsplit].off = n - jsplit - 1;
+    if (both)
+        n = emit_idmap_link(ins, n, link);                    /* taken path too */
+    ins[jmerge].off = n - jmerge - 1;
+
+    /* The narrowing check names r6 only. r7 is narrowed ONLY through the shared id, by
+       sync_linked_regs -- which is exactly the knowledge a wrong prune would smuggle
+       into a state that never had it. */
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JGT, BPF_REG_6, 7, 0);
+
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_8, BPF_REG_0);
+    ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_8, use_r6 ? BPF_REG_6 : BPF_REG_7);
+    const int store_insn = n;
+    ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_8, store_off, -1);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);
+    ins[n++] = BPF_EXIT_INSN();
+    const int exit0 = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    for (int i = 0; i < nx; i++)
+        ins[jexit[i]].off = exit0 - jexit[i] - 1;
+
+    struct prune_load base = prune_load_once(ins, n, 0, g_log, sizeof(g_log));
+    struct prune_load freq = prune_load_once(ins, n, BPF_F_TEST_STATE_FREQ,
+                                             g_log2, sizeof(g_log2));
+    struct prune_load inv  = prune_load_once(ins, n, BPF_F_TEST_REG_INVARIANTS,
+                                             g_log2, sizeof(g_log2));
+
+    g_log[0] = '\0';
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)ins;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = sizeof(g_log);
+    attr.log_buf = (uint64_t)(unsigned long)g_log;
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int e = errno;
+
+    char name[96];
+    snprintf(name, sizeof(name), "genidmap#%s.%s.r%d#%03d", idmap_link_name(link),
+             both ? "both" : "one", use_r6 ? 6 : 7, idx);
+    printf("===PROG %s type=socket_filter ===\n", name);
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+           fd >= 0 ? "accept" : "reject", fd, fd >= 0 ? 0 : e);
+    printf("STORE insn=%d reg=8 off=%d size=1\n", store_insn, store_off);
+    printf("IDMAP link=%s both=%d store_reg=r%d store_off=%d\n",
+           idmap_link_name(link), both, use_r6 ? 6 : 7, store_off);
+    printf("PRUNE fall=%s taken=%s fall_safe=%d taken_safe=%d stack=0"
+           " base_verdict=%s base_errno=%d base_states=%lu base_reason=%s"
+           " freq_verdict=%s freq_errno=%d freq_states=%lu freq_reason=%s"
+           " inv_verdict=%s inv_errno=%d inv_reason=%s\n",
+           idmap_link_name(link), both ? "both" : "one", base.accept, base.accept,
+           base.accept ? "accept" : "reject", base.err, base.states, base.reason,
+           freq.accept ? "accept" : "reject", freq.err, freq.states, freq.reason,
+           inv.accept ? "accept" : "reject", inv.err, inv.reason);
+
+    if (fd >= 0) {
+        unsigned char pkt[64];
+        memset(pkt, 0, sizeof(pkt));
+        for (int i = 0; i < LOOPR_INPUTS_N; i++) {
+            uint32_t in = LOOPR_INPUTS[i];
+            unsigned char zero[RTW_VALUE_SIZE], val[16];
+            memset(zero, 0, sizeof(zero));
+            memset(val, 0, sizeof(val));
+            memcpy(val + 0, &in, 4);          /* scalar A */
+            memcpy(val + 4, &in, 4);          /* scalar B */
+            uint32_t sel = i & 1;             /* exercise BOTH paths at runtime */
+            memcpy(val + 8, &sel, 4);
+            int ue = rt_map_set_bytes(map_in, 0, val);
+            int ze = rt_map_set_bytes(map_out, 0, zero);
+            union bpf_attr t;
+            memset(&t, 0, sizeof(t));
+            t.test.prog_fd = fd;
+            t.test.data_in = (uint64_t)(unsigned long)pkt;
+            t.test.data_size_in = sizeof(pkt);
+            t.test.repeat = 1;
+            int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+            unsigned char out[RTW_VALUE_SIZE];
+            memset(out, 0, sizeof(out));
+            int ge = rt_map_get(map_out, 0, out);
+            if (r < 0 || ue < 0 || ze < 0 || ge < 0) {
+                printf("RUNTIME input=0x%08x error=1 testrun_errno=%d\n",
+                       in, r < 0 ? errno : 0);
+                continue;
+            }
+            int off = -1;
+            for (int b = 0; b < RTW_VALUE_SIZE; b++)
+                if (out[b] == RTW_SENTINEL) { off = b; break; }
+            int executed = (t.test.retval == 1);
+            if (off < 0)
+                printf("RUNTIME input=0x%08x store_off=none store_len=0 store_size=1"
+                       " executed=%d\n", in, executed);
+            else {
+                int len = 0;
+                for (int b = off; b < RTW_VALUE_SIZE && out[b] == RTW_SENTINEL; b++) len++;
+                printf("RUNTIME input=0x%08x store_off=%d store_len=%d store_size=1"
+                       " executed=%d\n", in, off, len, executed);
+            }
+        }
+        close(fd);
+    }
+    printf("---LOG---\n%s\n---END---\n", g_log);
+}
+
+static void run_generated_idmap_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 16; m.max_entries = 1;   /* two scalars + selector */
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = RTW_VALUE_SIZE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
+        printf("===PROG genidmap type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    /* Store offset 48 leaves room for the +4 delta of the ADD_CONST arms: linked and
+       narrowed, r7 is at most 7 (bare) or 11 (delta 4), so 48 + 11 + 1 = 60 <= 64. The
+       decision therefore turns on LINKAGE, never on the offset arithmetic. */
+    const struct { enum idmap_link link; int both, use_r6; } arms[] = {
+        { IDL_NONE,   0, 0 },   /* baseline: r7 never narrowed on either path   */
+        { IDL_NONE,   0, 1 },   /* control:  store through the narrowed r6       */
+        { IDL_MOV,    0, 0 },   /* THE SHAPE: link on one path only              */
+        { IDL_MOV,    1, 0 },   /* control:  link on both paths                  */
+        { IDL_MOV,    0, 1 },   /* control:  one-path link, store through r6     */
+        { IDL_ADDC64, 0, 0 },   /* BPF_ADD_CONST64 link on one path only         */
+        { IDL_ADDC64, 1, 0 },   /* control:  both paths                          */
+        { IDL_ADDC32, 0, 0 },   /* BPF_ADD_CONST32 link on one path only         */
+        { IDL_ADDC32, 1, 0 },   /* control:  both paths                          */
+    };
+    int idx = 0;
+    for (unsigned i = 0; i < sizeof(arms) / sizeof(arms[0]); i++)
+        run_idmap_prog(arms[i].link, arms[i].both, arms[i].use_r6, 48, idx++,
+                       map_in, map_out);
+    close(map_in);
+    close(map_out);
+}
+
 // ---- open-coded iterator family (--gen-iter) --------------------------------
 // The SAME loop bodies as --gen-loop, driven by a DIFFERENT loop mechanism. That makes
 // the leg a mechanism differential on top of everything else: both are back-edges over
@@ -3963,6 +4216,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-iter") == 0) {
         run_generated_iter_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-idmap") == 0) {
+        run_generated_idmap_family();
         return 0;
     }
 

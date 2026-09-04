@@ -3808,3 +3808,89 @@ karşılaştırma. Filtre kolun kendi etiketine çevrildi.)*
 "too simplistic ... doesn't know about ID remapping" dediği şey; iki iterator (ya da
 iterator + refcounted pointer) arasında id eşlemesi gerektiren şekiller, ki bu ailenin
 tek-iterator şekli oraya henüz dokunmuyor.
+
+---
+
+## 0046 — Skaler ID remapping (`--gen-idmap`): `states.c`'nin "too simplistic" dediği şey
+
+### 1. Hedef, kernel'in kendi tarifiyle
+
+`check_ids()` (states.c:319) iki state'i karşılaştırırken **bijektif** bir old↔cur id
+eşlemesi kuruyor; `check_scalar_ids()` bunu skalerler için sarıyor. Neden var olduğunu
+kernel `regsafe` yorumunda hipotezle değil **programla** anlatıyor:
+
+```
+1: r6 = unbound scalar, ID=a
+2: r7 = unbound scalar, ID=b
+3: if (r6 > r7) goto +1
+4: r6 = r7                 <- ikisi de id=b: LINKLI
+5: if (r6 > X) goto ...    <- sync_linked_regs paylaşılan id üzerinden r7'yi de daraltıyor
+6: ... r7 ile bellek işlemi ...
+```
+
+(6)'ya iki state ulaşıyor: **I.** `r6{id=b}, r7{id=b}`, **II.** `r6{id=a}, r7{id=b}`.
+II'de (5)'teki sınır kontrolü r7'ye hiç dokunmadı. `check_ids()` ikisini eşitlerse II
+budanır ve güvensiz erişim kabul edilir.
+
+### 2. Aile: farkı YALNIZCA linkaj yapacak biçimde
+
+Ayrım noktası üçüncü bir skaleri test ediyor, yani ne r6 ne r7 dalın kendisiyle
+kısıtlanıyor. Daraltma kontrolü yalnız r6'yı adlandırıyor, yani r7 **ancak** paylaşılan
+id üzerinden daralabilir. Ve her RED şekli, yalnızca linkin iki yolda da var olup
+olmadığında farklılaşan bir KABUL kontrolüyle eşleniyor — bu eşleme olmadan bir red
+sadece "şekil güvensiz" derdi, "linkaj karar veriyor" demezdi.
+
+Eksen = linkin NASIL kurulduğu, çünkü her biçim farklı bir id taşıyor: düz `r7 = r6`
+sade paylaşılan id (`assign_scalar_id_before_mov`, verifier.c:3470 kaynağa id basıyor);
+`r7 = r6; r7 += 4` ayrıca `BPF_ADD_CONST64` (bit 31) kuruyor, yani çift `id` ve
+`id|flag` taşıyor ve `check_scalar_ids` **hem bileşik hem taban** id'yi tutarlı
+eşlemek zorunda; 32-bit biçim `BPF_ADD_CONST32` (bit 30) kuruyor ve kernel farklı bayrak
+tipleri arasında budamayı reddediyor çünkü alu32 zero-extend ediyor.
+
+### 3. Sonuç
+
+**9 program, 5 kabul / 4 red — türetmeyle birebir**, `store_locations_checked=40`,
+`runtime_writes_checked=40`, `prune_pairs_checked=9`, `finding_count=0`,
+`parser_unrecognized=0`.
+
+| kol | karar | anlam |
+|---|---|---|
+| `nolink.one.r7` | red | taban: r7 hiçbir yolda daralmıyor |
+| `nolink.one.r6` | kabul | kontrol: daraltılan r6 üzerinden |
+| **`mov.one.r7`** | **red** | asıl şekil — linksiz state budanmadı |
+| `mov.both.r7` | kabul | kontrol: iki yolda link → r7 daraldı |
+| `mov.one.r6` | kabul | kontrol |
+| `addc64.one/both.r7` | red / kabul | `BPF_ADD_CONST64` |
+| `addc32.one/both.r7` | red / kabul | `BPF_ADD_CONST32` |
+
+**`*.both` kollarının kabul edilmesi bu bacağın vakumsuzluk kanıtı:** paylaşılan id
+üzerinden r7'nin gerçekten daraltıldığını gösteriyor. Olmasaydı onlar da reddedilirdi ve
+`*.one` redleri linkaj hakkında hiçbir şey söylemezdi.
+
+Mekanizma state dump'ında da görünür, çıkarımla değil doğrudan:
+```
+11: (bf) r7 = r6      ; R6=scalar(id=1,...) R7=scalar(id=1,...)
+13: (25) if r6 > 0x7  ; R6=scalar(id=1,...umax=7...) R7=scalar(id=1,...umax=7...)
+```
+İkinci satır tam olarak kernel yorumundaki (5) adımı: kontrol yalnız r6'yı adlandırıyor,
+r7 paylaşılan id üzerinden daralıyor.
+
+0042'nin üç-yüklemeli enstrümanı değişmeden bindi ve buraya özellikle iyi oturuyor:
+`BPF_F_TEST_STATE_FREQ` pruning denemelerini çoğalttığı için bir id-eşleme hatası
+bayrakla çok daha fazla şans buluyor. Dokuz programın hepsinde üç yükleme aynı fikirde.
+
+### 4. Testler
+
+`idmap_calibration.rs` 7 test: **headline+vakumsuzluk tek assertion'da** (her link biçimi
+için one RED / both KABUL), taban ve doğrudan-kullanım kontrollerinin sonucu iki taraftan
+çerçevelemesi, paylaşılan id'nin ve yayılımının log'da görünürlüğü, dört link biçiminin
+de mevcut olduğu, oracle'ların paydayla birlikte sessizliği, 0041 dişinin ateşlemesi, ve
+parser kör noktası yok. Workspace 225 yeşil.
+
+*(Yol boyunca test kendi hatasını yakaladı: `find` ilk "r7 = r6" satırını alıyordu, o da
+state anotasyonu olmayan düz listeleme satırı. Anotasyonlu olan seçildi.)*
+
+**Sıradaki:** id eşlemesinin **injektifliği** — `check_ids` `map[i].cur == cur_id` ama
+`old` farklıysa reddediyor; iki linkli çiftin ÇAPRAZ eşlendiği şekiller bunu doğrudan
+sınar ve bu aile henüz oraya dokunmuyor. Ayrıca `BPF_ID_MAP_SIZE` tükenmesi
+(`check_ids` dolduğunda state'leri denk-değil sayıyor).
