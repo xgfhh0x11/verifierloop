@@ -1948,6 +1948,197 @@ static void run_generated_rtw_family(void) {
     close(map_out);
 }
 
+// ---- T2-2: multi-byte store-WIDTH memory-safety oracle (--gen-rtw2) ----------
+// The off-by-one a real verifier bug would hit lives in the in-bounds check
+// `off + size <= value_size`, so the axis under test is the store WIDTH, not just
+// the base offset. A multi-byte store is memory-safe iff ALL `size` sentinel bytes
+// land inside the map value; a store that ends one byte past the end is a partial
+// OOB write even though its base offset is in-bounds. The program stores `size`
+// bytes of 0xFF (BPF_ST_MEM imm=-1). Userspace zeroes map_out BEFORE EVERY run
+// (inherited from --gen-rtw's per-input loop — the sole 0xFF source is this store,
+// so a stale sentinel from a prior sweep step can never be miscounted), runs the
+// program, reads the value back, finds the FIRST 0xFF (store_off) and counts the
+// consecutive 0xFF run (store_len), and reports store_size. The pipeline requires
+// store_len == store_size for an accepted store: a truncated run (store_len <
+// store_size) or store_off=none is a partial/total OOB write the verifier accepted.
+// Two shapes: (a) and.wN — attacker offset r6 &= MASK, store size N at map_out+r6
+// (accept iff MASK + N <= value_size); (b) bndc.wN — a CONST offset baked into the
+// ST insn's off field: off = V-N stores up to exactly the end (ACCEPT), off = V-N+1
+// runs one byte past it (REJECT) — the exact off-by-one control.
+
+static int rtw2_size_code(int size) {
+    switch (size) {
+    case 1: return BPF_B;
+    case 2: return BPF_H;
+    case 4: return BPF_W;
+    case 8: return BPF_DW;
+    }
+    return BPF_B;
+}
+
+static void run_rtw2_one(const char *name, const struct bpf_insn *insns, int n,
+                         int map_in, int map_out, int store_size) {
+    g_log[0] = '\0';
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)insns;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = sizeof(g_log);
+    attr.log_buf = (uint64_t)(unsigned long)g_log;
+
+    uint64_t t0 = now_ns();
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int e = errno;
+    uint64_t dt = now_ns() - t0;
+
+    printf("===PROG %s type=socket_filter ===\n", name);
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=%llu\n",
+           fd >= 0 ? "accept" : "reject", fd, fd >= 0 ? 0 : e,
+           (unsigned long long)dt);
+
+    if (fd >= 0) {
+        unsigned char pkt[64];
+        memset(pkt, 0, sizeof(pkt));
+        for (int i = 0; i < RT_INPUTS_N; i++) {
+            uint32_t in = RT_INPUTS[i];
+            unsigned char zero[RTW_VALUE_SIZE];
+            memset(zero, 0, sizeof(zero));
+            int ue = rt_map_set(map_in, 0, in);
+            int ze = rt_map_set_bytes(map_out, 0, zero); /* re-zero BEFORE every run */
+            union bpf_attr t;
+            memset(&t, 0, sizeof(t));
+            t.test.prog_fd = fd;
+            t.test.data_in = (uint64_t)(unsigned long)pkt;
+            t.test.data_size_in = sizeof(pkt);
+            t.test.repeat = 1;
+            int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+            unsigned char out[RTW_VALUE_SIZE];
+            memset(out, 0, sizeof(out));
+            int ge = rt_map_get(map_out, 0, out);
+            if (r < 0 || ue < 0 || ze < 0 || ge < 0) {
+                printf("RUNTIME input=0x%08x error=1 testrun_errno=%d\n",
+                       in, r < 0 ? errno : 0);
+                continue;
+            }
+            int off = -1;
+            for (int b = 0; b < RTW_VALUE_SIZE; b++)
+                if (out[b] == RTW_SENTINEL) { off = b; break; }
+            if (off < 0) {
+                printf("RUNTIME input=0x%08x store_off=none store_len=0 store_size=%d\n",
+                       in, store_size);
+            } else {
+                int len = 0;
+                for (int b = off; b < RTW_VALUE_SIZE && out[b] == RTW_SENTINEL; b++)
+                    len++;
+                printf("RUNTIME input=0x%08x store_off=%d store_len=%d store_size=%d\n",
+                       in, off, len, store_size);
+            }
+        }
+        close(fd);
+    }
+    printf("---LOG---\n%s\n---END---\n", g_log);
+}
+
+enum rtw2_shape { RTW2_AND, RTW2_BNDC };
+
+static void run_rtw2_prog(enum rtw2_shape shape, uint32_t mask, int store_size,
+                          int const_off, int idx, int map_in, int map_out) {
+    struct bpf_insn ins[40];
+    int n = 0;
+    int sc = rtw2_size_code(store_size);
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);               /* key = 0 */
+    if (shape == RTW2_AND) {
+        /* lookup map_in -> r0 (attacker offset source) */
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+        ins[n++] = (struct bpf_insn){0};
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+        const int j1 = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);    /* r6 = attacker input */
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, mask);        /* r6 &= MASK -> [0,MASK] */
+        /* lookup map_out -> r0 (r6 survives: callee-saved) */
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+        ins[n++] = (struct bpf_insn){0};
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+        const int j2 = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_0);            /* r7 = map_out value ptr */
+        ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_7, BPF_REG_6);   /* r7 += offset */
+        ins[n++] = BPF_ST_MEM(sc, BPF_REG_7, 0, -1);              /* store N sentinel bytes */
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+        ins[n++] = BPF_EXIT_INSN();
+        const int exit0 = n;
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+        ins[n++] = BPF_EXIT_INSN();
+        ins[j1].off = exit0 - j1 - 1;
+        ins[j2].off = exit0 - j2 - 1;
+    } else { /* RTW2_BNDC: const offset baked into the ST insn's off field */
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+        ins[n++] = (struct bpf_insn){0};
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+        const int j1 = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_0);            /* r7 = map_out value ptr */
+        ins[n++] = BPF_ST_MEM(sc, BPF_REG_7, const_off, -1);      /* store N bytes at const off */
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+        ins[n++] = BPF_EXIT_INSN();
+        const int exit0 = n;
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+        ins[n++] = BPF_EXIT_INSN();
+        ins[j1].off = exit0 - j1 - 1;
+    }
+
+    char name[96];
+    snprintf(name, sizeof(name), "genrtw2#%s.w%d#%03d",
+             shape == RTW2_AND ? "and" : "bndc", store_size, idx);
+    run_rtw2_one(name, ins, n, map_in, map_out, store_size);
+}
+
+static void run_generated_rtw2_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 8; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = RTW_VALUE_SIZE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
+        printf("===PROG genrtw2 type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    int idx = 0;
+    const uint32_t masks[] = {0x7u, 0x1fu, 0x3fu};
+    const int sizes[] = {1, 2, 4, 8};
+    /* (a) and.wN: r6 &= MASK (umax = MASK), store size N at map_out+r6.
+       Accept iff MASK + N <= value_size (64). 0x7/0x1f accept every N;
+       0x3f accepts only N=1 (63+1=64), rejects N>=2 (65,67,71 > 64). */
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 4; j++)
+            run_rtw2_prog(RTW2_AND, masks[i], sizes[j], 0, idx++, map_in, map_out);
+    /* (b) bndc.wN: const offset. off = V-N ends exactly at V (ACCEPT);
+       off = V-N+1 runs one byte past V (REJECT) — the exact off-by-one. */
+    for (int j = 0; j < 4; j++) {
+        run_rtw2_prog(RTW2_BNDC, 0, sizes[j], RTW_VALUE_SIZE - sizes[j],
+                      idx++, map_in, map_out);       /* accept: ends at V */
+        run_rtw2_prog(RTW2_BNDC, 0, sizes[j], RTW_VALUE_SIZE - sizes[j] + 1,
+                      idx++, map_in, map_out);       /* reject: one past V */
+    }
+    close(map_in);
+    close(map_out);
+}
+
 int main(int argc, char **argv) {
     // Two data sources, kept apart on purpose (different provenance):
     //   (no args) the fixed authoritative program set, pinned by tests
@@ -2006,6 +2197,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-rtw") == 0) {
         run_generated_rtw_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-rtw2") == 0) {
+        run_generated_rtw2_family();
         return 0;
     }
 

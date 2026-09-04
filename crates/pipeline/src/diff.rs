@@ -587,14 +587,35 @@ fn check_runtime_write_safety(
             _ => continue,
         };
         *checked += 1;
-        if off < 0 {
+        // A store is memory-safe iff its base landed inside the value (off >= 0) AND,
+        // for a multi-byte store (--gen-rtw2), the full run landed inside it
+        // (store_len == store_size). `map_or(true)` keeps the single-byte --gen-rtw
+        // family — which reports presence via store_off alone and emits no size —
+        // passing on presence. A short run (store_len < store_size) is a PARTIAL OOB
+        // write: some sentinel bytes fell outside the value even though the base did
+        // not — exactly the `off + size <= value_size` off-by-one this family targets.
+        let full_run = smp
+            .store_len
+            .zip(smp.store_size)
+            .map_or(true, |(l, s)| l == s);
+        if off < 0 || !full_run {
+            let observed = if off < 0 {
+                format!("input=0x{:x}: sentinel absent — store landed out of bounds", smp.input)
+            } else {
+                format!(
+                    "input=0x{:x}: sentinel run {} of {} bytes — store crossed the value end",
+                    smp.input,
+                    smp.store_len.unwrap_or(0),
+                    smp.store_size.unwrap_or(0),
+                )
+            };
             out.push(DivergenceFinding {
                 record_index: Some(idx),
                 source: GroundTruthSource::LogicalInvariant,
                 kind: "runtime_oob_write".to_string(),
                 aspect: "runtime".to_string(),
-                expected: "an accepted store lands inside the map value".to_string(),
-                observed: format!("input=0x{:x}: sentinel absent — store landed out of bounds", smp.input),
+                expected: "an accepted store lands entirely inside the map value".to_string(),
+                observed,
                 detail: "the verifier accepted a program whose runtime store escaped the map value"
                     .to_string(),
             });

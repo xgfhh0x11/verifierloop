@@ -133,8 +133,25 @@ OOB-write. **Bound parse gerekmez — doğrudan bellek-güvenliği.** Çıktı: 
 2 red; red = over-wide maske, verifier'ın statik çizgisi), **runtime_writes_checked=84,
 finding_count=0** — her store value içine düştü. Diş kanıtlandı (planlı `store_off=none` tam
 bir kez `runtime_oob_write` ateşliyor). Pinlendi: `runtime_write_calibration.rs` (5 test).
-Sıradaki: store genişliği 2/4/8B (T2-2), packet write, store_off'u verifier'ın pointer-offset
-bound'uyla karşılaştırma (pointer-tracking desync), döngü/iterator.
+Sıradaki: store genişliği 2/4/8B (T2-2 → §2b.2, DONE), packet write, store_off'u verifier'ın
+pointer-offset bound'uyla karşılaştırma (pointer-tracking desync), döngü/iterator.
+
+### 2b.2 — Store-genişlik ekseni (`--gen-rtw2`, devlog 0038)
+
+T2-2: 2b.1'in tek-bayt sentinel'ini **çok-baytlı store**'a genişletir. Gerçek verifier
+bug'ının off-by-one'ı `off + size ≤ value_size` kontrolünde — yani ölçülen eksen artık
+store WIDTH. Store `size` bayt 0xFF yazar (imm=−1); harness her koşuda map'i **koşu-öncesi**
+sıfırlar (tek 0xFF kaynağı store olduğundan önceki adımdan kalan sentinel yanlış sayılamaz),
+İLK 0xFF'i (`store_off`) bulur ve ardışık run'ı sayar (`store_len`). Predikat: bellek-güvenli
+⟺ `off≥0 VE store_len==store_size`; kısa run = **kısmi OOB** (base içeride ama bir bayt sınırı
+aştı) — tek-baytın ifade edemediği yüzey. `map_or(true)` eski 1-byte fixture'ı geriye-uyumlu
+tutar. İki şekil: **and.wN** (attacker offset r6&=MASK, kabul ⟺ MASK+N≤64) ve **bndc.wN**
+(const offset; off=64−N tam sonda biter=KABUL, off=65−N bir bayt aşar=RED — kesin off-by-one).
+Çıktı: 20 program (13 kabul / 7 red), **runtime_writes_checked=156, finding_count=0** — her
+kabul edilen store tam genişliğini içeri yazdı; en sıkı sınır bndc.w8 (off=56, run=8, tam
+64'te biter). Diş iki kez: planlı `store_off=none` VE planlı kısa run (`store_len<store_size`)
+ayrı ayrı `runtime_oob_write` ateşliyor. Pinlendi: `runtime_write2_calibration.rs` (7 test).
+Sıradaki: packet write, store_off vs verifier pointer-offset bound, döngü/iterator.
 
 ---
 

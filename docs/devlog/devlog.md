@@ -3074,3 +3074,65 @@ v1-store 1-byte + map_value. Sıradaki eksenler: store genişliği 2/4/8B (T2-2 
 mantığı), ve store_off'u verifier'ın kanıtladığı pointer-offset bound'uyla karşılaştırma
 (sadece "value içinde mi" değil, "verifier'ın dediği yerde mi" — pointer-tracking desync).
 Sonra döngü/iterator input'ları. Tam suite 156 yeşil.
+
+## 0038 — Çok-baytlı store genişliği (map-value, `--gen-rtw2`): T2-2, `off+size ≤ value_size` off-by-one'ı
+
+- **Tarih:** 2026-09-04
+- **Durum:** 0037'nin (tek-bayt sentinel) **genişlik** eksenine genişlemesi. Ölçülen
+  eksen artık store WIDTH — gerçek bir verifier bug'ının vuracağı off-by-one tam
+  `off + size ≤ value_size` kontrolünde yaşıyor.
+- **Alan:** `harness/diffharness.c` (`--gen-rtw2`, `run_rtw2_one`/`run_rtw2_prog`/
+  `run_generated_rtw2_family`, `rtw2_size_code`), `crates/metrics/src/core.rs`
+  (`RuntimeSample.store_len` + `.store_size`, serde-skip), `crates/pipeline/src/
+  verifier_log.rs` (`store_len`/`store_size` ayrıştırma), `crates/pipeline/src/diff.rs`
+  (`check_runtime_write_safety`: `store_len==store_size` full-run predikatı, `map_or(true)`
+  geriye-uyum), `crates/pipeline/tests/runtime_write2_calibration.rs` (yeni, 7 test,
+  +fixture `gen-rtw2-20.log`), `scripts/run-rtw2.sh`, `docs/COVERAGE-MAP.md`,
+  `docs/OPEN-ITEMS.md`.
+- **İlgili:** 0037 (`--gen-rtw`, tek-bayt), 0036 (retval oracle), OI-9,
+  [[oracle-times-input]].
+
+### 0. Neden — tek bayt off-by-one'ı ifade edemez
+0037'nin sentinel'i 1 bayt: `store_off=none` ya var ya yok. Ama asıl av yüzeyi
+`off+size ≤ value_size`: base offset in-bounds olsa bile N-baytlık bir store value
+sonunu bir bayt aşabilir. Bunu görmek için store WIDTH'i değişken yapmak ve **tüm**
+sentinel baytlarının içeri düştüğünü ölçmek gerekiyor.
+
+### 1. Mekanizma — N-bayt sentinel + ardışık-run sayımı
+Store artık `BPF_ST_MEM(size_code, r7, off, imm=-1)` → `size` bayt 0xFF (DW için imm
+64-bit'e sign-extend → 8 bayt). Harness her koşuda map_out'u **koşu-öncesi** sıfırlar
+(tek 0xFF kaynağı bu store olduğundan önceki süpürme adımından kalan bir sentinel asla
+yanlış sayılamaz — reviewer'ın sentinel-tuzağı sorusuna cevap bu koşu-başı re-zero),
+sonra İLK 0xFF'i (`store_off`) bulur ve ardışık 0xFF run'ını sayar (`store_len`),
+`store_size` ile birlikte yazar. Predikat: kabul edilen store bellek-güvenli ⟺
+`off≥0 VE store_len==store_size`. Kısa run (`store_len<store_size`) = **kısmi OOB**
+(bazı baytlar sınırı aştı). `map_or(true)` eski 1-byte fixture'ı (size yok) varlıkla
+geçirir — geriye-uyumlu.
+
+### 2. İki şekil — attacker offset + tam off-by-one kontrolü
+- **and.wN:** `r6 &= MASK`, store size N at `map_out+r6`. Kabul ⟺ MASK+N ≤ 64.
+  Maskeler {0x7,0x1f,0x3f} × N{1,2,4,8} = 12 program: 0x7/0x1f her N kabul; 0x3f N=1
+  kabul (63+1=64), N≥2 red (65/67/71 > 64).
+- **bndc.wN:** const offset ST insn'in off alanında. off=64−N tam value sonunda biter
+  (KABUL); off=65−N bir bayt aşar (RED) — kesin off-by-one. N{1,2,4,8}×2 = 8 program.
+
+### 3. Çıktı — bpf-next VM (kernel 5e289c5a), 2026-09-04
+20 program, **13 kabul / 7 red** (3 and-taşma + 4 bndc-red). **runtime_writes_checked =
+156** (13×12), **finding_count = 0** — her kabul edilen store TAM genişliğini içeri
+yazdı. En sıkı sınır bndc.w8#018: base off=56, 8 bayt tam 64'te bitiyor, her örnek
+`store_off=56 store_len=8 store_size=8`. **0 store_off=none, 0 parser kör noktası.**
+
+### 4. Diş (iki kez) + reject kontrolü
+Non-vacuity iki yoldan: (a) planlı `store_off=none` (0037'den miras) ve (b) **T2-2'ye
+özgü** planlı kısa run (`store_len=5 store_size=8`) — her ikisi de tam bir kez
+`runtime_oob_write` ateşliyor; ikincisi tek-bayt oracle'ının hiç ifade edemediği
+kısmi-OOB. Reject kontrolü: genişlik-taşmaları load-time'da reddediliyor → hiç koşmuyor
+→ hiç kontrol edilmiyor; bndc çiftleri (off=64−N kabul / off=65−N red) off-by-one'ı
+ikiye bölüyor. Pinlendi: `runtime_write2_calibration.rs` (7 test).
+
+### 5. Sınır ve sıradaki
+Store hâlâ map_value; offset bilgisi "value içinde mi TAM olarak" düzeyinde — henüz
+verifier'ın kanıtladığı pointer-offset bound'uyla karşılaştırılmıyor. Sıradaki: packet
+write (SCHED_CLS), `store_off`'u verifier'ın pointer-offset bound'uyla karşılaştırma
+(pointer-tracking desync, "içeride mi" değil "dediği yerde mi"), sonra döngü/iterator
+input'ları. Tam suite 163 yeşil.

@@ -205,6 +205,8 @@ fn parse_runtime_samples(lines: &[&str]) -> Vec<metrics::core::RuntimeSample> {
         let mut input = None;
         let mut retval = None;
         let mut store_off: Option<i64> = None;
+        let mut store_len: Option<i64> = None;
+        let mut store_size: Option<i64> = None;
         let mut error = false;
         for tok in l.split_whitespace() {
             if let Some(v) = tok.strip_prefix("input=") {
@@ -218,6 +220,12 @@ fn parse_runtime_samples(lines: &[&str]) -> Vec<metrics::core::RuntimeSample> {
                 } else {
                     v.trim().parse::<i64>().unwrap_or(-1)
                 });
+            } else if let Some(v) = tok.strip_prefix("store_len=") {
+                // multi-byte (--gen-rtw2): consecutive sentinel bytes actually found.
+                store_len = v.trim().parse::<i64>().ok();
+            } else if let Some(v) = tok.strip_prefix("store_size=") {
+                // multi-byte (--gen-rtw2): the store's width in bytes.
+                store_size = v.trim().parse::<i64>().ok();
             } else if tok.starts_with("error=") {
                 error = true;
             }
@@ -229,6 +237,8 @@ fn parse_runtime_samples(lines: &[&str]) -> Vec<metrics::core::RuntimeSample> {
                 input: i,
                 retval: retval.unwrap_or(0),
                 store_off,
+                store_len,
+                store_size,
                 error: error || !observed,
             });
         }

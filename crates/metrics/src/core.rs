@@ -185,6 +185,19 @@ pub struct RuntimeSample {
     /// readable value — an OOB write). `None` for return-value samples.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store_off: Option<i64>,
+    /// For a multi-byte STORE (--gen-rtw2): the length of the consecutive sentinel
+    /// run actually observed inside the value. A run shorter than `store_size` means
+    /// some sentinel bytes fell outside the value — a PARTIAL OOB write. `None` for
+    /// the single-byte --gen-rtw family (which reports presence via `store_off`
+    /// alone) and for return-value samples.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store_len: Option<i64>,
+    /// For a multi-byte STORE (--gen-rtw2): the store's width in bytes (the number
+    /// of sentinel bytes it should have written). The write is memory-safe iff
+    /// `store_len == store_size`. `None` for the single-byte family and return-value
+    /// samples.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store_size: Option<i64>,
     /// True if the harness could not execute this sample (skipped by the oracle).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub error: bool,
