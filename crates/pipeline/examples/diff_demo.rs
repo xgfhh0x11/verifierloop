@@ -62,6 +62,7 @@ impl RecordParser for DemoParser {
                     coverage_delta: CoverageDelta::default(),
                     helper_arg_observations: Vec::new(),
                     runtime_samples: Vec::new(),
+                    store_site: None,
                     helper_arg_violations: if buggy {
                         vec![HelperArgViolation {
                             helper: "bpf_map_lookup_elem".to_string(),

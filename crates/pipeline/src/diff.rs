@@ -180,6 +180,13 @@ pub struct DiffSummary {
     /// runtime memory-safety oracle.
     #[serde(default)]
     pub runtime_writes_checked: u64,
+    /// Runtime store observations the STORE-LOCATION check could evaluate — the
+    /// denominator that makes "0 location findings" mean something. Distinct from
+    /// `runtime_writes_checked`, which only asks whether the store stayed inside
+    /// the object; this one asks whether it landed where the verifier PROVED it
+    /// could, which is a strictly stronger question.
+    #[serde(default)]
+    pub store_locations_checked: u64,
 }
 
 /// The DIFF_FINDINGS payload for a period.
@@ -246,6 +253,7 @@ pub fn run(
     let mut reg32_checked = 0u64;
     let mut runtime_checked = 0u64;
     let mut runtime_writes_checked = 0u64;
+    let mut store_locations_checked = 0u64;
     for (idx, record) in metrics.records.iter().enumerate() {
         let idx = idx as u64;
         helper_args_observed += record.core.helper_arg_observations.len() as u64;
@@ -253,6 +261,7 @@ pub fn run(
         check_subregister_invariants(idx, record, &mut findings, &mut reg32_checked);
         check_runtime_ground_truth(idx, record, &mut findings, &mut runtime_checked);
         check_runtime_write_safety(idx, record, &mut findings, &mut runtime_writes_checked);
+        check_store_location(idx, record, &mut findings, &mut store_locations_checked);
         check_helper_proto(idx, record, ground_truth, &mut findings);
         check_helper_observations(
             idx,
@@ -282,6 +291,7 @@ pub fn run(
         reg32_checked,
         runtime_checked,
         runtime_writes_checked,
+        store_locations_checked,
     };
 
     let out = DiffFindings {
@@ -575,6 +585,109 @@ fn check_documented_behavior(
 /// landed (`store_off`) — or that it was ABSENT (`Some(-1)`), meaning the store went
 /// out of the readable value into kernel memory: an OOB write the verifier accepted.
 /// This needs NO bound parsing — it is the direct memory-safety property.
+/// STORE-LOCATION DESYNC — the strictly stronger memory-safety question.
+///
+/// Every earlier runtime-write leg (0037/0038/0039) asks only "did the store stay
+/// INSIDE the object?". A verifier can pass that and still be wrong: if its abstract
+/// arithmetic for the offset is unsound, the store lands at an offset its own state
+/// says is IMPOSSIBLE, yet still inside the object — the "consistent-but-wrong"
+/// class no internal-consistency invariant can see, because the verifier's two views
+/// agree with each other and only disagree with reality.
+///
+/// So this check compares the observed landing site against the verifier's OWN claim
+/// at the store instruction:
+///
+///   proven window = ptr_off + insn_off + [umin, umax], narrowed by var_off's tnum
+///
+/// A store outside that window is a desync between what the verifier proved and what
+/// the machine did. The tnum half matters as much as the interval: `r6 &= 3; r6 <<= 2`
+/// proves offsets {0,4,8,12} — an offset of 6 is inside [0,12] and still impossible.
+///
+/// Provenance: which instruction stores, through which register, comes from the
+/// GENERATOR (`store_site`), never from the verifier's own disassembly — the oracle
+/// must not learn the question from the component it is auditing. The pointer state
+/// is taken from the snapshot at that instruction BEFORE it executes: that is the
+/// state on which the verifier based its authorization.
+///
+/// Silence is the honest answer when no claim is available: a non-pointer base, a
+/// missing snapshot, or a state whose bounds the verifier did not print (a var_off
+/// with unknown bits but no `umax=`) are all SKIPPED rather than guessed, so the
+/// denominator never counts a comparison that did not happen.
+fn check_store_location(
+    idx: u64,
+    record: &MetricRecord,
+    out: &mut Vec<DivergenceFinding>,
+    checked: &mut u64,
+) {
+    let site = match record.core.store_site {
+        Some(s) => s,
+        None => return,
+    };
+    // The verifier's state at the store, taken BEFORE the instruction executes.
+    let ptr = record
+        .core
+        .register_evolution
+        .iter()
+        .filter(|snap| snap.insn_idx == site.insn_idx)
+        .find_map(|snap| snap.regs.iter().find(|r| r.reg == site.base_reg));
+    let ptr = match ptr {
+        Some(p) if p.reg_type != "scalar" => p,
+        _ => return, // no pointer state at the store: nothing was proven to compare
+    };
+    // A pointer with unknown bits but NO stated upper bound is not a usable claim:
+    // the interval half says nothing, so there is no window to test against. (When
+    // the mask is 0 the variable part is a known constant and the tnum alone pins
+    // the landing site exactly, so that case stays checkable.)
+    if ptr.tnum.mask != 0 && ptr.umax == u64::MAX {
+        return;
+    }
+    if ptr.umin > ptr.umax {
+        return;
+    }
+    let base = ptr.ptr_off.unwrap_or(0) + site.insn_off;
+    let lo = base.saturating_add(ptr.umin as i64);
+    let hi = base.saturating_add(ptr.umax as i64);
+
+    for smp in &record.core.runtime_samples {
+        let off = match smp.store_off {
+            Some(o) if !smp.error && o >= 0 => o,
+            // An absent sentinel is an OOB write, which check_runtime_write_safety
+            // already reports; re-reporting it here would double-count one event.
+            _ => continue,
+        };
+        *checked += 1;
+        let var = off - base;
+        let in_window = off >= lo && off <= hi;
+        // tnum: `var` is possible iff its bits agree with the known-bit pattern.
+        let fits_tnum = var >= 0 && (var as u64 & !ptr.tnum.mask) == ptr.tnum.value;
+        if in_window && fits_tnum {
+            continue;
+        }
+        let why = if !in_window {
+            format!("outside the proven window [{lo}, {hi}]")
+        } else {
+            format!(
+                "inside [{lo}, {hi}] but impossible under var_off=(0x{:x}; 0x{:x})",
+                ptr.tnum.value, ptr.tnum.mask
+            )
+        };
+        out.push(DivergenceFinding {
+            record_index: Some(idx),
+            source: GroundTruthSource::LogicalInvariant,
+            kind: "store_location_desync".to_string(),
+            aspect: "runtime".to_string(),
+            expected: format!(
+                "a store through R{} at insn {} lands in {} + [{}, {}] with var_off=(0x{:x}; 0x{:x})",
+                site.base_reg, site.insn_idx, base, ptr.umin, ptr.umax,
+                ptr.tnum.value, ptr.tnum.mask
+            ),
+            observed: format!("input=0x{:x}: the store landed at {off} — {why}", smp.input),
+            detail: "the verifier accepted a store that landed where its own proven pointer state says it could not"
+                .to_string(),
+        });
+    }
+}
+
 fn check_runtime_write_safety(
     idx: u64,
     record: &MetricRecord,
@@ -586,6 +699,16 @@ fn check_runtime_write_safety(
             Some(o) if !smp.error => o,
             _ => continue,
         };
+        // A run that never REACHED the store has nothing to judge: `store_off = none`
+        // there means "the branch skipped it", not "the bytes went out of bounds".
+        // Only the harness families whose store sits behind a branch report this
+        // witness at all, and only `Some(false)` skips — an unconditional store still
+        // reports nothing (`None`) and keeps the original reading, so the teeth on
+        // --gen-rtw / --gen-rtw2 / --gen-pktw are untouched. Judging a skipped run
+        // would report a memory-safety violation for a store that never happened.
+        if smp.executed == Some(false) {
+            continue;
+        }
         *checked += 1;
         // A store is memory-safe iff its base landed inside the value (off >= 0) AND,
         // for a multi-byte store (--gen-rtw2), the full run landed inside it
@@ -905,6 +1028,7 @@ mod tests {
                 coverage_delta: CoverageDelta::default(),
                 helper_arg_observations: Vec::new(),
                 runtime_samples: Vec::new(),
+                store_site: None,
                 helper_arg_violations: Vec::new(),
             },
             counterfactual: CounterfactualLayer::default(),

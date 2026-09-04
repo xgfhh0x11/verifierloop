@@ -84,12 +84,15 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
     let mut in_log = false;
     let mut log: Vec<&str> = Vec::new();
     let mut runtime_lines: Vec<&str> = Vec::new();
+    let mut store_line: Option<&str> = None;
 
     for line in repaired.iter().map(|l| l.as_ref()) {
         if line.starts_with("RESULT ") {
             result_line = Some(line);
         } else if line.starts_with("RUNTIME ") {
             runtime_lines.push(line);
+        } else if line.starts_with("STORE ") {
+            store_line = Some(line);
         } else if line.starts_with("---LOG---") {
             in_log = true;
         } else if line.starts_with("---END---") {
@@ -152,6 +155,7 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
         helper_arg_observations: parse_helper_calls(&log),
         helper_arg_violations: Vec::new(),        // legacy synthetic path
         runtime_samples: parse_runtime_samples(&runtime_lines),
+        store_site: store_line.and_then(parse_store_site),
     };
 
     // Record-level parse notes: partial-parse caveats (lower confidence, NOT anomalies).
@@ -207,6 +211,7 @@ fn parse_runtime_samples(lines: &[&str]) -> Vec<metrics::core::RuntimeSample> {
         let mut store_off: Option<i64> = None;
         let mut store_len: Option<i64> = None;
         let mut store_size: Option<i64> = None;
+        let mut executed: Option<bool> = None;
         let mut error = false;
         for tok in l.split_whitespace() {
             if let Some(v) = tok.strip_prefix("input=") {
@@ -226,6 +231,9 @@ fn parse_runtime_samples(lines: &[&str]) -> Vec<metrics::core::RuntimeSample> {
             } else if let Some(v) = tok.strip_prefix("store_size=") {
                 // multi-byte (--gen-rtw2): the store's width in bytes.
                 store_size = v.trim().parse::<i64>().ok();
+            } else if let Some(v) = tok.strip_prefix("executed=") {
+                // --gen-loc: did this run reach the store at all? (branch-bounded arm)
+                executed = v.trim().parse::<i64>().ok().map(|n| n != 0);
             } else if tok.starts_with("error=") {
                 error = true;
             }
@@ -239,6 +247,7 @@ fn parse_runtime_samples(lines: &[&str]) -> Vec<metrics::core::RuntimeSample> {
                 store_off,
                 store_len,
                 store_size,
+                executed,
                 error: error || !observed,
             });
         }
@@ -637,18 +646,44 @@ fn build_regstate(reg: u8, expr: &str) -> RegState {
             u32_max: field_u64(expr, "umax32="),
             s32_min: field_s32(expr, "smin32="),
             s32_max: field_s32(expr, "smax32="),
+            // A scalar has no pointer base, so no constant pointer offset.
+            ptr_off: None,
         };
     }
     // (c) pointer / ctx / fp / map_value / etc. — verbatim type prefix.
+    //
+    // A pointer's printed state carries the verifier's OWN claim about where a
+    // store through it can land: a constant part (`off=`) plus a variable part
+    // (`var_off` / `umin` / `umax`), e.g.
+    //   R7=map_value(ks=4,vs=64,smin=0,smax=umax=7,var_off=(0x0; 0x7))
+    // means "somewhere in [0,7], and only at offsets whose bits fit (0x0; 0x7)".
+    // Defaulting those to zero — as this branch used to — silently discarded the
+    // claim, so the store-location check had nothing to compare against.
+    //
+    // The two absences here follow DIFFERENT conventions, and conflating them is how
+    // this branch first went wrong:
+    //   * `var_off` absent = the variable part is a known constant, i.e. no unknown
+    //     bits (mask 0). For a pointer the constant part is printed separately as
+    //     `off=`, so `map_value(ks=4,vs=64)` really is "the value's first byte".
+    //   * a BOUND absent = it sits at its EXTREME and the kernel omitted it (log.c
+    //     prints umin/umax/smin/smax only when they differ from the defaults). This
+    //     is the SAME convention the scalar branch uses, and it is not optional:
+    //     `map_value(...,umin=0xfffffffffffffff0,var_off=(0xfffffffffffffff0; 0xf))`
+    //     omits `umax` because it is U64_MAX. Reading that absence as 0 manufactures
+    //     an inverted unsigned range and makes the bounds invariants fire on a
+    //     perfectly consistent pointer state — a parser bug wearing a finding's
+    //     clothes, which is exactly what the golden-fixture guardrail is for.
     let ty = expr.split(['(', ' ']).next().unwrap_or(expr);
+    let (value, mask) = parse_var_off(expr).unwrap_or((0, 0));
     RegState {
         reg,
         reg_type: if ty.is_empty() { expr.to_string() } else { ty.to_string() },
-        tnum: Tnum::default(),
-        umin: 0,
-        umax: 0,
-        smin: 0,
-        smax: 0,
+        tnum: Tnum { value, mask },
+        umin: field_u64(expr, "umin=").unwrap_or(0),
+        umax: field_u64(expr, "umax=").unwrap_or(u64::MAX),
+        smin: field_i64(expr, "smin=").unwrap_or(i64::MIN),
+        smax: field_i64(expr, "smax=").unwrap_or(i64::MAX),
+        ptr_off: parse_ptr_const_off(expr),
         ..Default::default()
     }
 }
@@ -672,6 +707,56 @@ fn parse_const_int(s: &str) -> Option<(u64, i64)> {
     }
     if let Ok(v) = s.parse::<u64>() {
         return Some((v, v as i64));
+    }
+    None
+}
+
+/// Parse the generator's `STORE insn=<i> reg=<r> off=<o> size=<w>` declaration.
+///
+/// Provenance note: these are facts about the program the HARNESS built, emitted by
+/// the harness — never recovered from the verifier's own disassembly. The oracle
+/// must not learn where the store is from the component it is auditing.
+fn parse_store_site(line: &str) -> Option<metrics::core::StoreSite> {
+    let mut insn_idx = None;
+    let mut base_reg = None;
+    let mut insn_off = None;
+    let mut size = None;
+    for tok in line.split_whitespace() {
+        if let Some(v) = tok.strip_prefix("insn=") {
+            insn_idx = v.parse::<u32>().ok();
+        } else if let Some(v) = tok.strip_prefix("reg=") {
+            base_reg = v.parse::<u8>().ok();
+        } else if let Some(v) = tok.strip_prefix("off=") {
+            insn_off = v.parse::<i64>().ok();
+        } else if let Some(v) = tok.strip_prefix("size=") {
+            size = v.parse::<u32>().ok();
+        }
+    }
+    Some(metrics::core::StoreSite {
+        insn_idx: insn_idx?,
+        base_reg: base_reg?,
+        insn_off: insn_off?,
+        size: size?,
+    })
+}
+
+/// Parse a pointer's CONSTANT offset (`map_value(off=8,ks=4,vs=64)`) -> 8.
+///
+/// Deliberately boundary-aware: a plain `find("off=")` also matches inside
+/// `var_off=(0x0; 0x7)`, which would read the VARIABLE part's known-bits as if it
+/// were the constant part. The key must start the expression or follow `(` or `,`.
+fn parse_ptr_const_off(expr: &str) -> Option<i64> {
+    let b = expr.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = expr[from..].find("off=") {
+        let at = from + rel;
+        let ok = at == 0 || b[at - 1] == b'(' || b[at - 1] == b',';
+        if ok {
+            let rest = &expr[at + "off=".len()..];
+            let end = rest.find([',', ')', ' ']).unwrap_or(rest.len());
+            return parse_const_int(rest[..end].trim()).map(|(_, i)| i);
+        }
+        from = at + "off=".len();
     }
     None
 }

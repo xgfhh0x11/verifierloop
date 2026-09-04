@@ -180,6 +180,45 @@ capture'ı üzerinde iki kez: planlı `store_off=none` ve planlı kısa run ayr�
 fixture `fixtures/volume/gen-pktw-12.log`. **Kanal ölçüldü (0040, `--probe-pktw`):** bu leg'in tek okumaya-dayalı halkası — "test_run yalnız `[0,skb->len)`'i döndürür, OOB store gözlenemez" — artık ÖLÇÜM. Sağlam verifier her OOB store'u reddettiği için negatif yarıya store'u değil PENCEREYİ oynatarak gidildi (`bpf_skb_change_tail` store'dan SONRA `skb->len`'i küçültür). 4 kol, hepsi kabul: win32 out_size=32/off=31; win40 out_size=**40** (pencere `skb->len`'i takip eder, sabit değil); trim.o19 out_size=20/off=**19** (pencerenin son byte'ı çözülür); trim.o20 out_size=20/off=**none** (fiilen yazılmış `index==out_size` byte'ı DÖNMEZ). İki trim kolu tek byte'lık offset farkıyla zıt gözlenebilirlik → kenar byte-hassas, "yok" konumsal. `tail_zero=1` her kolda: pencere ötesi sıfır kalır, sentinel diye YANLIŞ OKUNAMAZ da. Store-location desync'in ön-koşulu kapandı. Pinlendi: `packet_channel_calibration.rs` (7 test), fixture `probe-pktw-4.log`. İlk increment kapalı `>`; compare-form
 taraması (`>=`, operand-simetri) OI-9 takip.
 
+### 2b.4 — Store-LOCATION desync ekseni (`--gen-loc`, devlog 0041) — DONE
+
+Runtime oracle'ının **asıl avı**: 2b.1–2b.3 tek soru sorar — store nesnenin İÇİNDE mi?
+Bir verifier bunu geçip yine de yanlış olabilir: offset'in soyut aritmetiği unsound ise
+store, kendi durumunun İMKÂNSIZ dediği bir offset'e düşer ve hâlâ içeride kalır →
+önceki her bacak sessiz. Bu, iç-tutarlılık oracle'ının yapısı gereği göremediği
+"consistent-but-wrong" sınıfı. Bu bacak **verifier'ın kendi bastığı iddiayı** ölçüyor:
+`17: R7=map_value(vs=64,umax=7,var_off=(0x0; 0x7))` + `17: (72) *(u8*)(r7+0) = -1` →
+kanıtlanmış pencere = `ptr_off + insn_off + [umin,umax]`, var_off tnum'uyla daraltılmış.
+**tnum yarısı şart:** `r6&=3; r6<<=2` {0,4,8,12} kanıtlar, offset 6 [0,12] içinde ve
+imkânsız. Store'un yeri GENERATOR'dan bildiriliyor (`STORE insn= reg= off= size=`),
+verifier'ın disassembly'sinden değil — oracle soruyu denetlediği bileşenden öğrenmemeli.
+**Parser boşluğu kapandı:** pointer register'ın bounds/var_off/off'u atılıyordu
+(`build_regstate` (c) kolu), artık saklanıyor. Yokluk kuralı iki farklı: `var_off` yok =
+değişken parça sabit (mask 0), ama bir BOUND yok = uç değerinde (log.c bir bound'u
+varsayılanındaysa basmaz) — bu scalar koluyla AYNI kural. İlk yazımda ikisi
+karıştırılmış, `umin=0xff..f0` + basılmamış `umax` ters unsigned aralık gibi okunup
+`pointer_neg_calibration`'da 6 sahte bulgu ateşlemişti; suite yakaladı, düzeltildi.
+Eksen = soyut transfer fonksiyonu: 15 program (and7/and31/orand/addc/subc/lsh2/lsh3/
+rsh/mul/xor/alu32/**jmp** = maske değil branch ile sınır/shpair/compose/off4).
+**ÖLÇÜLDÜ (2026-09-05): 15 kabul / 0 red, `store_locations_checked=170`,
+`runtime_writes_checked=170`, `finding_count=0`, `parser_unrecognized=0`** — her kabul
+edilen store, verifier'ın kanıtladığı kümenin içine düştü (elle de doğrulandı; tnum
+yarısı vakum değil: lsh2 tam {0,4,8,12}, compose {4,8,12,16}). Sayaç ayrı olmak zorunda
+— sıfır bulgu ancak iddia OKUNMUŞSA anlamlı. **170 = 180 − 10:** `jmp` kolu offset'i
+BRANCH ile sınırlıyor, 12 sweep input'unun 10'u sınırın üstünde olduğu için store'a hiç
+ulaşmıyor. İlk capture bunları `store_off=none` diye OOB sanıp 10 sahte
+`runtime_oob_write` verdi; `none` "sınır dışı" ile "hiç çalışmadı"yı karıştırıyordu
+(önceki ailelerde store koşulsuzdu, o yüzden fark etmiyordu). Kaynakta çözüldü: program
+store yolunda ayırt edici retval döndürüyor, harness `executed=` basıyor, ulaşılmamış
+koşu yargılanmıyor; koşulsuz store'lu aileler tanık basmadığı için eski okuma ve dişleri
+aynen duruyor. Dişler: (1) pencere dışı ama bellek-güvenli offset → desync ateşler,
+`runtime_oob_write` SESSİZ (kapatılan kör nokta tam bu sessizlik), (2) pencere içi ama
+tnum-imkânsız → tnum ihlali olarak ateşler, (3) `off4` kolunda insn_off'suz offset →
+ateşler, (4) tanık AYIRT ediyor: aynı eksik sentinel `executed=1` ile OOB ateşler,
+`executed=0` ile ateşlemez. Artı vakumsuzluk testi: kanıtlanmış pencere DAR olmalı
+(`umax-umin<=56`). Pinlendi: `store_location_calibration.rs` (9 test), fixture
+`fixtures/volume/gen-loc-15.log`; runner `scripts/run-loc.sh`.
+
 ---
 
 ## 3. Kapsama matrisi — asıl harita

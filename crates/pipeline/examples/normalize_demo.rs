@@ -59,6 +59,7 @@ impl RecordParser for DemoParser {
                     coverage_delta: CoverageDelta::default(), // exec_n stamped by normalize
                     helper_arg_observations: Vec::new(),
                     runtime_samples: Vec::new(),
+                    store_site: None,
                     helper_arg_violations: if accepted {
                         Vec::new()
                     } else {

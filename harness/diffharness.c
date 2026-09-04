@@ -2139,6 +2139,258 @@ static void run_generated_rtw2_family(void) {
     close(map_out);
 }
 
+// ---- store-LOCATION desync oracle (--gen-loc) -------------------------------
+// The runtime-write legs so far (0037/0038/0039) ask one question: did the store
+// stay INSIDE the object? A verifier can pass that and still be wrong. If its
+// abstract arithmetic for the offset is unsound, the store lands at an offset its
+// OWN state says is impossible — and still inside the object, so every previous leg
+// stays silent. That is the "consistent-but-wrong" class: the verifier's two views
+// agree with each other and disagree only with reality, which is exactly what an
+// internal-consistency oracle can never see.
+//
+// So this family asks the strictly stronger question: did the store land WHERE THE
+// VERIFIER SAID it could? The verifier prints its own claim at the store:
+//   17: R7=map_value(ks=4,vs=64,smin=0,smax=umax=7,var_off=(0x0; 0x7))
+//   17: (72) *(u8 *)(r7 +0) = -1
+// i.e. "offset in [0,7], and only at offsets whose bits fit (0x0; 0x7)". The runtime
+// says where the sentinel actually landed. The diff stage compares the two.
+//
+// The AXIS is therefore the ALU chain that shapes the offset — one program per
+// abstract transfer function, because that is where a too-narrow (unsound) bound
+// would come from. Each chain is chosen so its proven window is TIGHT: a wide window
+// would let a wrong offset pass, and the tnum arms (lsh/mul/compose) are the sharpest
+// because their proven set has HOLES — `r6 &= 3; r6 <<= 2` proves {0,4,8,12}, so an
+// offset of 6 is inside [0,12] and still impossible. An interval check alone would
+// miss it; the tnum half is what makes "where it SAID" mean the exact set.
+//
+// The harness declares the store site (`STORE insn= reg= off= size=`) because it
+// BUILT the program: which instruction stores, through which register, is ground
+// truth about the input. Recovering it from the verifier's own disassembly would
+// make the oracle depend on the component it is auditing.
+
+enum loc_shape {
+    LOC_AND7, LOC_AND31, LOC_ORAND, LOC_ADDC, LOC_SUBC,
+    LOC_LSH2, LOC_LSH3, LOC_RSH, LOC_MUL, LOC_XOR,
+    LOC_ALU32, LOC_JMP, LOC_SHPAIR, LOC_COMPOSE, LOC_OFF4,
+};
+
+static const char *loc_shape_name(enum loc_shape s) {
+    switch (s) {
+    case LOC_AND7:    return "and7";
+    case LOC_AND31:   return "and31";
+    case LOC_ORAND:   return "orand";
+    case LOC_ADDC:    return "addc";
+    case LOC_SUBC:    return "subc";
+    case LOC_LSH2:    return "lsh2";
+    case LOC_LSH3:    return "lsh3";
+    case LOC_RSH:     return "rsh";
+    case LOC_MUL:     return "mul";
+    case LOC_XOR:     return "xor";
+    case LOC_ALU32:   return "alu32";
+    case LOC_JMP:     return "jmp";
+    case LOC_SHPAIR:  return "shpair";
+    case LOC_COMPOSE: return "compose";
+    case LOC_OFF4:    return "off4";
+    }
+    return "?";
+}
+
+static void run_loc_one(const char *name, const struct bpf_insn *insns, int n,
+                        int map_in, int map_out, int store_insn, int store_off) {
+    g_log[0] = '\0';
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)insns;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = sizeof(g_log);
+    attr.log_buf = (uint64_t)(unsigned long)g_log;
+
+    uint64_t t0 = now_ns();
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int e = errno;
+    uint64_t dt = now_ns() - t0;
+
+    printf("===PROG %s type=socket_filter ===\n", name);
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=%llu\n",
+           fd >= 0 ? "accept" : "reject", fd, fd >= 0 ? 0 : e,
+           (unsigned long long)dt);
+    /* generator provenance: where the store IS, not where the verifier says it is */
+    printf("STORE insn=%d reg=7 off=%d size=1\n", store_insn, store_off);
+
+    if (fd >= 0) {
+        unsigned char pkt[64];
+        memset(pkt, 0, sizeof(pkt));
+        for (int i = 0; i < RT_INPUTS_N; i++) {
+            uint32_t in = RT_INPUTS[i];
+            unsigned char zero[RTW_VALUE_SIZE];
+            memset(zero, 0, sizeof(zero));
+            int ue = rt_map_set(map_in, 0, in);
+            int ze = rt_map_set_bytes(map_out, 0, zero); /* re-zero BEFORE every run */
+            union bpf_attr t;
+            memset(&t, 0, sizeof(t));
+            t.test.prog_fd = fd;
+            t.test.data_in = (uint64_t)(unsigned long)pkt;
+            t.test.data_size_in = sizeof(pkt);
+            t.test.repeat = 1;
+            int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+            unsigned char out[RTW_VALUE_SIZE];
+            memset(out, 0, sizeof(out));
+            int ge = rt_map_get(map_out, 0, out);
+            if (r < 0 || ue < 0 || ze < 0 || ge < 0) {
+                printf("RUNTIME input=0x%08x error=1 testrun_errno=%d\n",
+                       in, r < 0 ? errno : 0);
+                continue;
+            }
+            int off = -1;
+            for (int b = 0; b < RTW_VALUE_SIZE; b++)
+                if (out[b] == RTW_SENTINEL) { off = b; break; }
+            int executed = (t.test.retval == 1);
+            if (off < 0) {
+                printf("RUNTIME input=0x%08x store_off=none store_len=0 store_size=1"
+                       " executed=%d\n", in, executed);
+            } else {
+                int len = 0;
+                for (int b = off; b < RTW_VALUE_SIZE && out[b] == RTW_SENTINEL; b++)
+                    len++;
+                printf("RUNTIME input=0x%08x store_off=%d store_len=%d store_size=1"
+                       " executed=%d\n", in, off, len, executed);
+            }
+        }
+        close(fd);
+    }
+    printf("---LOG---\n%s\n---END---\n", g_log);
+}
+
+static void run_loc_prog(enum loc_shape shape, int idx, int map_in, int map_out) {
+    struct bpf_insn ins[48];
+    int n = 0;
+    int jfix[4]; int nj = 0;
+    int st_off = 0;
+
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);               /* key = 0 */
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jfix[nj++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);        /* r6 = attacker input */
+
+    /* the axis: one abstract transfer function per program */
+    switch (shape) {
+    case LOC_AND7:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7); break;            /* [0,7] */
+    case LOC_AND31:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 31); break;           /* [0,31] */
+    case LOC_ORAND:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7);
+        ins[n++] = BPF_ALU64_IMM(BPF_OR, BPF_REG_6, 8); break;             /* [8,15] */
+    case LOC_ADDC:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_6, 16); break;           /* [16,23] */
+    case LOC_SUBC:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_6, 32);
+        ins[n++] = BPF_ALU64_IMM(BPF_SUB, BPF_REG_6, 8); break;            /* [24,31] */
+    case LOC_LSH2:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 3);
+        ins[n++] = BPF_ALU64_IMM(BPF_LSH, BPF_REG_6, 2); break;            /* {0,4,8,12} */
+    case LOC_LSH3:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7);
+        ins[n++] = BPF_ALU64_IMM(BPF_LSH, BPF_REG_6, 3); break;            /* {0,8,..,56} */
+    case LOC_RSH:
+        ins[n++] = BPF_ALU64_IMM(BPF_RSH, BPF_REG_6, 29); break;           /* [0,7] */
+    case LOC_MUL:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 3);
+        ins[n++] = BPF_ALU64_IMM(BPF_MUL, BPF_REG_6, 5); break;            /* {0,5,10,15} */
+    case LOC_XOR:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7);
+        ins[n++] = BPF_ALU64_IMM(BPF_XOR, BPF_REG_6, 5); break;            /* [0,7] */
+    case LOC_ALU32:
+        ins[n++] = BPF_ALU32_IMM(BPF_AND, BPF_REG_6, 7); break;            /* 32-bit op */
+    case LOC_JMP:
+        /* bound by a BRANCH, not a mask: reg_set_min_max, a different code path */
+        jfix[nj++] = n; ins[n++] = BPF_JMP_IMM(BPF_JGT, BPF_REG_6, 7, 0); break;
+    case LOC_SHPAIR:
+        ins[n++] = BPF_ALU64_IMM(BPF_LSH, BPF_REG_6, 60);
+        ins[n++] = BPF_ALU64_IMM(BPF_RSH, BPF_REG_6, 60); break;           /* [0,15] */
+    case LOC_COMPOSE:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 3);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_6, 1);
+        ins[n++] = BPF_ALU64_IMM(BPF_LSH, BPF_REG_6, 2); break;            /* {4,8,12,16} */
+    case LOC_OFF4:
+        /* same [0,7] offset, but the store carries its own +4: exercises the
+           `ptr_off + insn_off + var` arithmetic on both sides of the comparison */
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7); st_off = 4; break;
+    }
+
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jfix[nj++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_0);                /* r7 = map_out value */
+    ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_7, BPF_REG_6);       /* r7 += shaped offset */
+    const int store_insn = n;
+    ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_7, st_off, -1);           /* the observed store */
+    /* EXECUTION WITNESS. `store_off=none` means "no sentinel in the value", which
+       conflates two very different things: the store ran and went OUT OF BOUNDS, or
+       the store never ran at all. Every earlier runtime-write family (--gen-rtw,
+       --gen-rtw2, --gen-pktw) reached its store unconditionally, so `none` could only
+       mean the first. The LOC_JMP arm breaks that: it bounds the offset with a BRANCH,
+       so every sweep input above the bound skips the store entirely. The program
+       itself reports which happened -- r0=1 only on the path that performed the
+       store, r0=0 on every skip path -- so the disambiguation is runtime ground
+       truth from the input side, not a guess in the diff stage. */
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);
+    ins[n++] = BPF_EXIT_INSN();
+    const int exit0 = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    for (int i = 0; i < nj; i++)
+        ins[jfix[i]].off = exit0 - jfix[i] - 1;
+
+    char name[96];
+    snprintf(name, sizeof(name), "genloc#%s#%03d", loc_shape_name(shape), idx);
+    run_loc_one(name, ins, n, map_in, map_out, store_insn, st_off);
+}
+
+static void run_generated_loc_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 8; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = RTW_VALUE_SIZE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
+        printf("===PROG genloc type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    /* Every chain keeps the landing site well inside the 64-byte value, so the
+       DECISION is not the surface here — all 15 are expected to be accepted, and the
+       surface is WHERE each accepted store lands versus what the verifier proved. */
+    const enum loc_shape shapes[] = {
+        LOC_AND7, LOC_AND31, LOC_ORAND, LOC_ADDC, LOC_SUBC,
+        LOC_LSH2, LOC_LSH3, LOC_RSH, LOC_MUL, LOC_XOR,
+        LOC_ALU32, LOC_JMP, LOC_SHPAIR, LOC_COMPOSE, LOC_OFF4,
+    };
+    int idx = 0;
+    for (unsigned i = 0; i < sizeof(shapes) / sizeof(shapes[0]); i++)
+        run_loc_prog(shapes[i], idx++, map_in, map_out);
+    close(map_in);
+    close(map_out);
+}
+
 // ---- packet-write runtime memory-safety oracle (--gen-pktw) -----------------
 // The runtime-write oracle so far (--gen-rtw / --gen-rtw2) stores through a
 // PTR_TO_MAP_VALUE, whose bound the verifier KNOWS statically (value_size). This
@@ -2463,6 +2715,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-rtw2") == 0) {
         run_generated_rtw2_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-loc") == 0) {
+        run_generated_loc_family();
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--probe-pktw") == 0) {

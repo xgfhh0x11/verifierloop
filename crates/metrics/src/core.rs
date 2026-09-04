@@ -70,6 +70,14 @@ pub struct RegState {
     /// 32-bit signed max, when printed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub s32_max: Option<i64>,
+    /// For a POINTER register: the CONSTANT part of its offset, as the verifier
+    /// printed it (`map_value(off=8,...)`). The variable part lives in `tnum` /
+    /// `umin` / `umax`, so the verifier's full claim about where a store through
+    /// this pointer can land is `ptr_off + [umin, umax]`, narrowed by the tnum.
+    /// `None` for scalars and for pointers the verifier printed with no `off=`
+    /// (which means a constant part of exactly zero, not an unknown one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ptr_off: Option<i64>,
 }
 
 /// Registers of interest at one instruction index — a snapshot in the evolution.
@@ -168,6 +176,33 @@ pub struct CoreMetrics {
     /// artifacts stay byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_samples: Vec<RuntimeSample>,
+    /// Where the program's store instruction is, declared by the GENERATOR that
+    /// built the program (not read out of the verifier log). Knowing which
+    /// instruction stores, and through which register, is a fact about the program
+    /// we wrote; it lets the diff stage look up the verifier's proven state for
+    /// that pointer AT that instruction and compare it with where the store
+    /// actually landed. Skipped when absent so existing artifacts stay
+    /// byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store_site: Option<StoreSite>,
+}
+
+/// The store instruction's coordinates, declared by the program generator.
+///
+/// This is deliberately NOT parsed out of the disassembly: the harness built the
+/// program, so it knows the store's index, base register and immediate offset as
+/// ground truth about the INPUT. Reading them back out of the verifier's own
+/// output would make the oracle depend on the thing it is auditing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoreSite {
+    /// Index of the store instruction.
+    pub insn_idx: u32,
+    /// Base pointer register the store goes through.
+    pub base_reg: u8,
+    /// The store instruction's own immediate offset (`*(u8 *)(r7 + off)`).
+    pub insn_off: i64,
+    /// Store width in bytes.
+    pub size: u32,
 }
 
 /// One runtime observation: the program was executed via BPF_PROG_TEST_RUN with a
@@ -198,6 +233,16 @@ pub struct RuntimeSample {
     /// samples.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store_size: Option<i64>,
+    /// For a STORE program whose store sits behind a BRANCH (--gen-loc's `jmp` arm):
+    /// whether this run actually REACHED the store, reported by the program itself
+    /// (it returns a distinct value on the storing path). This disambiguates the two
+    /// readings of `store_off = none`: with `Some(true)` the store ran and its bytes
+    /// are not in the value — an OOB write; with `Some(false)` the store never ran,
+    /// so there is nothing to judge. `None` for families whose store is
+    /// unconditional (--gen-rtw / --gen-rtw2 / --gen-pktw), where absence can only
+    /// mean OOB and the older reading stands unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executed: Option<bool>,
     /// True if the harness could not execute this sample (skipped by the oracle).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub error: bool,

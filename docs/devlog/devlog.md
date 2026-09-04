@@ -3281,3 +3281,155 @@ yanlışlıkla sentinel olarak da OKUNAMAZ.
 gerçekten görünmez, pencere içindeki son byte gerçekten görünür, ve ikisi arasındaki
 sınır tam bir byte. Store-location desync ailesinin ön-koşulu karşılandı — "store Y'ye
 düştü" artık ölçülmüş bir kanal üzerinden söylenebilir. Tam suite 177 yeşil.
+
+## 0041 — Store-location desync (`--gen-loc`): "içeride mi" değil "DEDİĞİ yerde mi" — asıl av
+
+- **Tarih:** 2026-09-04
+- **Durum:** Kod + pipeline YAZILDI, **VM CAPTURE BEKLİYOR.** Oturum-ortası araç-erişim
+  düşüşü (checkpoint'teki "TOOL-DROP") build/VM adımlarını bloklandı; bu kez yalnız
+  Bash exec değil Bash mutasyonu da kesildi (Read/Edit/Write çalıştı, read-only Bash
+  çalıştı). Pipeline değişiklikleri blok ÖNCESİ temiz derlendi. Aktivasyon (taze /
+  default-mode oturum): `scripts/run-loc.sh` → capture'ı
+  `crates/pipeline/tests/fixtures/volume/gen-loc-15.log`'a kopyala →
+  `mv store_location_calibration.rs.pending .rs` → `cargo test -p pipeline`.
+- **Alan:** `harness/diffharness.c` (`--gen-loc`, `run_loc_one`/`run_loc_prog`/
+  `run_generated_loc_family`, 15 şekil), `scripts/run-loc.sh` (yeni),
+  `crates/metrics/src/core.rs` (`RegState.ptr_off`, yeni `StoreSite`,
+  `CoreMetrics.store_site`), `crates/pipeline/src/verifier_log.rs` (pointer register
+  artık bounds/var_off/off SAKLIYOR; `parse_store_site`, `parse_ptr_const_off`),
+  `crates/pipeline/src/diff.rs` (`check_store_location`, `store_locations_checked`),
+  `crates/pipeline/tests/measure_log.rs`,
+  `crates/pipeline/tests/store_location_calibration.rs.pending` (yeni, 7 test).
+- **İlgili:** 0037/0038/0039 (runtime write legs), 0040 (kanal ölçümü — ön-koşul),
+  [[store-location-desync-is-the-hunt]], [[oracle-times-input]].
+
+### 0. Neden — her önceki bacağın paylaştığı kör nokta
+0037/0038/0039 TEK bir soru soruyor: store nesnenin İÇİNDE mi kaldı? Bir verifier bunu
+geçip yine de yanlış olabilir: offset için soyut aritmetiği sağlam değilse, store kendi
+durumunun İMKÂNSIZ dediği bir offset'e düşer — ve hâlâ nesnenin içinde kalır, dolayısıyla
+önceki her bacak SESSİZ kalır. Bu "consistent-but-wrong" sınıfı: verifier'ın iki görüşü
+birbiriyle uyumlu, yalnız GERÇEKLİKLE uyumsuz — bir iç-tutarlılık oracle'ının yapısı
+gereği göremeyeceği şey (CVE-2021-3490 sınıfı).
+
+### 1. Karşılaştırılan şey — verifier zaten kendi iddiasını basıyor
+Store insn'inde verifier durumu yazdırıyor:
+```
+17: R7=map_value(ks=4,vs=64,smin=0,smax=umax=7,var_off=(0x0; 0x7))
+17: (72) *(u8 *)(r7 +0) = -1
+```
+Yani "offset [0,7]'de, ve yalnız bitleri (0x0; 0x7)'ye uyan offset'lerde". Runtime
+sentinel'in gerçekte nereye düştüğünü söylüyor. `check_store_location` ikisini
+karşılaştırıyor:
+```
+kanıtlanmış pencere = ptr_off + insn_off + [umin, umax], var_off tnum'uyla daraltılmış
+```
+**tnum yarısı interval kadar önemli:** `r6 &= 3; r6 <<= 2` {0,4,8,12}'yi kanıtlar, yani
+offset 6 [0,12]'nin İÇİNDE ve yine de imkânsız. Delikli kanıt kümesi = "dediği yer"in
+tam anlamı.
+
+**Parser'da bulunan boşluk:** `build_regstate` (c) kolu pointer register'ı tip-string'e
+indirip bounds/var_off/off'u SIFIRLIYORDU — yani verifier'ın konum iddiası pipeline'a
+hiç girmiyordu. Düzeltildi; pointer için "yok" = TAM SIFIR okunuyor (verifier bir
+pointer'ın değişken parçası gerçekten sıfırken var_off basmaz), scalar kolu ise bunu
+YAPMAMALI (orada "yok" = uçta demek — ters okuma). Ayrı bir tuzak: `find("off=")`
+`var_off=(...)` içinde de eşleşiyor, o yüzden `parse_ptr_const_off` sınır-duyarlı.
+
+### 2. Provenans — soruyu denetlenen bileşenden öğrenme
+Store'un hangi insn olduğu ve hangi register'dan geçtiği GENERATOR'dan geliyor
+(`STORE insn= reg= off= size=` satırı), verifier'ın kendi disassembly'sinden DEĞİL.
+Harness programı kendisi kurdu; bunlar INPUT hakkında yer-gerçeği. Oracle'ın denetlediği
+bileşenden soruyu öğrenmesi, aradığı hatayı görmezden gelmesine yol açardı.
+
+### 3. Aile — eksen = soyut transfer fonksiyonu
+15 program, her biri offset'i başka bir ALU zinciriyle şekillendiriyor (çünkü fazla-dar
+= unsound bound tam oradan gelir): and7, and31, orand, addc, subc, lsh2, lsh3, rsh, mul,
+xor, alu32 (32-bit op), **jmp** (maske değil BRANCH ile sınırlı — `reg_set_min_max`,
+farklı kod yolu), shpair (`<<60` sonra `>>60`), compose (and/add/lsh zinciri), off4
+(store kendi +4'ünü taşır → `ptr_off + insn_off + var` aritmetiğini karşılaştırmanın
+İKİ tarafında da sınar). Hepsi 64-byte value'nun iyice içine düşüyor, yani KARAR burada
+yüzey değil — 15'i de kabul bekleniyor ve yüzey nereye düştükleri.
+
+Beklenen (türetilmiş, capture otorite): 15 program, 15 kabul / 0 red,
+`store_locations_checked = 180` (15 × 12 sweep input), `finding_count = 0`.
+**Capture bu türetmeyi 180 → 170'te düzeltti; nedeni aşağıda (§6).**
+**`store_locations_checked` ayrı bir sayaç olmak zorunda:** `runtime_writes_checked`
+yalnız "içeride mi" diye sorar; sıfır bulgu ancak KANIT okunmuşsa anlamlıdır — sayaç 0
+ise kernel temiz değil, iddia okunamamış demektir.
+
+### 4. Dişler — üçü de kritik
+1. **Pencere dışı ama bellek-güvenli:** `orand` [8,15] kanıtlar; ekilen `store_off=3`
+   map value'nun içinde (0037/0038 predikatı SESSİZ) ama kanıtın dışında → tam bir
+   `store_location_desync`, **sıfır** `runtime_oob_write`. O sessizlik tam olarak bu
+   bacağın kapatmak için var olduğu kör nokta.
+2. **Pencere içi ama tnum-imkânsız:** `lsh2` {0,4,8,12} kanıtlar; ekilen `store_off=6`
+   [0,12]'nin içinde, value'nun içinde, yine de imkânsız → ateşler ve "impossible under
+   var_off" diye raporlanır (interval değil tnum ihlali olarak).
+3. **insn_off iddianın parçası:** `off4` kolunda ekilen `store_off=0`, +4 tabanının
+   altında → ateşler. Karşılaştırmanın iki tarafı da insn_off'u uygulamazsa bu ekim
+   sessiz kalırdı.
+Ayrıca **vakumsuzluk testi**: her programın kanıtlanmış penceresi DAR olmalı
+(`umax-umin <= 56`) — nesne kadar geniş bir pencere bu bacağı vakum yapardı.
+
+### 5. Bulgu çıkarsa
+Buradaki bir bulgu ne otomatik kernel hatası ne otomatik bizim hatamız — bu çağın
+üretmek için kurulduğu TEK çıktı. Sıra: (a) bulgunun alıntıladığı log satırından
+kanıtlanmış pencereyi elle yeniden türet, (b) harness'in bildirdiği `STORE insn=`
+gerçekten store mu diye bak, (c) ancak ondan sonra verifier bulgusu de.
+
+### 6. Capture (2026-09-05) — türetme iki yerden düzeltildi, ikisi de bizim tarafımızdan
+
+**Sonuç: 15 program, 15 kabul / 0 red, `store_locations_checked = 170`,
+`runtime_writes_checked = 170`, `finding_count = 0`, `parser_unrecognized = 0`.**
+Her kabul edilen store, verifier'ın kendi kanıtladığı kümenin içine düştü. Elle
+türetme (log satırından pencereyi yeniden hesaplayıp runtime offset'leriyle
+karşılaştırma) 15/15 arm'da bunu bağımsız olarak doğruladı, ve tnum yarısının vakum
+olmadığını gösterdi: `lsh2` tam {0,4,8,12}'ye, `lsh3` {0,8,16,48,56}'ya, `compose`
+{4,8,12,16}'ya düştü — aradaki hiçbir offset'e değil. `off4` kanıtı [4,11] olarak
+okundu, yani `insn_off` karşılaştırmanın iki tarafında da uygulanıyor.
+
+İlk capture bunu vermedi: **170 kontrol ve 10 `runtime_oob_write` bulgusu** döndü.
+Protokol (a-b-c) uygulandı, elle türetme kernel'i temize çıkardı, ve hata bu oracle'da
+bulundu. İki ayrı düzeltme çıktı — ikisi de "beklenen sayı tutmadı"dan değil, sayının
+NEDEN tutmadığından geldi.
+
+**(i) `store_off = none` iki anlamlıydı.** "Value içinde sentinel yok" demek, store'un
+SINIR DIŞINA çıkması ile store'un HİÇ ÇALIŞMAMASI arasında ayrım yapmıyor. 0037/0038/
+0039'un her ailesinde store koşulsuz çalışıyordu (maske tabanlı), dolayısıyla `none`
+yalnız ilkini ifade edebilirdi — predikat bu söylenmemiş varsayımın üstüne yazılmıştı.
+`jmp` arm'ı tam da onu kırıyor: offset'i BRANCH ile sınırlıyor (`if r6 > 7 goto exit`),
+ve 12 sweep input'unun 10'u sınırın üstünde olduğu için store'a hiç ulaşmıyor.
+Düzeltme belirsizliği **kaynakta** çözüyor, diff aşamasında tahmin ederek değil:
+program store yolunda ayırt edici bir değer döndürüyor (`r0 = 1`, atlama yollarında 0),
+harness bunu `executed=` olarak basıyor, ve store'a ulaşmamış bir koşu yargılanmıyor.
+Dişler aynen duruyor — koşulsuz store'lu aileler tanık BASMIYOR (`executed = None`) ve
+eski okuma değişmeden geçerli, `executed=1` + sentinel yok hâlâ OOB write. Yani 170
+indirilmiş bir çıta değil, TÜREV bir sayı: 180 sweep koşusundan, store'a kanıtlanabilir
+şekilde hiç ulaşmayan 10'u düşülmüş hâli. Ailenin `jmp` kolunun 12 input'un yalnız
+2'sinde store etmesi input sweep'inin doğal sonucu (RT_INPUTS'un küçük değerleri
+0 ve 1); sweep'i bu arm için genişletmek diğer ailelerin sabitlenmiş sayılarını
+bozacağı için yapılmadı — branch kod yolu 2 örnekle de sınanıyor.
+
+**(ii) Pointer bound'larında yokluk kuralı yanlıştı.** 0041'in parser düzeltmesi
+`build_regstate` (c) kolunda "yokluk = TAM SIFIR" kuralını dört bound'a da uygulamıştı.
+Bu kural yalnız `var_off` için doğru (verifier bir pointer'ın değişken parçası gerçekten
+sabitse var_off basmaz; sabit parça ayrıca `off=` olarak basılır). Bound'lar için kural
+TERSİ ve tipten bağımsız: kernel bir bound'u UÇ değerindeyse basmıyor (log.c).
+`map_value(...,umin=0xfffffffffffffff0,var_off=(0xfffffffffffffff0; 0xf))` satırı
+`umax`'ı U64_MAX olduğu için atlıyor; yokluğu 0 okumak ters bir unsigned aralık
+uyduruyor ve `unsigned_bounds_inverted` invariant'ını tamamen tutarlı bir pointer
+state'i üzerinde ateşliyordu. Bu, workspace suite'inde `pointer_neg_calibration`'ın
+6 sahte bulgusu olarak yakalandı — [[parser-golden-fixture-guardrail]]'in tam olarak
+var olma nedeni: parser hatası, bulgu kılığında. Pointer kolu artık scalar koluyla aynı
+uç-değer kuralını kullanıyor; `check_store_location`'ın "kullanılabilir iddia" koruması
+da aynı dile çevrildi (bilinmeyen bit var + üst sınır belirtilmemiş ⟹ pencere yok).
+Bu düzeltme `--gen-loc` sayılarını değiştirmiyor (15 arm'ın hepsinde `umax` zaten
+basılıydı), ama 0041 commit edilmeden ÖNCE yakalanması bu bacağın kendi kör noktasını
+kapatıyor.
+
+**Testler:** `store_location_calibration.rs` 9 test — üç orijinal diş (pencere dışı ama
+bellek-güvenli → `runtime_oob_write` SESSİZ; pencere içi ama tnum-imkânsız; `insn_off`
+iddianın parçası), vakumsuzluk guard'ı, artı iki yeni tanık testi: tanığın şekli
+(yalnız `jmp` arm'ı atlıyor, ve atlayan bir koşu ASLA sentinel bırakmıyor — bıraksaydı
+tanığın kendisi çelişik olurdu ve gerçek bir OOB'yi susturabilirdi) ve tanığın
+AYIRT ETMESİ (aynı eksik sentinel, `executed=1` ile OOB olarak ateşliyor, `executed=0`
+ile ateşlemiyor). Workspace 186 yeşil.
