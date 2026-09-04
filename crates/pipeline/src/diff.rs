@@ -647,27 +647,31 @@ fn check_store_location(
         Some(s) => s,
         None => return,
     };
-    // The verifier's state at the store, taken BEFORE the instruction executes.
-    let ptr = record
+    // A store instruction reached on SEVERAL paths has several proven states, and the
+    // verifier prints one per path. Taking the first is wrong in exactly the way 0036
+    // already fixed for the retval channel: the reference must be the UNION over every
+    // claim at that instruction. A union is a conservative superset, so it can only MISS
+    // a violation, never fabricate one — and fabricate one is precisely what the
+    // first-match version did on the first multi-path family (`--gen-idpart`, where one
+    // path proves r9 in [0,7] and the other r9 = r6 + 4 in [4,11]).
+    let claims: Vec<&metrics::core::RegState> = record
         .core
         .register_evolution
         .iter()
         .filter(|snap| snap.insn_idx == site.insn_idx)
-        .find_map(|snap| snap.regs.iter().find(|r| r.reg == site.base_reg));
-    let ptr = match ptr {
-        Some(p) if p.reg_type != "scalar" => p,
-        _ => return, // no pointer state at the store: nothing was proven to compare
+        .filter_map(|snap| snap.regs.iter().find(|r| r.reg == site.base_reg))
+        .filter(|p| p.reg_type != "scalar")
+        // A pointer with unknown bits but NO stated upper bound is not a usable claim:
+        // the interval half says nothing, so there is no window to test against. (When
+        // the mask is 0 the variable part is a known constant and the tnum alone pins
+        // the landing site exactly, so that case stays checkable.)
+        .filter(|p| !(p.tnum.mask != 0 && p.umax == u64::MAX))
+        .filter(|p| p.umin <= p.umax)
+        .collect();
+    let ptr = match claims.first() {
+        Some(p) => *p, // used only for the reported window of the first claim
+        None => return, // no usable pointer state at the store: nothing was proven
     };
-    // A pointer with unknown bits but NO stated upper bound is not a usable claim:
-    // the interval half says nothing, so there is no window to test against. (When
-    // the mask is 0 the variable part is a known constant and the tnum alone pins
-    // the landing site exactly, so that case stays checkable.)
-    if ptr.tnum.mask != 0 && ptr.umax == u64::MAX {
-        return;
-    }
-    if ptr.umin > ptr.umax {
-        return;
-    }
     let base = ptr.ptr_off.unwrap_or(0) + site.insn_off;
     let lo = base.saturating_add(ptr.umin as i64);
     let hi = base.saturating_add(ptr.umax as i64);
@@ -680,13 +684,22 @@ fn check_store_location(
             _ => continue,
         };
         *checked += 1;
-        let var = off - base;
-        let in_window = off >= lo && off <= hi;
-        // tnum: `var` is possible iff its bits agree with the known-bit pattern.
-        let fits_tnum = var >= 0 && (var as u64 & !ptr.tnum.mask) == ptr.tnum.value;
-        if in_window && fits_tnum {
+        // The store is where the verifier said IF ANY of the claims at this instruction
+        // admits it — the program only ever takes one path per run, and we cannot tell
+        // from the sentinel alone which one it was.
+        let admitted = claims.iter().any(|p| {
+            let b = p.ptr_off.unwrap_or(0) + site.insn_off;
+            let l = b.saturating_add(p.umin as i64);
+            let h = b.saturating_add(p.umax as i64);
+            let v = off - b;
+            // tnum: `v` is possible iff its bits agree with the known-bit pattern.
+            off >= l && off <= h && v >= 0 && (v as u64 & !p.tnum.mask) == p.tnum.value
+        });
+        if admitted {
             continue;
         }
+        let var = off - base;
+        let in_window = off >= lo && off <= hi;
         let why = if !in_window {
             format!("outside the proven window [{lo}, {hi}]")
         } else {
@@ -705,7 +718,15 @@ fn check_store_location(
                 site.base_reg, site.insn_idx, base, ptr.umin, ptr.umax,
                 ptr.tnum.value, ptr.tnum.mask
             ),
-            observed: format!("input=0x{:x}: the store landed at {off} — {why}", smp.input),
+            observed: format!(
+                "input=0x{:x}: the store landed at {off} — {why}{}",
+                smp.input,
+                if claims.len() > 1 {
+                    format!(" (and outside all {} claims at this insn)", claims.len())
+                } else {
+                    String::new()
+                }
+            ),
             detail: "the verifier accepted a store that landed where its own proven pointer state says it could not"
                 .to_string(),
         });

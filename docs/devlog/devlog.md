@@ -3894,3 +3894,79 @@ state anotasyonu olmayan düz listeleme satırı. Anotasyonlu olan seçildi.)*
 `old` farklıysa reddediyor; iki linkli çiftin ÇAPRAZ eşlendiği şekiller bunu doğrudan
 sınar ve bu aile henüz oraya dokunmuyor. Ayrıca `BPF_ID_MAP_SIZE` tükenmesi
 (`check_ids` dolduğunda state'leri denk-değil sayıyor).
+
+---
+
+## 0047 — ID-map bijeksiyonu (`--gen-idpart`): ilk sıfır-olmayan bulgu, ve bulgu BİZDEYDİ
+
+### 1. Soru
+
+0046 linkin VAR olup olmadığını sordu. Bu bacak eşlemenin **bijeksiyon** olup olmadığını
+soruyor — `check_ids`'in gerçek kontratı (states.c:319): tutarlılık (bir old id tek bir
+cur id'ye) ve injektiflik (iki old id aynı cur id'ye düşemez). Hangi `if`'in ateşleyeceği
+program seviyesinden kontrol edilemiyor (register'lar sırayla karşılaştırılıyor, ilk
+tutarsızlık kazanıyor), o yüzden aile kontrol edilebilen şeyi değiştiriyor: **id yapısı**,
+yani register'ların linkli sınıflara bölünmesi.
+
+### 2. Eksik olan yarı: COMPLETENESS
+
+Şimdiye kadarki her bacak soundness test etti — güvensiz bir şeyi asla kabul etme.
+`swap` kolları öbür yönü test ediyor: **aynı** bölünme farklı instruction sırasıyla
+kurulunca farklı id NUMARALARI basılıyor (`++env->id_gen` global). Bunları kabul etmek
+ancak remapping gerçekten eşliyorsa mümkün; eşitlik dayatan bir `check_ids` bunları
+fazladan reddederdi. Capture ikisini de gösteriyor: fall yolu `id=1`, taken yolu `id=2`,
+yapıca aynı bölünme, ve **kabul**.
+
+### 3. Sonuç
+
+**12 program, 7 kabul / 5 red — türetmeyle birebir** (kabul ⟺ her iki yol da r9'u
+daraltılan sınıfa koyuyor), `store_locations_checked=56`, `prune_pairs_checked=12`,
+`parser_unrecognized=0`.
+
+### 4. İLK SIFIR-OLMAYAN BULGU — ve triyaj
+
+İlk capture **`finding_count=2`** verdi: `same-addc` kolunda iki `store_location_desync`.
+Protokol (a-b-c) uygulandı.
+
+**(a) Elle türetme.** Verifier store insn'inde **İKİ** state basmış:
+```
+28: R2=map_value(...,umax=7,var_off=(0x0; 0x7))         <- fall yolu:  r9 = r6      ∈ [0,7]
+28: R2=map_value(...,umin=4,umax=11,var_off=(0x0; 0xf)) <- taken yolu: r9 = r6 + 4  ∈ [4,11]
+```
+Runtime 56 ve 58'e düştü (input 4 → r9=8, input 6 → r9=10), ikisi de **ikinci** state'in
+penceresi `48 + [4,11] = [52,59]` içinde. Store tam olarak verifier'ın kanıtladığı yere
+düştü — gittiği yolda.
+
+**(b)** Bildirilen `insn=28` gerçekten store: `28: (72) *(u8 *)(r2 +48) = -1`.
+
+**(c) Verdict: BİZİM hatamız.** `check_store_location` store insn'indeki **ilk** iddiayı
+alıyordu. Bu, önceki her aileden miras kalan bir tek-yol varsayımı — bugüne kadar store'a
+hep tek yol vardı. Düzeltme 0036'nın retval kanalına zaten verdiği muamele: iddiaların
+**BİRLEŞİMİ**. Birleşim muhafazakâr bir üst küme, yani bulguyu KAÇIRABİLİR ama
+uyduramaz — ve uydurmak tam olarak ilk-eşleşme sürümünün yaptığı şeydi.
+
+**Bu, bir oracle varsayımının yeni bir input şeklinde kırılmasının ÜÇÜNCÜ örneği**
+(0041'de `store_off=none`'ın iki anlamı, 0044'te iterasyon sayısı, şimdi bu) —
+[[oracle-assumptions-from-past-families]] kuralının tuttuğu üçüncü sefer. a-b-c triyaj
+sırasının pazarlığa açık olmamasının sebebi tam olarak bu: önce elle türet, ve kernel'i
+temize çıkaran bir türetme parmağı bize doğrultuyor.
+
+### 5. Birleşimin getirdiği yeni yükümlülük
+
+Birleşim kontrolü **zayıflatıyor**, o yüzden iki şey ayrıca sabitlendi: (i) tüm suite'in
+dişleri hâlâ ateşliyor (tek-yollu ailelerde birleşim aynı kümeyi verdiği için hiçbiri
+körelmedi), (ii) çok-yollu bir store'da **bütün** iddiaların dışındaki bir offset hâlâ
+ateşliyor ve rapor birleşimin dikkate alındığını söylüyor. Artı doğrudan regresyon
+guard'ı: `same-addc`'nin ilk yolun penceresini AŞAN gerçek landing'leri var ve bunlar
+bulgu ÜRETMEMELİ — birleşim düzeltmesinden önce başarısız olacak assertion bu.
+
+### 6. Testler
+
+`idpart_calibration.rs` 6 test: karar tablosu, **completeness** (aynı bölünme + farklı id
+numaraları → kabul, ve numaraların gerçekten farklı olduğu), oracle'ların paydayla
+sessizliği, regresyon guard'ı, birleşim üzerinden diş, parser kör noktası yok.
+Workspace 231 yeşil.
+
+**Sıradaki:** `BPF_ID_MAP_SIZE` tükenmesi — `check_ids` tablo dolduğunda state'leri
+denk-değil sayıyor (`return false`), yani sınır aşıldığında pruning tamamen duruyor. O
+sınırın nerede olduğu ve aşıldığında ne olduğu ölçülebilir.
