@@ -2897,6 +2897,239 @@ static void run_prune_prog(enum prune_shaper fall, enum prune_shaper taken,
     printf("---LOG---\n%s\n---END---\n", g_log);
 }
 
+// ---- back-edge / loop-convergence family (--gen-loop) -----------------------
+// THE FIRST PROGRAM SHAPE WITH A BACK-EDGE. Every family before this one is a forward
+// DAG, which is why six legs of oracle growth found nothing: the real bug list lives in
+// state pruning, precision and convergence, and none of those can be reached without a
+// loop. The ORACLE here is 0042's, transferred UNCHANGED -- same three loads, same
+// directional predicate, same `freq_states > base_states` denominator -- so this leg is
+// purely an INPUT increment. That is the whole point: aim the input, do not grow the
+// oracle.
+//
+// MECHANISM: `may_goto`, chosen over open-coded iterators and bpf_loop in OI-13.
+// Encoding is one raw instruction and nothing else (BPF_JCOND = 0xe0, BPF_MAY_GOTO = 0,
+// and verifier.c:19075 requires dst_reg == 0 && imm == 0): no BTF, no kfunc, no subprog,
+// no map. Confirmed against the kernel's own `__cond_break` macro, which emits
+// `.byte 0xe5` with the offset pointing at `l_break` -- so the JUMP is the loop EXIT and
+// the FALL-THROUGH continues into the body.
+//
+// WHAT IT LANDS ON (verifier.c:16923): the verifier follows the jump (exit), queues the
+// fall-through (body) as a new state, bumps `may_goto_depth`, and calls
+//   widen_imprecise_scalars(env, prev_st, queued_st)
+// against the previous entry at the same instruction. That widening is a DELIBERATE
+// over-approximation inserted to force convergence, sitting directly on top of precision
+// marking and state pruning -- exactly the shape the 0042 instrument attacks.
+//
+// THE AXIS is the loop-carried transfer function: what the body does to the register the
+// store's safety depends on. A too-narrow fixpoint is what an unsound convergence
+// produces, and the store turns it into a decision.
+//
+// The `nop` arms cannot flip (the body never touches the deciding register) and are kept
+// as explicit CONTROLS, labelled as such: they prove that adding a back-edge does not by
+// itself change a verdict.
+#define LOOP_STORE_OFF 56   /* 1-byte store in bounds iff umax(r6) <= 7 */
+
+#ifndef BPF_JCOND
+#define BPF_JCOND 0xe0
+#endif
+#ifndef BPF_MAY_GOTO
+#define BPF_MAY_GOTO 0
+#endif
+
+/* may_goto +off : jump to +off when the budget is exhausted, else fall through. */
+#define BPF_MAY_GOTO_INSN(OFF)                                                 \
+    ((struct bpf_insn){.code = BPF_JMP | BPF_JCOND,                            \
+                       .dst_reg = 0, .src_reg = BPF_MAY_GOTO, .off = OFF, .imm = 0})
+
+enum loop_body {
+    LB_NOP,      /* body leaves r6 alone            -> control, cannot flip     */
+    LB_MASK,     /* r6 &= 7        idempotent       -> invariant [0,7]          */
+    LB_INCMASK,  /* r6 += 1; r6 &= 7                -> [0,7]                    */
+    LB_MASKINC,  /* r6 &= 7; r6 += 1                -> [1,8]  EXACT off-by-one  */
+    LB_SHR,      /* r6 >>= 1       shrinks          -> [0,3]                    */
+    LB_XOR3,     /* r6 ^= 3        stays in [0,7]                               */
+    LB_COND,     /* if (r6 > 7) r6 = 0  -- invariant kept by a BRANCH, not a mask */
+    LB_INC,      /* r6 += 1        unbounded growth -> must widen               */
+    LB_SHL,      /* r6 <<= 1       growth                                       */
+    LB_ADD8,     /* r6 += 8        growth                                       */
+};
+
+static const char *loop_body_name(enum loop_body b) {
+    switch (b) {
+    case LB_NOP:     return "nop";
+    case LB_MASK:    return "mask";
+    case LB_INCMASK: return "incmask";
+    case LB_MASKINC: return "maskinc";
+    case LB_SHR:     return "shr";
+    case LB_XOR3:    return "xor3";
+    case LB_COND:    return "cond";
+    case LB_INC:     return "inc";
+    case LB_SHL:     return "shl";
+    case LB_ADD8:    return "add8";
+    }
+    return "?";
+}
+
+static int emit_loop_body(struct bpf_insn *ins, int n, enum loop_body b) {
+    switch (b) {
+    case LB_NOP:
+        break;
+    case LB_MASK:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7); break;
+    case LB_INCMASK:
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_6, 1);
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7); break;
+    case LB_MASKINC:
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_6, 1); break;
+    case LB_SHR:
+        ins[n++] = BPF_ALU64_IMM(BPF_RSH, BPF_REG_6, 1); break;
+    case LB_XOR3:
+        ins[n++] = BPF_ALU64_IMM(BPF_XOR, BPF_REG_6, 3); break;
+    case LB_COND:
+        /* The invariant is re-established by a BRANCH -- reg_set_min_max inside a loop
+           body, a different code path from a mask. The threshold is 3, not the entry
+           bound 7, ON PURPOSE: with `r6 <= 7` the condition is always true for an entry
+           range of [0,7], the reset is dead code and the branch is one-way, i.e. a
+           vacuous arm. At 3 both sides are reachable and the join is genuinely computed. */
+        ins[n++] = BPF_JMP_IMM(BPF_JLE, BPF_REG_6, 3, 1);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_6, 0); break;
+    case LB_INC:
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_6, 1); break;
+    case LB_SHL:
+        ins[n++] = BPF_ALU64_IMM(BPF_LSH, BPF_REG_6, 1); break;
+    case LB_ADD8:
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_6, 8); break;
+    }
+    return n;
+}
+
+static void run_loop_prog(enum loop_body body, int init_mask, int idx,
+                          int map_in, int map_out) {
+    struct bpf_insn ins[64];
+    int n = 0;
+    int jexit[4]; int nx = 0;
+
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);
+    ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, init_mask);   /* the entry invariant */
+
+    /* THE LOOP. The jump target of may_goto is the break label, so the state reaching
+       the store is the JOIN over 0, 1, 2, ... iterations -- the ZERO-iteration path
+       included. An arm whose body NARROWS the range is therefore still unsafe if its
+       ENTRY range is unsafe, and that is a decision a wrong fixpoint could get wrong. */
+    const int loop_head = n;
+    const int jbreak = n; ins[n++] = BPF_MAY_GOTO_INSN(0);
+    n = emit_loop_body(ins, n, body);
+    /* The back-edge index MUST be taken before the store: writing
+       `ins[n++] = BPF_JMP_IMM(..., loop_head - n - 1)` leaves the side effect on `n`
+       unsequenced against the offset expression, and the first capture emitted
+       `goto pc-4` (landing on the entry mask) instead of `pc-3` (the may_goto). That
+       made every iteration re-establish the entry invariant, so all ten loop bodies
+       produced identical states and identical verdicts -- a VACUOUS family that looked
+       like ten clean accepts. */
+    const int jback = n;
+    ins[jback] = BPF_JMP_IMM(BPF_JA, 0, 0, loop_head - jback - 1);   /* back-edge */
+    n++;
+    ins[jbreak].off = n - jbreak - 1;
+
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_0);
+    ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_7, BPF_REG_6);
+    const int store_insn = n;
+    ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_7, LOOP_STORE_OFF, -1);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);
+    ins[n++] = BPF_EXIT_INSN();
+    const int exit0 = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    for (int i = 0; i < nx; i++)
+        ins[jexit[i]].off = exit0 - jexit[i] - 1;
+
+    struct prune_load base = prune_load_once(ins, n, 0, g_log, sizeof(g_log));
+    struct prune_load freq = prune_load_once(ins, n, BPF_F_TEST_STATE_FREQ,
+                                             g_log2, sizeof(g_log2));
+    struct prune_load inv  = prune_load_once(ins, n, BPF_F_TEST_REG_INVARIANTS,
+                                             g_log2, sizeof(g_log2));
+
+    char name[96];
+    snprintf(name, sizeof(name), "genloop#%s.m%d#%03d", loop_body_name(body), init_mask, idx);
+
+    printf("===PROG %s type=socket_filter ===\n", name);
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+           base.accept ? "accept" : "reject", base.accept ? 1 : -1, base.err);
+    printf("STORE insn=%d reg=7 off=%d size=1\n", store_insn, LOOP_STORE_OFF);
+    /* `fall`/`taken` carry the loop body and the entry mask so the differential line
+       stays byte-compatible with --gen-prune: same parser, same predicate, same tests. */
+    printf("PRUNE fall=%s taken=m%d fall_safe=%d taken_safe=%d stack=0"
+           " base_verdict=%s base_errno=%d base_states=%lu base_reason=%s"
+           " freq_verdict=%s freq_errno=%d freq_states=%lu freq_reason=%s"
+           " inv_verdict=%s inv_errno=%d inv_reason=%s\n",
+           loop_body_name(body), init_mask,
+           init_mask <= 7, init_mask <= 7,
+           base.accept ? "accept" : "reject", base.err, base.states, base.reason,
+           freq.accept ? "accept" : "reject", freq.err, freq.states, freq.reason,
+           inv.accept ? "accept" : "reject", inv.err, inv.reason);
+    printf("LOOP body=%s init_mask=%d store_off=%d\n",
+           loop_body_name(body), init_mask, LOOP_STORE_OFF);
+    printf("---LOG---\n%s\n---END---\n", g_log);
+}
+
+static void run_generated_loop_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 8; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = RTW_VALUE_SIZE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
+        printf("===PROG genloop type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    /* Derived expectation (the capture is the authority): with the store at +56 the
+       access is in bounds iff the JOIN over all iteration counts keeps umax(r6) <= 7.
+       `maskinc` vs `incmask` is the sharp pair -- same two operations, opposite ORDER,
+       [1,8] vs [0,7], one byte apart. `narrow` is the zero-iteration probe: its body
+       tightens the range, but entering with [0,63] and taking the break immediately
+       leaves [0,63] at the store, so it must still be rejected. */
+    const struct { enum loop_body body; int init_mask; } arms[] = {
+        { LB_NOP,     7  },   /* control: back-edge alone must not change a verdict */
+        { LB_MASK,    7  },
+        { LB_INCMASK, 7  },
+        { LB_MASKINC, 7  },   /* [1,8] -- the exact off-by-one against incmask */
+        { LB_SHR,     7  },
+        { LB_XOR3,    7  },
+        { LB_COND,    7  },
+        { LB_INC,     7  },
+        { LB_SHL,     7  },
+        { LB_ADD8,    7  },
+        { LB_MASK,    63 },   /* zero-iteration path: body narrows, entry does not */
+        { LB_NOP,     63 },   /* control: wide entry, nothing narrows it */
+    };
+    int idx = 0;
+    for (unsigned i = 0; i < sizeof(arms) / sizeof(arms[0]); i++)
+        run_loop_prog(arms[i].body, arms[i].init_mask, idx++, map_in, map_out);
+    close(map_in);
+    close(map_out);
+}
+
 static void run_generated_prune_family(void) {
     union bpf_attr m;
     memset(&m, 0, sizeof(m));
@@ -3025,6 +3258,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-prune") == 0) {
         run_generated_prune_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-loop") == 0) {
+        run_generated_loop_family();
         return 0;
     }
 

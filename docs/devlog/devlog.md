@@ -3567,3 +3567,78 @@ Pinlendi: `crates/pipeline/tests/prune_calibration.rs` (9 test), fixture
 **Sıradaki:** loop/iterator input'ları (kernel'in kendi tehlike haritası oraya işaret
 ediyor: `iters_looping.c`, `verifier_iterating_callbacks.c`), sonra SMT — ama `regsafe`'e
 nişanlı (γ(new) ⊆ γ(old) refinement iddiası), ALU transfer fonksiyonlarına değil.
+
+---
+
+## 0043 — İlk back-edge ailesi (`--gen-loop`, `may_goto`): input artışı, oracle aynen taşındı
+
+### 1. Neden bu, ve neden oracle DEĞİŞMEDİ
+
+0042'nin teşhisi şuydu: altı bacak boyunca sıfır bulgu, çünkü ürettiğimiz her program
+ileri-yönlü bir DAG'dı — gerçek bug listesi (state pruning, precision, convergence)
+back-edge olmadan erişilemez. Bu bacak tam olarak o eksiği kapatıyor ve **oracle'a tek
+satır eklemiyor**: aynı üç yükleme, aynı yönlü predikat, aynı `freq_states > base_states`
+paydası, aynı parser ve diff kodu. `oracle × input` kuralının uygulanmış hâli — bütçe
+input'a gitti.
+
+Mekanizma OI-13'te kaynaktan seçilmişti: `may_goto`. Tek ham instruction
+(`BPF_JCOND`=0xe0, `BPF_MAY_GOTO`=0, `verifier.c:19075` `dst_reg==0 && imm==0` istiyor),
+BTF yok, kfunc yok, subprog yok. Atlama hedefi döngü ÇIKIŞI, fall-through gövdeye devam
+— kernel'in kendi `__cond_break` makrosuyla doğrulandı (`.byte 0xe5`, offset `l_break`'i
+gösteriyor). Fall-through'ta verifier `may_goto_depth`'i artırıp aynı instruction'daki
+önceki girişe karşı `widen_imprecise_scalars()` çağırıyor (`verifier.c:16923`) — precision
+ve pruning'in üstünde oturan kasıtlı bir yakınsama üst-yaklaşımı.
+
+### 2. Karar TÜREV: iterasyon sayıları üzerinden JOIN
+
+Store'a ulaşan state, 0, 1, 2, ... iterasyonun JOIN'i — **sıfır-iterasyon yolu dâhil**,
+çünkü bütçe girişte tükenmiş olabilir. Store +56'da olduğu için program kabul edilebilir
+⟺ bu join `umax(r6) <= 7` tutuyor. İki keskin çift:
+
+- `incmask` (`r6 += 1; r6 &= 7` → [0,7], KABUL) vs `maskinc` (`r6 &= 7; r6 += 1` → join
+  [0,8], RED). Aynı iki işlem, ters SIRA, bir byte fark. Verifier reddedende tam olarak
+  `umin=1,umax=8,var_off=(0x0; 0xf)` basıyor.
+- `mask.m7` (KABUL) vs `mask.m63` (RED). Aynı gövde; tek fark geniş girip hemen break
+  etmenin geniş aralığı store'a taşıması — sıfır-iterasyon yolu.
+
+**SONUÇ: 12 program, 6 kabul / 6 red — türetmeyle birebir.** `prune_pairs_checked=12`,
+`finding_count=0`, `prune_resource_artifacts=0`, `parser_unrecognized=0`. Üç yükleme de
+her programda aynı fikirde, bayrak her programda state uzayını büyüttü (1→4, 2→7, 2→6).
+
+### 3. İlk capture VAKUMDU ve bunu yüksek sesle söyledi
+
+İlk koşu 10 kabul / 2 red verdi ve *hepsi* `init_mask`'in saf fonksiyonuydu — `nop.m7`
+ile `inc.m7` ayırt edilemiyordu, ikisi de 2→6 state. On farklı gövdenin aynı sonucu
+vermesi gövdenin doğrulanmadığının kanıtı. Disassembly onayladı:
+```
+  9: (e5) may_goto pc+2
+ 10: (07) r6 += 1
+ 11: (05) goto pc-4      <- insn 8'e (r6 &= 7) dönüyor, 9'a (may_goto) değil
+```
+Kök neden C'de: `ins[n++] = BPF_JMP_IMM(BPF_JA, 0, 0, loop_head - n - 1)` — `n++`'ın yan
+etkisi offset ifadesine karşı **sıralanmamış**, offset artmış `n` ile hesaplanmış.
+Her iterasyon giriş invariant'ını yeniden kuruyordu, yani "on temiz kabul" hiçbir şey
+kanıtlamıyordu. Düzeltme: back-edge indeksi store'dan ÖNCE alınıyor. Bu vakum, testte
+kalıcı bir guard'a çevrildi (`the_loop_body_actually_affects_the_verdict`): aynı giriş
+maskesini paylaşan kollar arasında hem kabul hem red bulunmalı.
+
+İkinci bir zayıflık da düzeltildi: `cond` kolunun eşiği 7'ydi, giriş aralığı [0,7] iken
+koşul HER ZAMAN doğru → reset ölü kod, dal tek yönlü. Eşik 3 yapıldı, iki taraf da
+erişilebilir, join gerçekten hesaplanıyor. (0039/0042'nin tautoloji dışlama kuralı.)
+
+### 4. Testler
+
+`loop_calibration.rs` 8 test: vakum guard'ı, türetilmiş karar tablosu (kol başına
+gerekçesiyle yazılı, hesaplanmış değil — şekil değişirse insan yeniden türetsin),
+sıra-duyarlılığı çifti, differential'ın headline'ı, bayrağın her programda tuttuğu,
+0042'nin dişinin BU capture üzerinde ateşlediği (ekilen bayraklı-accept →
+`prune_soundness_desync`), kernel'in kendi invariant kanalının sessiz kaldığı, ve parser
+kör noktası yok. Workspace 203 yeşil.
+
+**Sıradaki:** açık iteratorler (OI-13'ün ikinci sırası — `states.c` kendi
+`bpf_is_state_visited`'ında iterator loop-detection'ının özel-durum olduğunu ve
+`states_maybe_looping`'in ID remapping konusunda "too simplistic" olduğunu itiraf
+ediyor; maliyet `BPF_PSEUDO_KFUNC_CALL` + load-time BTF). Ayrıca bu ailenin doğal
+artışı: kabul edilen loop programlarını ÇALIŞTIRIP 0041'in store-location oracle'ını
+üzerlerine koşmak — verifier'ın fixpoint'i runtime'ın gerçek iterasyon sayısı için de
+tutmak zorunda.
