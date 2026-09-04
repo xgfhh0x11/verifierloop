@@ -4046,3 +4046,59 @@ store-location kontrolü zaten BİRLEŞİM kullanıyor, yani muhafazakâr yön.
 caller'da basılan id'nin callee frame'inde görünürlüğü, **paydanın gerçekten okunduğu**,
 callee frame register'larının bounds'la pipeline'a ulaştığı, dişin callee frame'i içinde
 ateşlediği, ve parser kör noktası yok. Workspace 237 yeşil.
+
+---
+
+## 0049 — Spill edilmiş linkler ve delta aritmetiği (`--gen-spill`)
+
+### 1. İki boşluk, tek satırda görünür
+
+0046-0048 id makinesini register'larda ve frame'ler arasında sınadı. `sync_linked_regs`
+(verifier.c:16847) tek satırda iki eksik boyutu gösteriyor:
+
+```c
+reg = e->is_reg ? &vstate->frame[e->frameno]->regs[e->regno]
+                : &vstate->frame[e->frameno]->stack[e->spi].spilled_ptr;
+```
+
+**(1)** Linkli sınıf **stack slotlarını** da kapsıyor, ve `stacksafe`'in kendi `check_ids`
+çağrıları var. Şimdiye kadarki her id ailesi skalerlerini register'da tuttu.
+**(2)** ADD_CONST kolu, bir sınıfın iki üyesi farklı delta taşıyorsa gerçek **aritmetik**
+yapıyor: `__mark_reg_known(&fake_reg, (s64)reg->delta - (s64)known_reg->delta)`. 0046 ve
+0047'de hep TEK delta (4) çıplak bir tabana bağlıydı, yani çıkarmanın hiç iki önemsiz
+olmayan operandı olmadı.
+
+### 2. Sonuç: ikisi de çalışıyor — ve eşleme bunu kanıtlıyor
+
+**8 program, 4 kabul / 4 red**, `store_locations_checked=32`, `runtime_writes_checked=32`,
+`prune_pairs_checked=8`, `finding_count=0`, `parser_unrecognized=0`.
+
+Her şekil için tek-yol RED / iki-yol KABUL:
+- `spill.no` red, `spill.one` red, **`spill.both` kabul** → spill edilmiş kopya sınıfta
+  kalıyor. Kalmasaydı `spill.both` de reddedilirdi.
+- `delta.no` red, `delta.one` red, **`delta.both` kabul** (hem delta 12 hem delta 4).
+
+### 3. Kabul tek başına kanıt değil — sayılar kanıt
+
+Delta kolu için fazla-geniş ama yine de güvenli bir sınır da kabul edilirdi. Log tam
+sayıları veriyor:
+
+```
+R6=scalar(id=1,   smin=smin32=0,          smax=umax=smax32=umax32=7)
+R9=scalar(id=1+12, smin=umin=smin32=umin32=12, smax=umax=smax32=umax32=19, var_off=(0x0; 0x1f))
+```
+
+[12,19] tam olarak [0,7] + 12 — genişletilmiş değil, **doğru**. Kernel bileşik id'yi
+`1+12` diye basıyor (taban + delta), ki aritmetiği log'dan denetlenebilir kılan da bu.
+Test bu sayıları verdict yerine **değer** olarak sabitliyor.
+
+Spill kolunda da mekanizma doğrudan görünüyor: slot kontrolden önce
+`fp-16=scalar(id=1, umax=0xffffffff)`, sonra `fp-16=scalar(id=1, umax=7)` — stack
+slotunun kendisi id taşıyor ve onun üzerinden daralıyor.
+
+### 4. Testler
+
+`spill_calibration.rs` 6 test: spill edilmiş kopyanın sınıfta kaldığı (eşlemeyle),
+slotun id taşıyıp daraldığının dump'ta görünürlüğü, **delta aritmetiğinin değerle
+sabitlenmesi** (base [0,7] + delta-12 üyesi tam [12,19] + `+12` gösterimi), oracle'ların
+paydayla sessizliği, diş, ve parser kör noktası yok. Workspace 243 yeşil.

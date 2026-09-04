@@ -3252,6 +3252,249 @@ static int emit_iter_loop(struct bpf_insn *ins, int n, const struct iter_ids *id
     return n;
 }
 
+// ---- spilled links and delta arithmetic (--gen-spill) -----------------------
+// Two gaps left by 0046-0048, both visible in sync_linked_regs (verifier.c:16847):
+//
+//   reg = e->is_reg ? &vstate->frame[e->frameno]->regs[e->regno]
+//                   : &vstate->frame[e->frameno]->stack[e->spi].spilled_ptr;
+//
+// (1) A linked scalar's set spans STACK SLOTS, not just registers, and `stacksafe` has
+//     its own check_ids calls for spilled state. Every id family so far kept its scalars
+//     in registers, so the spilled half of both mechanisms is untested.
+//
+// (2) The ADD_CONST branch does real ARITHMETIC when two members of a class carry
+//     different deltas:
+//         __mark_reg_known(&fake_reg, (s64)reg->delta - (s64)known_reg->delta);
+//         *reg = *known_reg;  /* then reg += fake_reg */
+//     0046 and 0047 only ever had ONE delta (4) linked to a bare base, so the
+//     subtraction never had two non-trivial operands. Two registers at different offsets
+//     from the same base exercise it directly, and a wrong delta is a bounds error.
+//
+// Same paired design as 0046: every REJECT shape has an ACCEPT control differing only in
+// whether the link exists on both paths, so the verdicts isolate linkage rather than
+// shape. Store offset 44 keeps every correctly-narrowed variant in bounds -- bare gives
+// umax 7, delta 4 gives 11, delta 12 gives 19, and 44 + 19 + 1 = 64 -- so the decision
+// never turns on offset arithmetic, only on whether the class was narrowed.
+enum spill_shape {
+    SPL_NONE,      /* no link                                                        */
+    SPL_SPILL,     /* r7 = r6, then spill r7: the linked copy lives in a stack slot   */
+    SPL_DELTA,     /* r7 = r6; r7 += 4  and  r9 = r6; r9 += 12: two deltas, one base  */
+};
+
+static const char *spill_shape_name(enum spill_shape p) {
+    switch (p) {
+    case SPL_NONE:  return "none";
+    case SPL_SPILL: return "spill";
+    case SPL_DELTA: return "delta";
+    }
+    return "?";
+}
+
+/* `linked` selects whether this path forms the link at all; the unlinked variant still
+   spills, so the two states differ ONLY in the id structure of the spilled slot. */
+static int emit_spill_shape(struct bpf_insn *ins, int n, enum spill_shape p, int linked) {
+    switch (p) {
+    case SPL_NONE:
+        ins[n++] = BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_7, -16);
+        break;
+    case SPL_SPILL:
+        if (linked)
+            ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_6);
+        ins[n++] = BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_7, -16);
+        break;
+    case SPL_DELTA:
+        if (linked) {
+            ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_6);
+            ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_7, 4);
+            ins[n++] = BPF_MOV64_REG(BPF_REG_9, BPF_REG_6);
+            ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_9, 12);
+        } else {
+            /* same registers written, same widths, no shared base */
+            ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_7, 4);
+            ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_9, 12);
+        }
+        break;
+    }
+    return n;
+}
+
+/* store_src: 0 = the slot reloaded from the stack, 7 = the delta-4 register,
+   9 = the delta-12 register, 6 = the register the check narrows directly (control). */
+static void run_spill_prog(enum spill_shape shape, int link_fall, int link_taken,
+                           int store_src, int store_off, int idx,
+                           int map_in, int map_out) {
+    struct bpf_insn ins[96];
+    int n = 0, jexit[4], nx = 0;
+
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_0, 4);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_9, BPF_REG_0, 8);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_0, 12);   /* path selector */
+
+    const int jsplit = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_8, 0, 0);
+    n = emit_spill_shape(ins, n, shape, link_fall);
+    const int jmerge = n; ins[n++] = BPF_JMP_IMM(BPF_JA, 0, 0, 0);
+    ins[jsplit].off = n - jsplit - 1;
+    n = emit_spill_shape(ins, n, shape, link_taken);
+    ins[jmerge].off = n - jmerge - 1;
+
+    /* Names r6 only. Everything else can be narrowed ONLY through the shared class --
+       including, for the spill arms, a copy that is sitting in a stack slot. */
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JGT, BPF_REG_6, 7, 0);
+    if (store_src == 0)
+        ins[n++] = BPF_LDX_MEM(BPF_DW, BPF_REG_8, BPF_REG_10, -16);  /* reload the slot */
+
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_0);
+    int src = store_src == 0 ? BPF_REG_8
+            : store_src == 7 ? BPF_REG_7
+            : store_src == 9 ? BPF_REG_9 : BPF_REG_6;
+    ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_2, src);
+    const int store_insn = n;
+    ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_2, store_off, -1);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);
+    ins[n++] = BPF_EXIT_INSN();
+    const int exit0 = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    for (int i = 0; i < nx; i++)
+        ins[jexit[i]].off = exit0 - jexit[i] - 1;
+
+    struct prune_load base = prune_load_once(ins, n, 0, g_log, sizeof(g_log));
+    struct prune_load freq = prune_load_once(ins, n, BPF_F_TEST_STATE_FREQ,
+                                             g_log2, sizeof(g_log2));
+    struct prune_load inv  = prune_load_once(ins, n, BPF_F_TEST_REG_INVARIANTS,
+                                             g_log2, sizeof(g_log2));
+
+    g_log[0] = '\0';
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)ins;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = sizeof(g_log);
+    attr.log_buf = (uint64_t)(unsigned long)g_log;
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int e = errno;
+
+    char name[96];
+    snprintf(name, sizeof(name), "genspill#%s.%s.s%d#%03d", spill_shape_name(shape),
+             (link_fall && link_taken) ? "both" : (link_fall || link_taken) ? "one" : "no",
+             store_src, idx);
+    printf("===PROG %s type=socket_filter ===\n", name);
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+           fd >= 0 ? "accept" : "reject", fd, fd >= 0 ? 0 : e);
+    printf("STORE insn=%d reg=2 off=%d size=1\n", store_insn, store_off);
+    printf("SPILL shape=%s link_fall=%d link_taken=%d store_src=%d store_off=%d\n",
+           spill_shape_name(shape), link_fall, link_taken, store_src, store_off);
+    printf("PRUNE fall=%s taken=s%d fall_safe=%d taken_safe=%d stack=1"
+           " base_verdict=%s base_errno=%d base_states=%lu base_reason=%s"
+           " freq_verdict=%s freq_errno=%d freq_states=%lu freq_reason=%s"
+           " inv_verdict=%s inv_errno=%d inv_reason=%s\n",
+           spill_shape_name(shape), store_src, link_fall, link_taken,
+           base.accept ? "accept" : "reject", base.err, base.states, base.reason,
+           freq.accept ? "accept" : "reject", freq.err, freq.states, freq.reason,
+           inv.accept ? "accept" : "reject", inv.err, inv.reason);
+
+    if (fd >= 0) {
+        unsigned char pkt[64];
+        memset(pkt, 0, sizeof(pkt));
+        for (int i = 0; i < LOOPR_INPUTS_N; i++) {
+            uint32_t in = LOOPR_INPUTS[i];
+            unsigned char zero[RTW_VALUE_SIZE], val[16];
+            memset(zero, 0, sizeof(zero));
+            memset(val, 0, sizeof(val));
+            memcpy(val + 0, &in, 4);
+            memcpy(val + 4, &in, 4);
+            memcpy(val + 8, &in, 4);
+            uint32_t sel = i & 1;
+            memcpy(val + 12, &sel, 4);
+            int ue = rt_map_set_bytes(map_in, 0, val);
+            int ze = rt_map_set_bytes(map_out, 0, zero);
+            union bpf_attr t;
+            memset(&t, 0, sizeof(t));
+            t.test.prog_fd = fd;
+            t.test.data_in = (uint64_t)(unsigned long)pkt;
+            t.test.data_size_in = sizeof(pkt);
+            t.test.repeat = 1;
+            int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+            unsigned char out[RTW_VALUE_SIZE];
+            memset(out, 0, sizeof(out));
+            int ge = rt_map_get(map_out, 0, out);
+            if (r < 0 || ue < 0 || ze < 0 || ge < 0) {
+                printf("RUNTIME input=0x%08x error=1 testrun_errno=%d\n",
+                       in, r < 0 ? errno : 0);
+                continue;
+            }
+            int off = -1;
+            for (int b = 0; b < RTW_VALUE_SIZE; b++)
+                if (out[b] == RTW_SENTINEL) { off = b; break; }
+            int executed = (t.test.retval == 1);
+            if (off < 0)
+                printf("RUNTIME input=0x%08x store_off=none store_len=0 store_size=1"
+                       " executed=%d\n", in, executed);
+            else {
+                int len = 0;
+                for (int b = off; b < RTW_VALUE_SIZE && out[b] == RTW_SENTINEL; b++) len++;
+                printf("RUNTIME input=0x%08x store_off=%d store_len=%d store_size=1"
+                       " executed=%d\n", in, off, len, executed);
+            }
+        }
+        close(fd);
+    }
+    printf("---LOG---\n%s\n---END---\n", g_log);
+}
+
+static void run_generated_spill_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 16; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = RTW_VALUE_SIZE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
+        printf("===PROG genspill type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    const struct { enum spill_shape shape; int lf, lt, src; } arms[] = {
+        { SPL_SPILL, 0, 0, 0 },   /* baseline: spilled copy never linked   -> reject */
+        { SPL_SPILL, 1, 0, 0 },   /* THE SHAPE: linked on one path         -> reject */
+        { SPL_SPILL, 1, 1, 0 },   /* does a SPILLED copy get narrowed?     -> answer */
+        { SPL_SPILL, 1, 0, 6 },   /* control: store through r6 directly    -> accept */
+        { SPL_DELTA, 0, 0, 9 },   /* baseline for the delta arm            -> reject */
+        { SPL_DELTA, 1, 0, 9 },   /* linked on one path                    -> reject */
+        { SPL_DELTA, 1, 1, 9 },   /* delta 12: is the subtraction right?   -> answer */
+        { SPL_DELTA, 1, 1, 7 },   /* delta 4, same class                   -> accept */
+    };
+    int idx = 0;
+    for (unsigned i = 0; i < sizeof(arms) / sizeof(arms[0]); i++)
+        run_spill_prog(arms[i].shape, arms[i].lf, arms[i].lt, arms[i].src, 44, idx++,
+                       map_in, map_out);
+    close(map_in);
+    close(map_out);
+}
+
 // ---- multi-frame states / subprogs (--gen-frame) ----------------------------
 // Every program this project has generated so far lives in ONE frame. `states_equal`
 // opens with `if (old->curframe != cur->curframe) return false` and then compares each
@@ -4697,6 +4940,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-frame") == 0) {
         run_generated_frame_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-spill") == 0) {
+        run_generated_spill_family();
         return 0;
     }
 
