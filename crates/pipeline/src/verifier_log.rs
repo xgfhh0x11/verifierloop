@@ -204,21 +204,32 @@ fn parse_runtime_samples(lines: &[&str]) -> Vec<metrics::core::RuntimeSample> {
     for l in lines {
         let mut input = None;
         let mut retval = None;
+        let mut store_off: Option<i64> = None;
         let mut error = false;
         for tok in l.split_whitespace() {
             if let Some(v) = tok.strip_prefix("input=") {
                 input = parse_u(v);
             } else if let Some(v) = tok.strip_prefix("retval=") {
                 retval = parse_u(v);
+            } else if let Some(v) = tok.strip_prefix("store_off=") {
+                // "none" = the sentinel was absent = the store landed out of bounds.
+                store_off = Some(if v.trim() == "none" {
+                    -1
+                } else {
+                    v.trim().parse::<i64>().unwrap_or(-1)
+                });
             } else if tok.starts_with("error=") {
                 error = true;
             }
         }
         if let Some(i) = input {
+            // A sample is valid if it observed EITHER channel (retval or store_off).
+            let observed = retval.is_some() || store_off.is_some();
             out.push(metrics::core::RuntimeSample {
                 input: i,
                 retval: retval.unwrap_or(0),
-                error: error || retval.is_none(),
+                store_off,
+                error: error || !observed,
             });
         }
     }

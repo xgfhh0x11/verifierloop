@@ -3022,3 +3022,55 @@ implementasyon gerekmez ama sadece kanalın gösterdiğini görür). v2 yönleri
 gözlem kanalları (map/packet write, 64-bit değerler), pointer-erişim OOB'sinin runtime
 tespiti, ve döngü/iterator input'ları. Pinlendi: `runtime_calibration.rs` (6 test). Tam
 suite 151 yeşil.
+
+## 0037 — Runtime bellek-güvenliği oracle'ı (map-value store, `--gen-rtw`): OOB-write yer-gerçeği
+
+- **Tarih:** 2026-09-04
+- **Durum:** v2 — runtime oracle'ının (0036) skaler dönüş-değerinden **bellek-güvenliği**
+  eksenine ilk genişlemesi. Asıl av yüzeyinin (pointer OOB) ilk ayağı.
+- **Alan:** `harness/diffharness.c` (`--gen-rtw`, `run_rtw_one`/`run_rtw_prog`/
+  `run_generated_rtw_family`, `rt_map_set_bytes`, `rt_map_get` — iki map + sentinel
+  yaz/geri-oku), `crates/metrics/src/core.rs` (`RuntimeSample.store_off`, serde-skip),
+  `crates/pipeline/src/verifier_log.rs` (`store_off` ayrıştırma), `crates/pipeline/src/
+  diff.rs` (`check_runtime_write_safety`, `runtime_writes_checked`, `runtime_oob_write`;
+  retval oracle'ına store-sample guard'ı), `crates/pipeline/tests/runtime_write_
+  calibration.rs` (yeni, 5 test, +fixture `gen-rtw-9.log`), `crates/pipeline/tests/
+  measure_log.rs`, `scripts/run-rtw.sh`, `docs/COVERAGE-MAP.md`, `docs/OPEN-ITEMS.md`.
+- **İlgili:** 0036 (retval oracle, Ω_rt), 0030 (`--gen-ptr` — aynı statik accept/reject
+  yüzeyi), OI-9, T2-2 (store genişliği), [[oracle-times-input]].
+
+### 0. Neden — retval kanalı bellek güvenliğini görmüyor
+0036'nın kanalı dönüş skaleri; ama asıl sömürülebilir verifier bug'ları "verifier bu
+bellek erişimini güvenli saydı, runtime'da değildi" tipinde. Bu oracle onu doğrudan
+ölçüyor: program bir sentinel yazıyor, biz nereye düştüğüne bakıyoruz.
+
+### 1. Mekanizma — sentinel yaz + geri oku (bound parse YOK)
+İki map: `map_in` (attacker input), `map_out` (yazma hedefi, value_size=64). Program
+input'tan bir offset üretir (`r6 &= MASK [+ C]`, verifier'ın in-bounds kanıtladığı),
+`*(u8*)(map_out + off) = 0xFF` yazar. Harness her koşuda: map_out'u sıfırlar,
+`BPF_PROG_TEST_RUN`, map_out'u geri okur, 0xFF'i arar → `store_off`. Kabul edilen bir
+store **iddiaen** in-bounds; sağlam kernelde sentinel **daima** value içine düşmeli.
+`store_off=none` (sentinel yok) = store okunabilir value'nun dışına, kernel belleğine
+gitti = verifier'ın kabul ettiği bir OOB-write. **Bound parse etmeye gerek yok** —
+doğrudan bellek-güvenliği özelliği.
+
+### 2. Çıktı — bpf-next VM (kernel 5e289c5a), 2026-09-04
+`--gen-rtw` = 9 program (and 4 + andadd 3 in-bounds ACCEPT + over 2 REJECT kontrol).
+- **7 kabul / 2 red.** 2 red = over-wide maske (off≤127 > value_size-1); verifier'ın
+  statik in-bounds kontrolü çiziyor (EACCES). **runtime_writes_checked = 84** (7×12
+  gerçek store, her biri düştüğü yer için kontrol edildi). **finding_count = 0** — her
+  kabul edilen store value içine düştü (`store_off = input & MASK [+ C]`, hep [0,63]).
+  **0 store_off=none, 0 parser kör noktası.**
+
+### 3. Diş + reject kontrolü
+"0 bulgu" ancak oracle bir OOB'ye ateşleyebiliyorsa anlamlı: planlı bir `store_off=none`
+örneği tam bir kez `runtime_oob_write` ateşliyor. Ve reject kontrolü: over-wide programlar
+load-time'da reddediliyor → hiç koşmuyor → hiç kontrol edilmiyor (verifier'ın statik
+çizgisi doğru yerde). Pinlendi: `runtime_write_calibration.rs` (5 test).
+
+### 4. Sınır ve sıradaki
+v1-store 1-byte + map_value. Sıradaki eksenler: store genişliği 2/4/8B (T2-2 —
+`off+size ≤ value_size` off-by-one'ı tam burada), packet write (SCHED_CLS, farklı sınır
+mantığı), ve store_off'u verifier'ın kanıtladığı pointer-offset bound'uyla karşılaştırma
+(sadece "value içinde mi" değil, "verifier'ın dediği yerde mi" — pointer-tracking desync).
+Sonra döngü/iterator input'ları. Tam suite 156 yeşil.

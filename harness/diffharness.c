@@ -1770,6 +1770,184 @@ static void run_generated_rt_family(void) {
     close(map_fd);
 }
 
+// ---- runtime memory-safety oracle for map-value STORES (--gen-rtw) ----------
+// The v2 extension of the runtime oracle: instead of checking a returned SCALAR
+// against the verifier's bound, it checks MEMORY SAFETY directly. The program
+// computes an attacker-controlled offset (verifier-bounded to be in-bounds) and
+// STORES a sentinel through a map-value pointer at that offset. Userspace zeroes
+// the target map, runs the program, reads the map back, and locates the sentinel.
+//
+// The check needs NO bound parsing: an accepted store is CLAIMED in-bounds, so on
+// a sound kernel the sentinel MUST land inside the map value. If the sentinel is
+// ABSENT, the store went out of bounds (into kernel memory we cannot see) — the
+// verifier accepted an OOB write. This is the direct memory-safety property, the
+// surface where real exploitable verifier bugs live.
+
+static int rt_map_set_bytes(int map_fd, uint32_t key, const void *val) {
+    union bpf_attr a;
+    memset(&a, 0, sizeof(a));
+    a.map_fd = map_fd;
+    a.key = (uint64_t)(unsigned long)&key;
+    a.value = (uint64_t)(unsigned long)val;
+    a.flags = 0;
+    return bpf(BPF_MAP_UPDATE_ELEM, &a, sizeof(a));
+}
+
+static int rt_map_get(int map_fd, uint32_t key, void *val_out) {
+    union bpf_attr a;
+    memset(&a, 0, sizeof(a));
+    a.map_fd = map_fd;
+    a.key = (uint64_t)(unsigned long)&key;
+    a.value = (uint64_t)(unsigned long)val_out;
+    return bpf(BPF_MAP_LOOKUP_ELEM, &a, sizeof(a));
+}
+
+#define RTW_VALUE_SIZE 64
+#define RTW_SENTINEL 0xFF
+
+enum rtw_shape { RTW_AND, RTW_ANDADD, RTW_OVER };
+static const char *rtw_shape_name(enum rtw_shape s) {
+    switch (s) {
+    case RTW_AND:    return "and";
+    case RTW_ANDADD: return "andadd";
+    case RTW_OVER:   return "over";
+    }
+    return "?";
+}
+
+static void run_rtw_one(const char *name, const struct bpf_insn *insns, int n,
+                        int map_in, int map_out) {
+    g_log[0] = '\0';
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)insns;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = sizeof(g_log);
+    attr.log_buf = (uint64_t)(unsigned long)g_log;
+
+    uint64_t t0 = now_ns();
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int e = errno;
+    uint64_t dt = now_ns() - t0;
+
+    printf("===PROG %s type=socket_filter ===\n", name);
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=%llu\n",
+           fd >= 0 ? "accept" : "reject", fd, fd >= 0 ? 0 : e,
+           (unsigned long long)dt);
+
+    if (fd >= 0) {
+        unsigned char pkt[64];
+        memset(pkt, 0, sizeof(pkt));
+        for (int i = 0; i < RT_INPUTS_N; i++) {
+            uint32_t in = RT_INPUTS[i];
+            unsigned char zero[RTW_VALUE_SIZE];
+            memset(zero, 0, sizeof(zero));
+            int ue = rt_map_set(map_in, 0, in);
+            int ze = rt_map_set_bytes(map_out, 0, zero);
+            union bpf_attr t;
+            memset(&t, 0, sizeof(t));
+            t.test.prog_fd = fd;
+            t.test.data_in = (uint64_t)(unsigned long)pkt;
+            t.test.data_size_in = sizeof(pkt);
+            t.test.repeat = 1;
+            int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+            unsigned char out[RTW_VALUE_SIZE];
+            memset(out, 0, sizeof(out));
+            int ge = rt_map_get(map_out, 0, out);
+            if (r < 0 || ue < 0 || ze < 0 || ge < 0) {
+                printf("RUNTIME input=0x%08x error=1 testrun_errno=%d\n",
+                       in, r < 0 ? errno : 0);
+                continue;
+            }
+            int off = -1;
+            for (int b = 0; b < RTW_VALUE_SIZE; b++)
+                if (out[b] == RTW_SENTINEL) { off = b; break; }
+            if (off < 0)
+                printf("RUNTIME input=0x%08x store_off=none\n", in);
+            else
+                printf("RUNTIME input=0x%08x store_off=%d\n", in, off);
+        }
+        close(fd);
+    }
+    printf("---LOG---\n%s\n---END---\n", g_log);
+}
+
+static void run_rtw_prog(enum rtw_shape shape, uint32_t mask, uint32_t add,
+                         int idx, int map_in, int map_out) {
+    struct bpf_insn ins[40];
+    int n = 0;
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);            /* key = 0 */
+    /* lookup map_in -> r0 */
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    const int j1 = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);     /* r6 = attacker input */
+    ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, mask);         /* shape the offset */
+    if (shape == RTW_ANDADD)
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_6, add);
+    /* lookup map_out -> r0 (r6 survives: callee-saved) */
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    const int j2 = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_0);             /* r7 = map_out value ptr */
+    ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_7, BPF_REG_6);    /* r7 += offset */
+    ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_7, 0, RTW_SENTINEL);   /* store sentinel byte */
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    const int exit0 = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    ins[j1].off = exit0 - j1 - 1;
+    ins[j2].off = exit0 - j2 - 1;
+
+    char name[80];
+    snprintf(name, sizeof(name), "genrtw#%s#%03d", rtw_shape_name(shape), idx);
+    run_rtw_one(name, ins, n, map_in, map_out);
+}
+
+static void run_generated_rtw_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 8; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = RTW_VALUE_SIZE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
+        printf("===PROG genrtw type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    int idx = 0;
+    /* in-bounds masks (off <= mask <= 63, 1-byte store fits) -> ACCEPT, runtime-checked. */
+    const uint32_t masks[] = {0x7u, 0xfu, 0x1fu, 0x3fu};
+    for (int i = 0; i < 4; i++)
+        run_rtw_prog(RTW_AND, masks[i], 0, idx++, map_in, map_out);
+    /* AND then ADD: off in [C, C+15], all <= 63 -> ACCEPT. */
+    const uint32_t adds[] = {0u, 24u, 48u};
+    for (int i = 0; i < 3; i++)
+        run_rtw_prog(RTW_ANDADD, 0xfu, adds[i], idx++, map_in, map_out);
+    /* over-wide masks (off up to 127 > 63) -> the verifier must REJECT (control). */
+    const uint32_t over[] = {0x7fu, 0xffu};
+    for (int i = 0; i < 2; i++)
+        run_rtw_prog(RTW_OVER, over[i], 0, idx++, map_in, map_out);
+    close(map_in);
+    close(map_out);
+}
+
 int main(int argc, char **argv) {
     // Two data sources, kept apart on purpose (different provenance):
     //   (no args) the fixed authoritative program set, pinned by tests
@@ -1824,6 +2002,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-rt") == 0) {
         run_generated_rt_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-rtw") == 0) {
+        run_generated_rtw_family();
         return 0;
     }
 

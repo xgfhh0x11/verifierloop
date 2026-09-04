@@ -1,7 +1,7 @@
 # Kapsama Haritası — Taranan Yüzeyler ve Açık Uçlar
 
-> Durum: HEAD `6a6fea0`+ (42 commit). Kaynak: `harness/diffharness.c` generator aileleri
-> (`--gen*`), `crates/pipeline/tests/*_calibration.rs` pinlenmiş ölçümler, devlog 0025–0036.
+> Durum: HEAD `8824e73`+ (43 commit). Kaynak: `harness/diffharness.c` generator aileleri
+> (`--gen*`), `crates/pipeline/tests/*_calibration.rs` pinlenmiş ölçümler, devlog 0025–0037.
 > Bu belge kararı **kod tabanına dayandırılmış** bir haritadır: her sayı bir generator
 > ailesinden ve onu donduran bir kalibrasyon testinden gelir.
 
@@ -121,6 +121,20 @@ sınırı **çalışmada** aşıp aşmadığına bakar, bu yüzden ikisini de ya
 dönüş-değeri kanalı (retval, 32-bit) üzerinden gözlemlenebilen bug'ları görür. v2 yönleri:
 daha geniş gözlem kanalları (map/packet write, 64-bit değerler), pointer-erişim OOB'sinin
 runtime tespiti, ve döngü/iterator input'ları.
+
+### 2b.1 — Bellek-güvenliği ekseni (`--gen-rtw`, devlog 0037)
+
+Runtime oracle'ının bellek-güvenliğine ilk genişlemesi ve **asıl av yüzeyinin (pointer OOB)
+ilk ayağı**. Program attacker-input'tan bir offset üretir (verifier'ın in-bounds kanıtladığı)
+ve `map_out` değerine bir sentinel yazar; harness map'i sıfırlar, çalıştırır, geri okur,
+sentinel'i arar. Kabul edilen store iddiaen in-bounds → sağlam kernelde sentinel **daima**
+value içine düşmeli; `store_off=none` = kernel belleğine gitti = verifier'ın kabul ettiği
+OOB-write. **Bound parse gerekmez — doğrudan bellek-güvenliği.** Çıktı: 9 program (7 kabul /
+2 red; red = over-wide maske, verifier'ın statik çizgisi), **runtime_writes_checked=84,
+finding_count=0** — her store value içine düştü. Diş kanıtlandı (planlı `store_off=none` tam
+bir kez `runtime_oob_write` ateşliyor). Pinlendi: `runtime_write_calibration.rs` (5 test).
+Sıradaki: store genişliği 2/4/8B (T2-2), packet write, store_off'u verifier'ın pointer-offset
+bound'uyla karşılaştırma (pointer-tracking desync), döngü/iterator.
 
 ---
 

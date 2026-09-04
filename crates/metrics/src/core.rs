@@ -180,6 +180,11 @@ pub struct RuntimeSample {
     pub input: u64,
     /// The value the program actually returned (retval, low 32 bits).
     pub retval: u64,
+    /// For a STORE program: the offset inside the map value where the sentinel
+    /// actually landed, or `Some(-1)` if it was absent (the store went out of the
+    /// readable value — an OOB write). `None` for return-value samples.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store_off: Option<i64>,
     /// True if the harness could not execute this sample (skipped by the oracle).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub error: bool,

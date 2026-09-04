@@ -45,6 +45,7 @@ fn measure_whole_capture() {
     eprintln!("MEASURE records={} (accept={accept} reject={reject})", norm.records.len());
     eprintln!("MEASURE reg32_checked={}", out.summary.reg32_checked);
     eprintln!("MEASURE runtime_checked={}", out.summary.runtime_checked);
+    eprintln!("MEASURE runtime_writes_checked={}", out.summary.runtime_writes_checked);
     eprintln!("MEASURE tnum_bounds_checked={}", out.summary.tnum_bounds_checked);
     eprintln!("MEASURE finding_count={}", out.summary.finding_count);
     eprintln!("MEASURE parser_unrecognized={unrecognized}");

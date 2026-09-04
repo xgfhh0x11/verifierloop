@@ -175,6 +175,11 @@ pub struct DiffSummary {
     /// to be internally consistent.
     #[serde(default)]
     pub runtime_checked: u64,
+    /// Store samples (BPF_PROG_TEST_RUN + map read-back) checked for memory safety:
+    /// an accepted store must land INSIDE the map value. The denominator for the
+    /// runtime memory-safety oracle.
+    #[serde(default)]
+    pub runtime_writes_checked: u64,
 }
 
 /// The DIFF_FINDINGS payload for a period.
@@ -240,12 +245,14 @@ pub fn run(
     let mut tnum_bounds_checked = 0u64;
     let mut reg32_checked = 0u64;
     let mut runtime_checked = 0u64;
+    let mut runtime_writes_checked = 0u64;
     for (idx, record) in metrics.records.iter().enumerate() {
         let idx = idx as u64;
         helper_args_observed += record.core.helper_arg_observations.len() as u64;
         check_logical_invariants(idx, record, &mut findings, &mut tnum_bounds_checked);
         check_subregister_invariants(idx, record, &mut findings, &mut reg32_checked);
         check_runtime_ground_truth(idx, record, &mut findings, &mut runtime_checked);
+        check_runtime_write_safety(idx, record, &mut findings, &mut runtime_writes_checked);
         check_helper_proto(idx, record, ground_truth, &mut findings);
         check_helper_observations(
             idx,
@@ -274,6 +281,7 @@ pub fn run(
         tnum_bounds_checked,
         reg32_checked,
         runtime_checked,
+        runtime_writes_checked,
     };
 
     let out = DiffFindings {
@@ -561,6 +569,39 @@ fn check_documented_behavior(
 /// for constants. It only becomes a check when the two views diverge, or when the
 /// 64-bit range spans more than one 2^32 block (there the 32-bit view constrains
 /// something the 64-bit endpoints alone do not).
+/// (Runtime memory safety) An accepted store is CLAIMED in-bounds, so on a sound
+/// kernel the sentinel it writes MUST land inside the map value. The harness zeroes
+/// the target map, runs the program, reads it back, and reports where the sentinel
+/// landed (`store_off`) — or that it was ABSENT (`Some(-1)`), meaning the store went
+/// out of the readable value into kernel memory: an OOB write the verifier accepted.
+/// This needs NO bound parsing — it is the direct memory-safety property.
+fn check_runtime_write_safety(
+    idx: u64,
+    record: &MetricRecord,
+    out: &mut Vec<DivergenceFinding>,
+    checked: &mut u64,
+) {
+    for smp in &record.core.runtime_samples {
+        let off = match smp.store_off {
+            Some(o) if !smp.error => o,
+            _ => continue,
+        };
+        *checked += 1;
+        if off < 0 {
+            out.push(DivergenceFinding {
+                record_index: Some(idx),
+                source: GroundTruthSource::LogicalInvariant,
+                kind: "runtime_oob_write".to_string(),
+                aspect: "runtime".to_string(),
+                expected: "an accepted store lands inside the map value".to_string(),
+                observed: format!("input=0x{:x}: sentinel absent — store landed out of bounds", smp.input),
+                detail: "the verifier accepted a program whose runtime store escaped the map value"
+                    .to_string(),
+            });
+        }
+    }
+}
+
 /// (Runtime ground truth) Compare each BPF_PROG_TEST_RUN sample's ACTUAL retval
 /// against the verifier's own proven bound on the return register (r0). A retval
 /// outside the bound means the verifier accepted a program whose runtime return
@@ -607,8 +648,8 @@ fn check_runtime_ground_truth(
         return;
     }
     for smp in &record.core.runtime_samples {
-        if smp.error {
-            continue;
+        if smp.error || smp.store_off.is_some() {
+            continue; // store samples are checked by check_runtime_write_safety
         }
         *checked += 1;
         let rv = smp.retval & 0xffff_ffff;
