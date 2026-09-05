@@ -4179,3 +4179,68 @@ arasındaki 52'yi ekerek sabitliyor.
 register kovalanıyor + state sayısı), bir-byte sınırı, **`imm=` regresyon guard'ı**
 (iddialar tnum değeri 8 ve 16 ile parse edilmeli), oracle'ların paydayla sessizliği,
 nokta-iddia üzerinde diş, parser kör noktası yok. Workspace 249 yeşil.
+
+---
+
+## 0051 — Hangi `exact_level`'a giriyoruz (`--gen-exact`): bir tahmin kuruldu ve ölçümle çürütüldü
+
+### 1. Üç seviye, üç ayrı çağrı yeri
+
+`regsafe` bir `exact_level` alıyor ve seviyeye göre bambaşka davranıyor (states.c):
+
+| seviye | davranış |
+|---|---|
+| `EXACT` | `regs_exact()`: memcmp + check_ids — mümkün olan en katı karşılaştırma |
+| `NOT_EXACT` | precision kısa-devresi geçerli: `!rold->precise` her şeye uyar |
+| `RANGE_WITHIN` | range/tnum mantığı çalışır, precision kısa-devresi **çalışmaz** |
+
+Çağrı yerleri: ana budama yolu `loop ? RANGE_WITHIN : NOT_EXACT` seçiyor
+(`:1405`, `loop = incomplete_read_marks(...)` — dikkat, "back-edge var mı" DEĞİL);
+iterator yolları `RANGE_WITHIN` geçiyor (`:1333/:1358/:1364`); ve `EXACT` yalnız `:1372`'de,
+**tek bir iş için**: sonsuz döngü tespiti — ki o da `"infinite loop detected at insn %d"`
+basıyor. Bu, EXACT seviyesine girdiğimizi dışarıdan doğrulamanın tek yolu, ve aile bunu
+işaretçi olarak kullanıyor.
+
+### 2. Kurulan tahmin — ve ölçümün onu çürütmesi
+
+Precision kısa-devresi `exact == NOT_EXACT`'a kapılı. Dolayısıyla 0050'nin sonucu (ölü bir
+register verifier'a bir state budatıyor) `RANGE_WITHIN` olan her yerde geçerli OLMAMALI.
+Eğer bir may_goto döngüsü RANGE_WITHIN seçiyorsa, aynı çift döngü içine konduğunda fark
+kapanmalı.
+
+**Ölçüm: kapanmıyor.** `loop.s6` tıpkı `flat.s6` gibi 2 state'e buduyor ve register hiç
+geri-izlenmiyor; `loop.s7` ise ters yöne gidip **6 state** ve **50 geri-izleme** yapıyor.
+
+Yani **bir döngünün içinde olmak tek başına RANGE_WITHIN seçtirmiyor** — kapı gerçekten
+`incomplete_read_marks`, back-edge'in varlığı değil. Bunu kaynaktan okuduğumda belirsiz
+olduğunu işaretleyip iddia etmemiştim; iyi ki, çünkü tahmin yanlıştı ve ölçüm düzeltti.
+Test bunu kalıcı hâle getiriyor: `loop.s6` ile `flat.s6` **aynı** state sayısına buduyor,
+ki karşılaştırmanın iki bağlamda da NOT_EXACT olduğunu söyleyen şey bu.
+
+### 3. Sonuç
+
+**5 program, 4 kabul / 1 red.** `inf.s6` reddediliyor **ve** `infinite_loop_detected=1` —
+EXACT yoluna girdik. `store_locations_checked=32`, `runtime_writes_checked=32`,
+`prune_pairs_checked=5`, `finding_count=0`, `parser_unrecognized=0`.
+
+### 4. İki inşa hatası — ikisi de kernel'in kendi hata metninden teşhis edildi
+
+**(i)** Koşulsuz `goto head` back-edge'i sonrasındaki her şeyi ulaşılamaz yapıyor:
+*"Remove the unreachable instruction"*, `processed 0 insns`. `check_cfg` tek bir state
+yürümeden reddediyor, yani EXACT yoluna hiç girilmiyor. Back-edge **koşullu** olmak
+zorunda. Bunu teste bir guard olarak yazdım: `inf` kolu için `base_states >= 1` şart —
+çünkü CFG reddi de `decision=reject` diyor ama sıfır state ile, ve kol sessizce anlamsız
+hâle gelirdi.
+
+**(ii)** `may_goto` **girişte** çıkabiliyor, dolayısıyla ilk kez döngü içinde atanan bir
+register sıfır-iterasyon yolunda tanımsız: *"Initialize R7 on every path before this
+instruction"*. 0043'te kararları belirleyen sıfır-iterasyon yolunun aynısı — bu sefer beni
+ısırdı.
+
+### 5. Payda
+
+Bu ailenin ölçümü state sayıları, ama sıfır konum-paydasıyla "temiz" rapor etmek tam da
+kendi eleştirdiğimiz şey olurdu. Kabul edilen programlar diğer her aile gibi çalıştırıldı;
+payda 32.
+
+`exact_level_calibration.rs` 6 test. Workspace 255 yeşil.
