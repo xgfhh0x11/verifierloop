@@ -52,6 +52,10 @@ const FIXED: &str = include_str!("fixtures/calibration/cve-3844d153a41a-fixed.lo
 const FR_BUGGY: &str = include_str!("fixtures/calibration/fakereg-92424801261d-buggy.log");
 const FR_FIXED: &str = include_str!("fixtures/calibration/fakereg-92424801261d-fixed.log");
 
+/// The third pair (devlog 0065): commit 049c4e13714e, on the pre-2022 LOG FORMAT.
+const A32_BUGGY: &str = include_str!("fixtures/calibration/alu32-049c4e13714e-buggy.log");
+const A32_FIXED: &str = include_str!("fixtures/calibration/alu32-049c4e13714e-fixed.log");
+
 fn run_diff(text: &str, tag: &str) -> (normalize::NormalizedMetrics, diff::DiffFindings) {
     let dir = std::env::temp_dir().join(format!("vl-cal-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -223,3 +227,180 @@ fn the_kernels_own_violation_names_our_two_invariants() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// PAIR THREE (devlog 0065) — commit 049c4e13714e, "bpf: Fix alu32 const subreg bound
+// tracking on bitwise operations" (2021-05-10, reported by Manfred Paul).
+//
+// THE BUG. `scalar32_min_max_and/or/xor()` delegated the 32-bit bound update to
+// `scalar_min_max_*()`, which only actually does it when BOTH 64-bit registers are
+// known constants. So for a register whose LOW half is constant while the full 64-bit
+// value is not, the 32-bit bounds were left stale — and the commit's own log shows them
+// landing in an impossible state:
+//
+//   before:  ...,s32_min_value=1,s32_max_value=0,u32_min_value=1,u32_max_value=0)
+//   after:   ...,s32_min_value=0,s32_max_value=0,u32_min_value=0,u32_max_value=0)
+//
+// `u32_min > u32_max` denotes the EMPTY set. Both `u32_bounds_inverted` and
+// `s32_bounds_inverted` have been in this pipeline since 0026 and would have caught it
+// on sight.
+//
+// WHAT CALIBRATION FOUND, and why it is a third distinct kind of blind spot:
+//
+//   * pair one (3844d153a41a) — the oracle was MISSING the property.
+//   * pair two (92424801261d) — the state is never printed, so a different CHANNEL
+//     (the verdict under BPF_F_TEST_REG_INVARIANTS) had to carry it.
+//   * pair three — the property was there and correct all along. The oracle could not
+//     read the LOG. A 2021 kernel spells SCALAR_VALUE `inv` (with a `P` suffix when
+//     precise) and its bounds `umin_value=` / `u32_min_value=`; every such register fell
+//     through to the pointer branch, took the reg_type "inv", lost its 32-bit view
+//     entirely, and was then skipped by every scalar check.
+//
+//     Measured on this fixture with the fix disabled: `finding_count=0`,
+//     `parser_unrecognized=0`, `tnum_bounds_checked=0`, `reg32_checked=0`. Not quite
+//     silent — each record did carry a `parse_notes` entry reading "unrecognized
+//     reg-type form: inv" — but nothing gates on a parse note, and the headline numbers
+//     read as a clean pass. The tell was the DENOMINATORS collapsing to zero, which is
+//     the 0025 rule doing its job for the fourth time.
+//
+// AND THE MISSING DENOMINATOR. The four ordering checks are ungated on purpose (an
+// inverted range is a contradiction by itself and needs no second tracker), but that
+// also meant NOTHING COUNTED THEM: 35 legs of "no inverted ranges" with no denominator
+// at all, the exact ambiguity 0025 exists to remove. `bounds_order_checked` now counts
+// every comparison that could have fired, and the answer turned out to be reassuring
+// rather than embarrassing — see `the_ordering_checks_finally_have_a_denominator`.
+//
+// SCOPE. The fixtures are quoted from the commit message. That text is EXPANDED relative
+// to what `print_verifier_state` at that revision actually emits: it glosses the signed
+// bounds with a hex form the kernel never prints, and it shows fields the kernel's own
+// omission rules would have suppressed. So each fixture carries a second program,
+// `-omitted`, rendered under those rules — mechanically derived from the source, and
+// labelled as derived, not quoted. It is the arm that matters: it shows the bug's
+// signature survives the omissions, so the detection is not an artefact of the
+// commit message's formatting.
+// ---------------------------------------------------------------------------
+
+/// THE HEADLINE for pair three: on the buggy state, three independent invariants fire.
+#[test]
+fn the_oracle_catches_the_stale_32_bit_bounds() {
+    let (_, out) = run_diff(A32_BUGGY, "a32-buggy");
+    for kind in [
+        "u32_bounds_inverted",
+        "s32_bounds_inverted",
+        // The intersection check catches this one too — unlike pair one, where the
+        // buggy span sat INSIDE the bounds and only the stronger const-pins-bounds
+        // property could see it.
+        "tnum32_bounds_inconsistent",
+    ] {
+        let hits: Vec<_> = out.findings.iter().filter(|f| f.kind == kind).collect();
+        assert_eq!(
+            hits.len(),
+            2,
+            "{kind} must fire on BOTH the quoted and the omission-rule arm: {:?}",
+            out.findings
+        );
+    }
+    assert!(
+        out.findings.iter().all(|f| f.detail.contains("insn 10 r2")),
+        "every finding must land on the register and instruction the commit marks: {:?}",
+        out.findings
+    );
+}
+
+/// THE SILENT HALF: the same states with the fix applied say nothing.
+#[test]
+fn the_oracle_stays_silent_on_the_alu32_fix() {
+    let (norm, out) = run_diff(A32_FIXED, "a32-fixed");
+    assert_eq!(norm.records.len(), 2);
+    assert_eq!(out.summary.finding_count, 0, "{:?}", out.findings);
+    // Silence is only evidence with a denominator behind it. An unparsed format produces
+    // exactly this same zero, which is the trap pair one walked into.
+    assert!(
+        out.summary.reg32_checked >= 2 && out.summary.bounds_order_checked >= 4,
+        "silent, but on what? reg32={} order={}",
+        out.summary.reg32_checked,
+        out.summary.bounds_order_checked
+    );
+}
+
+/// The blind spot itself, as a test. A pre-2022 log must PARSE — not merely fail to
+/// produce findings, which is what a format the parser cannot read looks like from the
+/// outside.
+#[test]
+fn the_pre_2022_log_format_parses_instead_of_silently_vanishing() {
+    for (tag, text) in [("a32-b", A32_BUGGY), ("a32-f", A32_FIXED)] {
+        let (norm, out) = run_diff(text, tag);
+        assert_eq!(
+            norm.unparsed
+                .iter()
+                .filter(|u| u.kind == UnparsedKind::Unrecognized)
+                .count(),
+            0,
+            "{tag}: unrecognized blocks"
+        );
+        assert!(
+            norm.records.iter().all(|r| r.parse_notes.is_empty()),
+            "{tag}: an `inv(...)` register must not be reported as an unknown family"
+        );
+        // The denominators are the real evidence: a format that does not parse scores
+        // zero on every one of them while looking perfectly clean.
+        assert!(
+            out.summary.reg32_checked >= 2 && out.summary.tnum_bounds_checked >= 4,
+            "{tag}: denominators too small to mean anything: reg32={} tnum={}",
+            out.summary.reg32_checked,
+            out.summary.tnum_bounds_checked
+        );
+    }
+}
+
+/// The omission-rule arm on its own: the signature survives what the kernel ACTUALLY
+/// prints, not just what the commit message quotes.
+#[test]
+fn the_signature_survives_the_kernels_own_omission_rules() {
+    // `print_verifier_state` at that revision prints s32_min_value only when it differs
+    // from smin_value, u32_min_value only when it differs from umin_value, and so on. In
+    // the buggy state all four differ, so all four are printed; in the fixed state the
+    // two minima coincide with their 64-bit partners and are suppressed.
+    assert!(A32_BUGGY.contains("umax_value=4294967296,var_off=(0x0; 0x100000000),s32_min_value=1,s32_max_value=0,u32_min_value=1,u32_max_value=0"));
+    assert!(A32_FIXED.contains("umax_value=4294967296,var_off=(0x0; 0x100000000),s32_max_value=0,u32_max_value=0"));
+
+    let (_, buggy) = run_diff(A32_BUGGY, "a32-omit-b");
+    let (_, fixed) = run_diff(A32_FIXED, "a32-omit-f");
+    let omitted_hits = buggy
+        .findings
+        .iter()
+        .filter(|f| f.record_index == Some(1))
+        .count();
+    assert_eq!(
+        omitted_hits, 3,
+        "the derived arm must fire on its own: {:?}", buggy.findings
+    );
+    assert_eq!(fixed.findings.len(), 0, "{:?}", fixed.findings);
+}
+
+/// The denominator the ordering checks never had — and the answer it gives.
+///
+/// This is the half that makes the other tests worth anything. `0 inverted ranges` across
+/// the whole project was uncountable until now; measured, it is 0 out of tens of
+/// thousands on the current corpus, which is a real statement about bpf-next rather than
+/// an absence of evidence.
+#[test]
+fn the_ordering_checks_finally_have_a_denominator() {
+    const COMP: &str = include_str!("fixtures/volume/gen-comp-704.log");
+    let (_, out) = run_diff(COMP, "a32-denom");
+    assert!(
+        out.summary.bounds_order_checked > 20_000,
+        "the composition corpus must exercise the ordering checks heavily; got {}",
+        out.summary.bounds_order_checked
+    );
+    assert_eq!(out.summary.finding_count, 0, "{:?}", out.findings);
+
+    // And the counter must EXCLUDE comparisons that cannot fail, or it is decoration:
+    // the buggy pair scores more than the fixed one only because its bounds are printed,
+    // never because a bound was absent and resolved to an extreme.
+    let (_, buggy) = run_diff(A32_BUGGY, "a32-denom-b");
+    assert!(
+        buggy.summary.bounds_order_checked >= 6,
+        "got {}",
+        buggy.summary.bounds_order_checked
+    );
+}

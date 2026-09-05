@@ -653,12 +653,68 @@ fn parse_reg_token(tok: &str) -> Option<RegState> {
     Some(build_regstate(reg, value_head(tok[eq + 1..].trim())))
 }
 
+/// Strip a pre-2022 SCALAR_VALUE type prefix, returning what follows it.
+///
+/// `reg_type_str[SCALAR_VALUE]` was `"inv"` until 2022 and a precise register got a
+/// `"P"` appended (verifier.c, `print_verifier_state`). So the era prints `inv1337`,
+/// `invP(id=0,...)`, `inv-5` and a bare `inv` for a fully unknown scalar.
+///
+/// The guard matters: `invP` must be tried before `inv`, and what follows the prefix
+/// must actually begin a value — otherwise an unrelated type whose name merely starts
+/// with those three letters would be silently re-labelled a scalar.
+fn strip_legacy_scalar_prefix(expr: &str) -> Option<&str> {
+    for p in ["invP", "inv"] {
+        if let Some(rest) = expr.strip_prefix(p) {
+            let ok = rest.is_empty()
+                || rest.starts_with('(')
+                || rest.starts_with('-')
+                || rest.starts_with(|c: char| c.is_ascii_digit());
+            if ok {
+                return Some(rest);
+            }
+        }
+    }
+    None
+}
+
+/// The pre-2022 spelling of a bound field, if `key` has one.
+///
+/// The rename happened with the log rewrite that also shortened `R3_w=scalar(...)`:
+/// `umin_value=` became `umin=`, `u32_min_value=` became `umin32=`. Every bound lookup
+/// tries the modern name first and falls back to this. The two spellings cannot be
+/// confused as substrings of one another — `umin=` does not occur inside
+/// `umin_value=`, and `umin_value=` does not occur inside `u32_min_value=` — which is
+/// the check this project's token collisions have twice been caught skipping.
+fn legacy_bound_key(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "umin=" => "umin_value=",
+        "umax=" => "umax_value=",
+        "smin=" => "smin_value=",
+        "smax=" => "smax_value=",
+        "umin32=" => "u32_min_value=",
+        "umax32=" => "u32_max_value=",
+        "smin32=" => "s32_min_value=",
+        "smax32=" => "s32_max_value=",
+        _ => return None,
+    })
+}
+
 /// Interpret a register value expression into a RegState.
 ///
 /// Never fabricates a malformed tnum: a const gets `mask=0`, an unknown scalar
 /// gets `value=0` (so `value & mask == 0` always holds and the `diff` stage's
 /// tnum invariant is not tripped by parsing).
 fn build_regstate(reg: u8, expr: &str) -> RegState {
+    // Pre-2022 kernels spell SCALAR_VALUE `inv`, with a `P` suffix when the register
+    // is marked precise. `print_verifier_state` in that era emits the const form with
+    // no parentheses at all (`verbose(env, "%lld", ...)` => `inv1337`, `inv-5`) and
+    // the tracked form as `inv(id=0,...)`. Normalising here rather than in the diff
+    // stage keeps ONE notion of "this is a scalar" in the pipeline; leaving it alone
+    // sent every such register down the pointer branch, where it acquired the reg_type
+    // "inv" and was then skipped by every scalar check — silently, since an
+    // unrecognised FAMILY is reported but a skipped CHECK is not.
+    let expr = strip_legacy_scalar_prefix(expr).unwrap_or(expr);
+
     // (a) const scalar: a bare integer (decimal/hex, maybe negative).
     if let Some((u, i)) = parse_const_int(expr) {
         return RegState {
@@ -673,8 +729,11 @@ fn build_regstate(reg: u8, expr: &str) -> RegState {
             ..Default::default()
         };
     }
-    // (b) scalar(...) with optional bounds / var_off.
-    if expr == "scalar" || expr.starts_with("scalar(") {
+    // (b) scalar(...) with optional bounds / var_off. `expr` is empty or starts with
+    // `(` when it arrived as a legacy `inv`/`invP` token, which the field lookups below
+    // handle through their legacy aliases.
+    if expr.is_empty() || expr == "scalar" || expr.starts_with("scalar(") || expr.starts_with('(')
+    {
         let (value, mask) = parse_var_off(expr).unwrap_or((0, u64::MAX));
         return RegState {
             reg,
@@ -964,12 +1023,17 @@ fn value_after_key<'a>(s: &'a str, key: &str) -> Option<&'a str> {
     }
 }
 
+/// The token a bound field equals, under either the modern or the pre-2022 spelling.
+fn bound_token<'a>(s: &'a str, key: &str) -> Option<&'a str> {
+    value_after_key(s, key).or_else(|| value_after_key(s, legacy_bound_key(key)?))
+}
+
 fn field_u64(s: &str, key: &str) -> Option<u64> {
-    parse_uint(value_after_key(s, key)?)
+    parse_uint(bound_token(s, key)?)
 }
 
 fn field_i64(s: &str, key: &str) -> Option<i64> {
-    let (_, i) = parse_const_int(value_after_key(s, key)?)?;
+    let (_, i) = parse_const_int(bound_token(s, key)?)?;
     Some(i)
 }
 
@@ -986,7 +1050,7 @@ fn field_i64(s: &str, key: &str) -> Option<i64> {
 ///
 /// Decimal forms are already sign-correct and pass through untouched.
 fn field_s32(s: &str, key: &str) -> Option<i64> {
-    let tok = value_after_key(s, key)?;
+    let tok = bound_token(s, key)?;
     let is_hex = tok.starts_with("0x") || tok.starts_with("0X") || tok.starts_with("-0x");
     let (u, i) = parse_const_int(tok)?;
     if is_hex {
@@ -1221,6 +1285,59 @@ processed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
         assert_eq!(r.s32_min, Some(-2_147_483_632));
         // The 64-bit fields keep two's-complement semantics on the full width.
         assert_eq!(r.smax, 0x1_000_000_ff);
+    }
+
+    #[test]
+    fn the_pre_2022_scalar_spelling_is_recognised_as_a_scalar() {
+        // `reg_type_str[SCALAR_VALUE]` was "inv" until 2022, with "P" appended for a
+        // precise register, and the const form carries no parentheses at all.
+        let c = parse_reg_token("R0_w=inv1337").expect("const");
+        assert_eq!(c.reg_type, "scalar");
+        assert_eq!((c.umin, c.umax, c.tnum.value, c.tnum.mask), (1337, 1337, 1337, 0));
+
+        let neg = parse_reg_token("R1=inv-5").expect("negative const");
+        assert_eq!(neg.reg_type, "scalar");
+        assert_eq!(neg.smin, -5);
+
+        let unknown = parse_reg_token("R2=inv").expect("fully unknown");
+        assert_eq!(unknown.reg_type, "scalar");
+        assert_eq!(unknown.tnum.mask, u64::MAX);
+
+        let precise = parse_reg_token(
+            "R3_w=invP(id=0,umin_value=1,umax_value=255,var_off=(0x1; 0xfe),u32_min_value=1,u32_max_value=255)",
+        )
+        .expect("precise tracked scalar");
+        assert_eq!(precise.reg_type, "scalar");
+        assert_eq!((precise.umin, precise.umax), (1, 255));
+        assert_eq!((precise.u32_min, precise.u32_max), (Some(1), Some(255)));
+        assert_eq!((precise.tnum.value, precise.tnum.mask), (1, 0xfe));
+    }
+
+    #[test]
+    fn a_type_that_merely_starts_with_inv_is_not_relabelled_a_scalar() {
+        // The prefix strip must require a value to follow. Turning an unrelated type
+        // into a scalar would hand it to every scalar invariant with zeroed bounds —
+        // a fabricated observation, which is worse than an unrecognised family.
+        let r = parse_reg_token("R4=invalid(off=0)").expect("token");
+        assert_eq!(r.reg_type, "invalid");
+    }
+
+    #[test]
+    fn the_pre_2022_bound_field_names_are_read() {
+        // `umin_value=` / `u32_min_value=` became `umin=` / `umin32=` with the 2022 log
+        // rewrite. Neither spelling occurs inside the other, so the fallback cannot
+        // collide — the check this project's token bugs have twice been caught skipping.
+        let r = parse_reg_token(
+            "R2_w=inv(id=0,smin_value=-9223372036854775807 (0x8000000000000001),umin_value=1,umax_value=0xffffffff00000001,var_off=(0x1; 0xffffffff00000000),s32_min_value=1,s32_max_value=1,u32_min_value=1,u32_max_value=1)",
+        )
+        .expect("token");
+        assert_eq!((r.umin, r.umax), (1, 0xffffffff00000001));
+        assert_eq!(r.smin, -9223372036854775807);
+        assert_eq!((r.u32_min, r.u32_max), (Some(1), Some(1)));
+        assert_eq!((r.s32_min, r.s32_max), (Some(1), Some(1)));
+        // The commit message glosses signed bounds with a hex form the kernel never
+        // prints; the annotation must be ignored, not folded into the value.
+        assert_eq!(r.tnum.mask, 0xffffffff00000000);
     }
 
     #[test]

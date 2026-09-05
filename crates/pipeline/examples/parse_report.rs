@@ -74,6 +74,13 @@ fn main() {
         "         32<->64 subregister views carrying independent information: {}",
         dif.summary.reg32_checked
     );
+    // The ordering checks are ungated — an inverted range contradicts itself and needs
+    // no partner tracker — which is exactly why nothing counted them for 35 legs. It
+    // does now (0065).
+    println!(
+        "         bound-ordering comparisons that could have failed: {}",
+        dif.summary.bounds_order_checked
+    );
     // The intrinsic leg's denominator is the one that was missing until 0025, and
     // its absence hid the real state of the corpus: the committed syzkaller volume
     // scores ZERO here, so that leg's "0 findings" was 0 out of 0.

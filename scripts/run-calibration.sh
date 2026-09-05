@@ -2,7 +2,8 @@
 # CALIBRATION against a real verifier bug that must be RUN to be seen.
 #
 # Some bugs can be calibrated from the fix commit alone, when the inconsistent state is
-# printed as ordinary register state (see tests/fixtures/calibration/cve-3844d153a41a-*).
+# printed as ordinary register state — see tests/fixtures/calibration/cve-3844d153a41a-*
+# and alu32-049c4e13714e-*, both of which run as plain `cargo test` with no VM at all.
 # 92424801261d cannot: the corrupt registers (true_reg2, false_reg1/2) live inside
 # reg_set_min_max and appear only in the kernel's own "REG INVARIANTS VIOLATION" message.
 # The detection channel is the VERDICT — 0042's third load, where BPF_F_TEST_REG_INVARIANTS

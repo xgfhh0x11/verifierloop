@@ -77,6 +77,11 @@ class DiffSummary:
     # The 32<->64 denominator (0026). A corpus of single-width programs scores 0
     # here however large it gets — the verifier prints the two views as one token.
     reg32_checked: int = 0
+    # The bound-ORDERING denominator (0065). The four `umin <= umax` style checks are
+    # ungated and were therefore uncounted since 0026; a bound the verifier omitted
+    # resolves to its extreme and can never be on the wrong side, so only comparisons
+    # with both endpoints away from their extremes are counted.
+    bounds_order_checked: int = 0
 
 
 @dataclass

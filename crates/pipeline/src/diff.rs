@@ -169,6 +169,20 @@ pub struct DiffSummary {
     /// something different are counted.
     #[serde(default)]
     pub reg32_checked: u64,
+    /// Bound-ORDERING comparisons (`umin <= umax` and its signed/32-bit siblings) that
+    /// could actually have reported a violation — the denominator these four checks had
+    /// been missing since 0026.
+    ///
+    /// They are ungated on purpose: an inverted range is a contradiction on its own and
+    /// needs no second tracker to compare against. But that also meant nothing counted
+    /// them, so their "0 findings" carried exactly the ambiguity 0025 was written to
+    /// remove. A bound the verifier omitted resolves to its EXTREME, and an extreme
+    /// endpoint can never be on the wrong side of the other one — so a comparison is
+    /// counted only when both endpoints sit away from their extremes and the check could
+    /// therefore have fired. Calibration against commit 049c4e13714e (devlog 0065) is
+    /// what surfaced this: the bug's whole signature is `u32_min_value=1,u32_max_value=0`.
+    #[serde(default)]
+    pub bounds_order_checked: u64,
     /// Runtime ground-truth samples (BPF_PROG_TEST_RUN retvals) actually compared
     /// against the verifier's proven bound on the return register. The denominator
     /// for the runtime oracle — the ONLY leg that does not trust the verifier log
@@ -264,6 +278,7 @@ pub fn run(
     let mut documented_cases_checked = 0u64;
     let mut tnum_bounds_checked = 0u64;
     let mut reg32_checked = 0u64;
+    let mut bounds_order_checked = 0u64;
     let mut runtime_checked = 0u64;
     let mut runtime_writes_checked = 0u64;
     let mut store_locations_checked = 0u64;
@@ -272,8 +287,20 @@ pub fn run(
     for (idx, record) in metrics.records.iter().enumerate() {
         let idx = idx as u64;
         helper_args_observed += record.core.helper_arg_observations.len() as u64;
-        check_logical_invariants(idx, record, &mut findings, &mut tnum_bounds_checked);
-        check_subregister_invariants(idx, record, &mut findings, &mut reg32_checked);
+        check_logical_invariants(
+            idx,
+            record,
+            &mut findings,
+            &mut tnum_bounds_checked,
+            &mut bounds_order_checked,
+        );
+        check_subregister_invariants(
+            idx,
+            record,
+            &mut findings,
+            &mut reg32_checked,
+            &mut bounds_order_checked,
+        );
         check_runtime_ground_truth(idx, record, &mut findings, &mut runtime_checked);
         check_runtime_write_safety(idx, record, &mut findings, &mut runtime_writes_checked);
         check_store_location(idx, record, &mut findings, &mut store_locations_checked);
@@ -311,6 +338,7 @@ pub fn run(
         note_count: notes.len() as u64,
         tnum_bounds_checked,
         reg32_checked,
+        bounds_order_checked,
         runtime_checked,
         runtime_writes_checked,
         store_locations_checked,
@@ -341,6 +369,7 @@ fn check_logical_invariants(
     record: &MetricRecord,
     out: &mut Vec<DivergenceFinding>,
     checkable: &mut u64,
+    order_checked: &mut u64,
 ) {
     for snap in &record.core.register_evolution {
         for reg in &snap.regs {
@@ -368,6 +397,9 @@ fn check_logical_invariants(
             }
 
             // Bound ordering: an empty/inverted range is a contradiction.
+            if order_checkable(reg.umin, reg.umax, 0, u64::MAX) {
+                *order_checked += 1;
+            }
             if reg.umin > reg.umax {
                 out.push(DivergenceFinding {
                     record_index: Some(idx),
@@ -378,6 +410,9 @@ fn check_logical_invariants(
                     observed: format!("umin={} umax={}", reg.umin, reg.umax),
                     detail: format!("{where_}: inverted unsigned range"),
                 });
+            }
+            if order_checkable(reg.smin, reg.smax, i64::MIN, i64::MAX) {
+                *order_checked += 1;
             }
             if reg.smin > reg.smax {
                 out.push(DivergenceFinding {
@@ -626,6 +661,18 @@ fn check_documented_behavior(
         }
     }
     true
+}
+
+/// Whether an ordering comparison on `[lo, hi]` could possibly have reported a
+/// violation, and therefore counts toward `bounds_order_checked`.
+///
+/// The verifier OMITS a bound sitting at its extreme, and the parser resolves that
+/// silence back to the extreme. An extreme endpoint can never be on the wrong side of
+/// the other one — `0 > hi` and `lo > MAX` are both impossible — so counting such a
+/// comparison would manufacture a denominator out of states that could not have failed.
+/// Exactly the tautology exclusion `tnum_bounds_checkable` makes for constants.
+fn order_checkable<T: Ord>(lo: T, hi: T, min: T, max: T) -> bool {
+    lo > min && hi < max
 }
 
 /// Whether the 32-bit view of this register is INDEPENDENT information.
@@ -1064,6 +1111,7 @@ fn check_subregister_invariants(
     record: &MetricRecord,
     out: &mut Vec<DivergenceFinding>,
     checked: &mut u64,
+    order_checked: &mut u64,
 ) {
     for snap in &record.core.register_evolution {
         for reg in &snap.regs {
@@ -1075,6 +1123,9 @@ fn check_subregister_invariants(
 
             // (A) Ordering. An inverted 32-bit range denotes the empty set — a
             // contradiction on its own, independent of the 64-bit view.
+            if order_checkable(u32min, u32max, 0, u32::MAX as u64) {
+                *order_checked += 1;
+            }
             if u32min > u32max {
                 out.push(DivergenceFinding {
                     record_index: Some(idx),
@@ -1092,6 +1143,9 @@ fn check_subregister_invariants(
             let s32max = reg.s32_max.unwrap_or(i32::MAX as i64);
             {
                 let (a, b) = (s32min, s32max);
+                if order_checkable(a, b, i32::MIN as i64, i32::MAX as i64) {
+                    *order_checked += 1;
+                }
                 if a > b {
                     out.push(DivergenceFinding {
                         record_index: Some(idx),

@@ -5040,3 +5040,99 @@ geçmiyor. Teste de böyle yazıldı.
 
 `calibration.rs` 7 test, `scripts/run-calibration.sh` ikisini de koşturuyor.
 Workspace 285 yeşil.
+
+---
+
+## 0065 — Üçüncü kalibrasyon çifti: invariant doğruydu, oracle LOG'U okuyamıyordu
+
+### 1. Hedef
+
+`049c4e13714e`, "bpf: Fix alu32 const subreg bound tracking on bitwise operations"
+(2021-05, Manfred Paul bildirmiş). `scalar32_min_max_and/or/xor()` 32-bit sınır
+güncellemesini `scalar_min_max_*()`'a devrediyordu, ama o yalnız **iki 64-bit register de
+sabitse** gerçekten güncelliyor. Alt yarısı sabit, tamamı sabit olmayan bir register'da
+32-bit sınırlar bayat kalıyor — ve commit'in kendi log'u onları imkânsız bir durumda
+gösteriyor:
+
+```
+önce:  ...,s32_min_value=1,s32_max_value=0,u32_min_value=1,u32_max_value=0)
+sonra: ...,s32_min_value=0,s32_max_value=0,u32_min_value=0,u32_max_value=0)
+```
+
+`u32_min > u32_max` **boş kümeyi** gösteriyor. `u32_bounds_inverted` ve
+`s32_bounds_inverted` 0026'dan beri bu pipeline'da duruyor ve bunu görür görmez yakalar.
+
+### 2. Üçüncü tip kör nokta
+
+| çift | kör nokta |
+|---|---|
+| `3844d153a41a` (0061) | oracle'da **özellik eksikti** |
+| `92424801261d` (0064) | durum hiç basılmıyor → başka bir **kanal** gerekti |
+| `049c4e13714e` (0065) | özellik vardı ve doğruydu. Oracle **log'u okuyamıyordu.** |
+
+2021 kernel'ı SCALAR_VALUE'yu `inv` yazıyor (precise ise `invP`), sınırlarını da
+`umin_value=` / `u32_min_value=` diye. Böyle her register pointer koluna düşüyor,
+`reg_type` olarak `"inv"` alıyor, **32-bit görünümünü tamamen kaybediyor** ve sonra her
+skaler kontrol tarafından atlanıyor.
+
+Fix kapalıyken bu fixture üzerinde ölçüldü: `finding_count=0`, `parser_unrecognized=0`,
+`tnum_bounds_checked=0`, `reg32_checked=0`. Tam sessiz değil — her kayıt bir
+`parse_notes` girdisi taşıyordu (`unrecognized reg-type form: inv`) — ama hiçbir şey bir
+parse note'una bakmıyor, ve manşet sayılar temiz bir geçiş gibi okunuyor. Asıl işaret
+**paydaların sıfıra çökmesiydi**: 0025 kuralı dördüncü kez işini yaptı.
+
+Düzeltme sonrası: buggy → **6 bulgu** (üç bağımsız invariant × iki kol), fixed → **0**.
+Üç invariant: `u32_bounds_inverted`, `s32_bounds_inverted`, ve `tnum32_bounds_inconsistent`
+— kesişim kontrolü bu sefer **yetiyor** (0061'de yetmiyordu, orada bozuk span sınırların
+İÇİNDE oturuyordu).
+
+### 3. Ölçüm kapsamı: commit mesajı byte-birebir DEĞİL
+
+`print_verifier_state`'i o revizyonda okudum: `umax_value` `%llu` ile basılıyor, hex
+`(0x...)` şerhi hiç yok, ve `smin_value` yalnız `umin_value`'dan farklıysa basılıyor.
+Commit'teki log **genişletilmiş**. Bu yüzden her fixture ikinci bir program taşıyor,
+`-omitted`: kernel'in kendi atlama kurallarına göre kaynaktan **mekanik olarak türetilmiş**,
+ve alıntı değil türetme diye etiketlenmiş.
+
+Asıl önemli kol o: hatanın imzası atlamalardan **sağ çıkıyor** (`u32_min_value=1` ≠
+`umin_value=0` olduğu için basılıyor), yani tespit commit mesajının biçimlendirmesinin
+bir yan ürünü değil.
+
+### 4. Ve eksik payda — bu bacağın asıl bulgusu
+
+Dört sıralama kontrolü (`umin <= umax` ve kardeşleri) bilerek kapısız: ters bir aralık
+kendi başına bir çelişki, karşılaştıracak ikinci bir izleyiciye ihtiyacı yok. Ama bu
+aynı zamanda **hiçbir şeyin onları saymadığı** anlamına geliyordu — 35 bacak boyunca
+"ters aralık yok", paydasız. 0025'in ortadan kaldırmak için yazıldığı belirsizliğin
+aynısı.
+
+`bounds_order_checked` artık ateşlenebilecek her karşılaştırmayı sayıyor. Atlanmış bir
+sınır kendi ekstremumuna çözülür ve bir ekstremum uç asla diğerinin ters tarafında
+olamaz — o yüzden yalnız iki ucu da ekstremumdan uzak olan karşılaştırmalar sayılıyor
+(`tnum_bounds_checkable`'ın sabitler için yaptığı tautoloji ayıklamasının aynısı).
+
+Cevap utandırıcı değil, rahatlatıcı çıktı:
+
+| korpus | `bounds_order_checked` | bulgu |
+|---|---|---|
+| `gen-comp-704` | **26336** | 0 |
+| `gen-mixed-396` | 5152 | 0 |
+| `gen-multibranch-242` | 4765 | 0 |
+| `gen-regreg-242` | 4143 | 0 |
+| `syz-replay-184` | 539 | 0 |
+
+Toplam ~58 bin. Yani "ters aralık yok" 0/0 değildi — 0/58000'di. Sadece kimse saymamıştı.
+Dikkat: kompozisyon korpusunda bu sayı `tnum_bounds_checked`'ten (16326) **büyük** —
+projedeki en geniş payda.
+
+### 5. Bir tuzak daha, bu sefer kendi çalışma yöntemimde
+
+Dişleri sınamak için parser fix'ini geçici kapatıp geri yükledim — ama geri yüklediğim
+yedek, üç yeni parser unit testini eklemeden ÖNCE alınmıştı. Testler sessizce kayboldu.
+İşaret: workspace sayısı 293 → 290. **Bir yedekten geri yükleme, yedek alındığından beri
+yapılan her şeyi geri alır** — stale-binary ipucunun editör hâli.
+
+### 6. Durum
+
+Üç bağımsız çift, üç ayrı kör nokta tipi. `calibration.rs` 12 test + 3 parser unit testi,
+hiçbiri VM istemiyor. Workspace 293 yeşil.
