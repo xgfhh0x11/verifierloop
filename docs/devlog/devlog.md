@@ -5288,3 +5288,91 @@ onun kesilmişi.
 
 Dört çift, dört farklı sonuç: eksik özellik, yanlış kanal, okunamayan format, ve **tamir
 gerektirmeyen bir doğrulama**. `calibration.rs` 15 test. Workspace 302 yeşil.
+
+---
+
+## 0068 — Beşinci kalibrasyon çifti: ilk kez cevap bir SINIR — bu enstrüman bu sınıfı göremez
+
+### 1. Hedef
+
+`af9e89d8dd39`, "bpf: Preserve id of register in sync_linked_regs()" (2026-01).
+`sync_linked_regs()`'in delta kolu `copy_register_state(reg, known_reg)` çağırıp sonra
+yalnız `off` ve `subreg_def`'i geri koyuyordu. Üstündeki yorum zaten *"Must preserve off,
+id and add_const flag"* diyordu — kod id'yi korumuyordu.
+
+```
+r1 = r0        ; ikisi de id=1
+r1 += 4        ; r1 → id=1+4
+if r1 < 10 ... ; sync r1'in sınırlarını r0'a taşıyor AMA r0'a ADD_CONST damgası da vuruyor
+r2 = r0        ; assign_scalar_id_before_mov ADD_CONST görüyor → r0'a YENİ id
+```
+
+Link kopuyor. Sonra r1 için bulunan sınırlar r0'a hiç ulaşmıyor.
+
+### 2. Neden bizim enstrümanımızın dışında — ve asıl bulgu bu
+
+Ortaya çıkan durum **kendi içinde tutarlı**: r0 gerçekte [10,255] iken [6,255] taşıyor.
+Bu bir **aşırı-yaklaşım**, yani sağlam bir verifier'ın üretmesine izin verilen şey. Hata
+bir **fazladan-reddetme**, unsoundness değil.
+
+Bu projenin bütün invariant'ları iç-tutarlılık kontrolü. Hiçbir şeyle çelişmeyen bir
+durumda hiçbiri ateşlenemez. **Tartışılmadı, ölçüldü:**
+
+| | buggy | fixed |
+|---|---|---|
+| trigger | **reject, "div by zero"** | accept |
+| control | accept | accept |
+| pipeline bulgu | **0** | **0** |
+| `tnum_bounds_checked` | 14 | 23 |
+| `bounds_order_checked` | 53 | 68 |
+| `prune_pairs_checked` | 2 | 2 |
+| `reg_invariants_checked` | 1 | 2 |
+
+Sessizlik **paydalı**. 0065/0066'nın satın aldığı tam olarak bu: "sessiz" değil,
+"14+53+2+1 değerlendirilmiş kontrolde sessiz" diyebiliyorum. Paydasız olsaydı bu leg
+0025 tuzağına düşmüş olurdu.
+
+Kernel'in kendi denetçisi de sessiz: `inv_verdict=reject inv_errno=22 inv_reason=verdict`
+— sıradan reddin aynası, `-EFAULT` değil. Yani **çift-2'yi yakalayan kanal bunu
+yakalayamıyor.**
+
+### 3. Kontrol kolu
+
+Trigger'dan tek bir instruction farkla: ikinci link (`r2 = r0`) yok. Her iki kernel'da da
+kabul ediliyor. Eğer o da flip etseydi, flip kopuk link hakkında olmazdı ve kol hiçbir şey
+kanıtlamazdı.
+
+### 4. Gören kanal — ve onun dürüst sınırı
+
+Gören şey **verdict**, kernel SÜRÜMLERİ arasında. Ama: iki kernel sürümünün bir verdict'te
+anlaşmaması **normaldir** — hassasiyet her sürümde değişir. Yani bir flip ancak hangi
+tarafın hata olduğunu zaten biliyorsan kanıttır.
+
+**Sürüm-farkı bir kalibrasyon aleti, bir av oracle'ı değil.** Bu çiftin kurduğu şey bir
+sınır — ve delik bulmak yerine sınır kuran ilk çift.
+
+### 5. Log'da görünen ama çelişki olmayan fark
+
+```
+buggy  5: (bf) r2 = r0 ; R0=scalar(id=2,...)
+fixed  5: (bf) r2 = r0 ; R0=scalar(id=1,...)
+buggy  6: ...          ; R1=scalar(id=1+4,umin=14,...)          ← R0 güncellenmiyor
+fixed  6: ...          ; R0=scalar(id=1,umin=10,...) R1=...     ← taşınıyor
+```
+
+Fark **görünür**, ama çelişki değil. `id=2` kendi içinde tutarlı; yalnız *daha iyi bir
+verifier'ın aynı programla yaptığı şeye* göre yanlış. Bu sınıf için bir dedektör başka bir
+invariant değil, bir **referans** ister.
+
+### 6. Sonraki için: girdi ŞEKLİ
+
+0062'nin dersi — gerçek bir bug hangi input'un önemli olduğunu da söyler. Buradaki şekil:
+**link → sabit ekle → linkli register üzerinde dallan → temel register'dan İKİNCİ bir link
+kur.** Hiçbir ailemiz bunu üretmiyor. `--probe-idlink` şimdilik şekli sabitliyor;
+kompozisyon havuzuna bir `relink` parçası olarak eklemek kendi bacağını hak ediyor.
+
+### 7. Durum
+
+Beş çift, beş farklı cevap: eksik özellik, yanlış kanal, okunamayan format, tamir
+gerektirmeyen doğrulama, ve **görüş alanı dışında bir sınıf**. `calibration.rs` 18 test.
+Workspace 305 yeşil.

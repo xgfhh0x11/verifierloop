@@ -61,6 +61,11 @@ const A32_FIXED: &str = include_str!("fixtures/calibration/alu32-049c4e13714e-fi
 const SX_BUGGY: &str = include_str!("fixtures/calibration/sx-ae67b9fb8c4e-buggy.log");
 const SX_FIXED: &str = include_str!("fixtures/calibration/sx-ae67b9fb8c4e-fixed.log");
 
+/// The fifth pair (devlog 0068): commit af9e89d8dd39. BOTH halves are real captures, from
+/// two kernels built from the same config — the first pair whose answer is a BOUNDARY.
+const IL_BUGGY: &str = include_str!("fixtures/calibration/idlink-af9e89d8dd39-buggy.log");
+const IL_FIXED: &str = include_str!("fixtures/calibration/idlink-af9e89d8dd39-fixed.log");
+
 fn run_diff(text: &str, tag: &str) -> (normalize::NormalizedMetrics, diff::DiffFindings) {
     let dir = std::env::temp_dir().join(format!("vl-cal-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -517,4 +522,121 @@ fn the_32_bit_invariants_are_blind_to_this_32_bit_bug() {
         .findings
         .iter()
         .all(|f| f.aspect != "bounds32"));
+}
+
+// ---------------------------------------------------------------------------
+// PAIR FIVE (devlog 0068) — commit af9e89d8dd39, "bpf: Preserve id of register in
+// sync_linked_regs()" (2026-01), and the first target this instrument CANNOT see.
+//
+// THE BUG. sync_linked_regs()'s delta branch called copy_register_state(reg, known_reg),
+// which copies known_reg's id — including its BPF_ADD_CONST flag — and then restored only
+// `off` and `subreg_def`. The comment above it already said "Must preserve off, id and
+// add_const flag"; the code did not preserve the id. So after
+//
+//     r1 = r0        ; both get id=1
+//     r1 += 4        ; r1 gets id=1+4
+//     if r1 < 10 ... ; the sync propagates r1's bounds to r0 AND stamps ADD_CONST on r0
+//
+// the next `r2 = r0` hits assign_scalar_id_before_mov's ADD_CONST branch, which clears
+// r0's id and mints a fresh one — silently breaking r0's link to r1. Bounds found for r1
+// afterwards never reach r0.
+//
+// WHY IT IS OUTSIDE THIS INSTRUMENT, and why that is the finding. The resulting state is
+// perfectly self-consistent: r0 simply keeps [6,255] where the truth is [10,255]. That is
+// an over-APPROXIMATION, which is exactly what a sound verifier is allowed to produce, so
+// the bug is an OVER-REJECTION, not an unsoundness. Every invariant this project owns is
+// an internal-consistency check, and none of them can fire on a state that contradicts
+// nothing. Measured below rather than argued: zero findings on the buggy capture, against
+// real denominators (14 tnum-vs-bounds, 53 ordering, 2 prune pairs, 1 REG_INVARIANTS
+// load). Silence with a denominator behind it is a result; silence without one would have
+// been the 0025 trap again.
+//
+// THE CHANNEL THAT DOES SEE IT is the verdict, across kernel VERSIONS: the program is safe
+// iff the verifier is precise enough to prove the branch at insn 7 always taken, so the
+// buggy kernel rejects it with "div by zero" and the fixed one accepts.
+//
+// AND THE HONEST LIMIT ON THAT CHANNEL: a version differential is a calibration
+// instrument, not a hunting oracle. Two kernel versions are ALLOWED to disagree on a
+// verdict — precision changes with every release — so a flip is only evidence when you
+// already know which side is the bug. That is the boundary this pair establishes, and it
+// is the first pair to establish one instead of finding a hole.
+//
+// BOTH halves are real captures (`--probe-idlink`) from two kernels built from the same
+// config, differing only in the fix.
+// ---------------------------------------------------------------------------
+
+fn decisions(text: &str, tag: &str) -> Vec<(String, String)> {
+    let (norm, _) = run_diff(text, tag);
+    norm.records
+        .iter()
+        .map(|r| {
+            (
+                r.source_label.clone().unwrap_or_default(),
+                format!("{:?}", r.core.verifier_decision),
+            )
+        })
+        .collect()
+}
+
+/// THE MEASUREMENT: the verdict flips on the trigger and NOT on the control.
+///
+/// The control differs by exactly one instruction — the second link, `r2 = r0` — which is
+/// the only thing that re-mints r0's id. If it flipped too, the flip would be about
+/// something else and the arm would prove nothing.
+#[test]
+fn the_verdict_flips_on_the_trigger_and_holds_on_the_control() {
+    let buggy = decisions(IL_BUGGY, "il-buggy");
+    let fixed = decisions(IL_FIXED, "il-fixed");
+    assert_eq!(buggy.len(), 2);
+    assert_eq!(fixed.len(), 2);
+
+    assert!(buggy[0].0.ends_with("trigger") && buggy[0].1.contains("div by zero"));
+    assert!(fixed[0].0.ends_with("trigger") && fixed[0].1 == "Accept");
+
+    assert!(buggy[1].0.ends_with("control") && buggy[1].1 == "Accept");
+    assert!(fixed[1].0.ends_with("control") && fixed[1].1 == "Accept");
+}
+
+/// THE BOUNDARY, and the point of the leg: every consistency invariant is silent on the
+/// buggy capture — measured against real denominators, not asserted.
+#[test]
+fn no_consistency_invariant_can_see_an_over_approximation() {
+    let (_, buggy) = run_diff(IL_BUGGY, "il-b-inv");
+    assert_eq!(
+        buggy.summary.finding_count, 0,
+        "an over-approximation contradicts nothing: {:?}", buggy.findings
+    );
+    // The denominators that make that zero mean something. Without them this test would
+    // be indistinguishable from a capture nothing looked at.
+    assert!(buggy.summary.tnum_bounds_checked >= 10, "{}", buggy.summary.tnum_bounds_checked);
+    assert!(buggy.summary.bounds_order_checked >= 40, "{}", buggy.summary.bounds_order_checked);
+    assert!(buggy.summary.prune_pairs_checked >= 2, "{}", buggy.summary.prune_pairs_checked);
+
+    // And the kernel's OWN checker is silent too, so the channel that caught pair two
+    // cannot catch this one: the flagged load returns the ordinary verdict, not -EFAULT.
+    assert!(
+        IL_BUGGY.contains("inv_verdict=reject inv_errno=22 inv_reason=verdict"),
+        "REG_INVARIANTS must mirror the plain rejection, not report a fault"
+    );
+    assert!(!IL_BUGGY.contains("REG INVARIANTS VIOLATION"));
+}
+
+/// The difference IS visible in the log — it is simply not a contradiction.
+///
+/// Worth pinning because it names what a detector for this class would need: not another
+/// invariant, but a REFERENCE. `id=2` is self-consistent; it is only wrong relative to
+/// what a better verifier does with the same program.
+#[test]
+fn the_broken_link_is_visible_as_a_difference_but_not_as_a_contradiction() {
+    // The buggy kernel re-mints r0's id at the second link; the fixed one keeps it.
+    assert!(IL_BUGGY.contains("5: (bf) r2 = r0                       ; R0=scalar(id=2,"));
+    assert!(IL_FIXED.contains("5: (bf) r2 = r0                       ; R0=scalar(id=1,"));
+    // And the consequence one instruction later: only the fixed kernel carries r1's new
+    // bound across to r0, which is what makes the branch at 7 provable.
+    assert!(IL_FIXED.contains("6: (a5) if r1 < 0xe goto pc+2         ; R0=scalar(id=1,smin=umin=smin32=umin32=10"));
+    assert!(IL_BUGGY.contains("6: (a5) if r1 < 0xe goto pc+2         ; R1=scalar(id=1+4"));
+    // Both states are internally consistent, which is why the pipeline reports nothing on
+    // either — already asserted above, restated here as the reason this test exists.
+    let (_, fixed) = run_diff(IL_FIXED, "il-f-diff");
+    assert_eq!(fixed.summary.finding_count, 0, "{:?}", fixed.findings);
 }

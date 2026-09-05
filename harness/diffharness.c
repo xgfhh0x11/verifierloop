@@ -3340,6 +3340,96 @@ static void run_probe_sx(void) {
     }
 }
 
+// ---- calibration probe: the broken scalar link (--probe-idlink) --------------
+// Calibration pair five (af9e89d8dd39, "bpf: Preserve id of register in
+// sync_linked_regs()", 2026-01), and the first target whose bug is an OVER-REJECTION
+// rather than an unsoundness — which makes the question "what channel could see it?"
+// the whole point of the leg.
+//
+// THE BUG. `sync_linked_regs()` copied `known_reg`'s id onto `reg` when propagating
+// bounds, including the BPF_ADD_CONST flag. So after
+//     r1 = r0        ; both get id=1
+//     r1 += 4        ; r1 gets id=1+4 (ADD_CONST)
+//     if r1 < 10 ... ; sync propagates r1's bounds to r0 AND gives r0 ADD_CONST too
+// the next `r2 = r0` sees ADD_CONST on r0, and `assign_scalar_id_before_mov` mints a
+// FRESH id for it — silently breaking r0's link to r1. Later bounds found for r1 then
+// never reach r0.
+//
+// WHY IT MATTERS TO US. The resulting state is perfectly self-consistent; it is merely
+// WIDER than the truth. Every invariant this project has is an internal-consistency
+// check, so none of them can fire — an over-approximation is exactly what a sound
+// verifier is allowed to produce. The bug is observable only in the VERDICT: the
+// selftest program is safe iff the verifier is precise enough to prove the branch at
+// insn 7 is always taken, so a buggy kernel rejects it with "div by zero" and a fixed
+// one accepts.
+//
+// THE PROGRAM, transcribed from the commit's own disassembly, plus a CONTROL that
+// removes only the second link (`r2 = r0`). Without that instruction nothing re-mints
+// r0's id, so the control must accept on BOTH kernels — if it flips too, the flip is
+// not about the broken link and the arm proves nothing.
+static void run_probe_idlink(void) {
+    for (int arm = 0; arm < 2; arm++) {
+        const int second_link = (arm == 0);   /* arm 0 = the trigger, arm 1 = control */
+        struct bpf_insn ins[16];
+        int n = 0, j_a, j_b, j_c;
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_get_prandom_u32);
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_0, 255);   /* r0 in [0,255]        */
+        ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_0);      /* link: both get id=1  */
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, 4);     /* r1 gets id=1+4       */
+        j_a = n; ins[n++] = BPF_JMP_IMM(BPF_JLT, BPF_REG_1, 10, 0);
+        if (second_link)
+            ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_0);  /* THE trigger          */
+        j_b = n; ins[n++] = BPF_JMP_IMM(BPF_JLT, BPF_REG_1, 14, 0);
+        /* r1 >= 14 implies r0 >= 10, so this branch is always taken — IF the link held. */
+        j_c = n; ins[n++] = BPF_JMP_IMM(BPF_JGE, BPF_REG_0, 10, 0);
+        /* Reachable only when the verifier lost the bound. `div by zero` is a static
+         * reject, so reachability alone decides the verdict. */
+        ins[n++] = BPF_ALU64_IMM(BPF_DIV, BPF_REG_0, 0);
+        const int exit_at = n;
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+        ins[n++] = BPF_EXIT_INSN();
+        ins[j_a].off = exit_at - j_a - 1;
+        ins[j_b].off = exit_at - j_b - 1;
+        ins[j_c].off = exit_at - j_c - 1;
+
+        struct prune_load base = prune_load_once(ins, n, 0, g_log, sizeof(g_log));
+        struct prune_load freq = prune_load_once(ins, n, BPF_F_TEST_STATE_FREQ,
+                                                 g_log2, sizeof(g_log2));
+        struct prune_load inv  = prune_load_once(ins, n, BPF_F_TEST_REG_INVARIANTS,
+                                                 g_log2, sizeof(g_log2));
+
+        g_log[0] = '\0';
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 2;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        if (fd >= 0) close(fd);
+
+        printf("===PROG idlink#af9e89d8dd39#%s type=socket_filter ===\n",
+               second_link ? "trigger" : "control");
+        printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+               base.accept ? "accept" : "reject", base.accept ? 1 : -1, base.err);
+        printf("PRUNE fall=idlink taken=c0 fall_safe=1 taken_safe=1 stack=0"
+               " base_verdict=%s base_errno=%d base_states=%lu base_reason=%s"
+               " freq_verdict=%s freq_errno=%d freq_states=%lu freq_reason=%s"
+               " inv_verdict=%s inv_errno=%d inv_reason=%s\n",
+               base.accept ? "accept" : "reject", base.err, base.states, base.reason,
+               freq.accept ? "accept" : "reject", freq.err, freq.states, freq.reason,
+               inv.accept ? "accept" : "reject", inv.err, inv.reason);
+        /* The state-level tell the commit points at: whether the second link re-minted
+         * r0's id, quoted so a capture explains itself without the pipeline. */
+        printf("CHANNEL div_by_zero_reject=%d\n",
+               strstr(g_log, "div by zero") != NULL);
+        printf("---LOG---\n%s\n---END---\n", g_log);
+    }
+}
+
 // ---- calibration probe: the fake_reg corruption (--probe-fakereg) -----------
 // The SECOND kind of calibration. 0061 tested the oracle against a bug whose inconsistent
 // state the commit message printed, so no kernel had to be built. This one cannot work
@@ -6703,6 +6793,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-sx") == 0) {
         run_probe_sx();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-idlink") == 0) {
+        run_probe_idlink();
         return 0;
     }
 
