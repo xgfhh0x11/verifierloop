@@ -38,9 +38,9 @@ use pipeline::normalize::{self, UnparsedKind};
 use pipeline::verifier_log::VerifierLogParser;
 use std::collections::BTreeSet;
 
-const COMP: &str = include_str!("fixtures/volume/gen-comp-448.log");
-const PROGRAMS: usize = 448;
-const ACCEPTED: usize = 391;
+const COMP: &str = include_str!("fixtures/volume/gen-comp-576.log");
+const PROGRAMS: usize = 576;
+const ACCEPTED: usize = 492;
 
 fn run_diff(text: &str, tag: &str) -> (normalize::NormalizedMetrics, diff::DiffFindings) {
     let dir = std::env::temp_dir().join(format!("vl-comp-{}-{tag}", std::process::id()));
@@ -116,7 +116,11 @@ fn every_rejection_is_semantic_and_none_is_structural() {
         "math between",                        // pointer arithmetic with an unbounded reg
     ];
     let structural = ["Initialize R", "!read_ok", "unreachable", "unknown opcode",
-                      "invalid bpf_ld", "jump out of range"];
+                      "invalid bpf_ld", "jump out of range",
+                      // A leaked ringbuf reservation would be the GENERATOR's fault, not a
+                      // property under test: the piece must submit on every path, including
+                      // the one where its slice comes back NULL.
+                      "Unreleased reference", "reference"];
     let reasons = rejection_reasons();
     let rejects = COMP.matches("RESULT decision=reject").count();
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -172,7 +176,7 @@ fn the_corpus_reaches_the_oracles_in_bulk() {
         out.summary.finding_count
     );
     assert!(
-        out.summary.store_locations_checked >= 2400,
+        out.summary.store_locations_checked >= 3000,
         "the runtime oracles must actually be fed: got {}",
         out.summary.store_locations_checked
     );
@@ -200,7 +204,7 @@ fn the_corpus_contains_shapes_no_hand_written_family_produced() {
         .flat_map(|r| r.split(',').filter(|k| !k.is_empty()))
         .collect();
     assert!(
-        kinds.len() >= 11,
+        kinds.len() >= 12,
         "every piece in the pool must actually be reachable from the walk: {kinds:?}"
     );
     let mixed = all
@@ -232,7 +236,7 @@ fn the_corpus_contains_shapes_no_hand_written_family_produced() {
 /// because a two-piece recipe contributes no triple at all. Triples went 35% -> 87%.
 /// Pieces `comp_can` permits at most once per program, so a combination repeating one of
 /// them is unreachable by construction and must not count against coverage.
-const ONCE_ONLY: &[&str] = &["dynptr", "iter", "call", "dynskb"];
+const ONCE_ONLY: &[&str] = &["dynptr", "iter", "call", "dynskb", "ringbuf"];
 
 fn achievable(kinds: &[&str], arity: usize) -> usize {
     let n = kinds.len();
@@ -312,37 +316,63 @@ fn every_program_carries_the_seed_that_produced_it() {
 }
 
 /// The teeth, on a randomly composed program rather than a designed one.
+///
+/// The planted site has to be provably OUTSIDE the claim, and a fixed value is not: an
+/// earlier version planted 63 and it stopped firing as soon as the corpus happened to pick
+/// a program whose proven window legitimately reached 63 (a narrowing bound of 15 puts the
+/// store base at 48, so [48,63] admits it). The site is now derived from the program's own
+/// declared store offset — one byte BELOW it — which `admits` rejects for any non-negative
+/// pointer offset, because it requires the landing site to be at or above the base.
 #[test]
 fn the_oracle_has_teeth_on_a_composed_program() {
-    let label = COMP
-        .split("===PROG ")
-        .skip(1)
-        .find(|b| b.contains("RESULT decision=accept") && b.contains("RUNTIME input=0x00000000 store_off="))
-        .and_then(|b| b.split_whitespace().next())
-        .expect("some accepted program must have stored")
-        .to_string();
-    let mut out_text = String::new();
+    let mut target: Option<(String, i64)> = None;
+    for block in COMP.split("===PROG ").skip(1) {
+        if !block.contains("RESULT decision=accept") {
+            continue;
+        }
+        let declared: i64 = match block
+            .lines()
+            .find(|l| l.starts_with("STORE "))
+            .and_then(|l| l.split_whitespace().find_map(|t| t.strip_prefix("off=")))
+            .and_then(|v| v.parse().ok())
+        {
+            Some(v) => v,
+            None => continue,
+        };
+        let stores = block
+            .lines()
+            .any(|l| l.starts_with("RUNTIME input=0x00000000 store_off=")
+                && !l.contains("store_off=none"));
+        if declared > 0 && stores {
+            target = Some((block.split_whitespace().next().unwrap().to_string(), declared));
+            break;
+        }
+    }
+    let (label, declared) = target.expect("some accepted program stores at a positive offset");
+    let planted = format!(
+        "store_off={} store_len=1 store_size=1 executed=1", declared - 1);
+    let mut text = String::new();
     let mut hit = false;
     for block in COMP.split("===PROG ").skip(1) {
-        out_text.push_str("===PROG ");
+        text.push_str("===PROG ");
         let blabel = block.split_whitespace().next().unwrap();
         for line in block.lines() {
             if blabel == label && line.starts_with("RUNTIME input=0x00000000 ") && !hit {
-                out_text.push_str(
-                    "RUNTIME input=0x00000000 store_off=63 store_len=1 store_size=1 executed=1");
+                text.push_str(&format!("RUNTIME input=0x00000000 {planted}"));
                 hit = true;
             } else {
-                out_text.push_str(line);
+                text.push_str(line);
             }
-            out_text.push('\n');
+            text.push('\n');
         }
     }
-    assert!(hit, "planting target not found");
-    let (_, out) = run_diff(&out_text, "teeth");
+    assert!(hit, "planting target {label} not found");
+    let (_, out) = run_diff(&text, "teeth");
     assert!(
         out.findings.iter().any(|f| f.kind == "store_location_desync"),
-        "a store planted at the far end of the value must fire on a composed program too: \
-         {:?}", out.findings
+        "a landing site below the store's own base must fire on a composed program too: \
+         {label} declared off={declared}, planted {}: {:?}",
+        declared - 1, out.findings
     );
 }
 

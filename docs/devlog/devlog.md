@@ -4711,3 +4711,59 @@ Dönem dosyalarına bölündü — `state-of-play` (özet + dört sağlık metri
 önce okunacak), `harness-gotchas` (birden fazla kez ısıran operasyonel tuzaklar), ve dört
 dönem dosyası (consistency / runtime-oracle / state-comparison / composition). İndeks
 artık **1.8 KB**, giriş başına tek satır.
+
+---
+
+## 0059 — Onikinci parça: ringbuf dynptr — havuzdaki ilk REFERANS özelliği
+
+### 1. Neden bu parça
+
+Havuzdaki on bir parçanın hepsi **sınır** hakkında. Ringbuf rezervasyonu **referans**
+hakkında: verifier, rezervasyonun **her yolda** serbest bırakıldığını kanıtlamak zorunda,
+yoksa program referans sızdırıyor ve reddediliyor. Tek parçada üç yeni şey geliyor —
+üçüncü bir dynptr tipi (RINGBUF), yeni bir map tipi, ve pooldaki ilk *bounds-dışı*
+doğruluk özelliği.
+
+Helper id'leri kernel'in kendi mapper'ından: `reserve_dynptr=198`, `submit=199`,
+`discard=200`; üçü de `bpf_base_func_proto`'da, yani tüm program tiplerinde.
+
+### 2. Capture'dan önce çözülen tuzak
+
+`bpf_dynptr_slice` `KF_RET_NULL`, yani null kontrolü gerekiyor. O dal programın çıkışına
+gitseydi rezervasyon **submit edilmeden** çıkılırdı ve verifier bu parçayı içeren **her**
+programı sızıntı diye reddederdi — jeneratörün kendi ürettiği bir kusur, test edilen bir
+özellik değil. Null dalı submit'e yönlendirildi, böylece her yol rezervasyonu bırakıyor.
+
+Sonuç bunu doğruladı: **hiç "Unreleased reference" reddi yok**, 84 reddin hepsi bounds.
+237 program referans alıp bırakıyor, on bir başka parça türüyle rastgele birleşmiş hâlde.
+
+### 3. Dört sağlık metriği
+
+| | 11 parça / 448 | **12 parça / 576** |
+|---|---|---|
+| yapısal red | 0 | **0** |
+| parça erişilebilirliği | 11/11 | **12/12** (`ringbuf` 237 programda) |
+| eksen sayaçları | reg32 25, tnum 5452 | **reg32 24, tnum 6809** |
+| çiftler | 117/117 | **139/139 (%100)** |
+| üçlüler | 1185/1207 (%98) | **1544/1558 (%99)** |
+| kabul | 391/448 | **492/576** |
+| `store_locations_checked` | 2560 | **3129** |
+
+`finding_count=0`, `parser_unrecognized=0`.
+
+### 4. Diş testi kırılgandı ve düzeltildi
+
+Suite kırmızıya döndü: diş testi sabit `store_off=63` ekiyordu ve artık ateşlemiyordu.
+Sebep bir bulgu değil, testin kendi varsayımı — seçilen programın kanıtlanmış penceresi
+63'ü **meşru olarak** kapsıyordu (daraltma sınırı 15 ise store tabanı 48, pencere [48,63]).
+Sabit bir değer "kesin dışarıda" değil.
+
+Ekim artık programın **kendi bildirdiği** store offset'inden türetiliyor: bir byte altı.
+`admits()` landing site'ın tabanda ya da üstünde olmasını istediği için (`v >= 0`), bu
+değer negatif olmayan her pointer offset'i için kanıtlanabilir şekilde dışarıda. Diş
+korpus değiştikçe kırılmayacak.
+
+Ayrıca yapısal-red izin listesine `Unreleased reference` eklendi: bir sızıntı verifier'ın
+değil **jeneratörün** kusuru olurdu, o yüzden semantik değil yapısal sayılmalı.
+
+`composition_calibration.rs` 8 test. Workspace 277 yeşil.

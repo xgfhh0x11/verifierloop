@@ -3299,7 +3299,7 @@ static int emit_iter_loop(struct bpf_insn *ins, int n, const struct iter_ids *id
 /* The corpus has to grow with the pool: the achievable adjacent-triple space grows as
    N^3 (679 at nine pieces, 916 at ten), so a fixed program count means coverage falls off
    with every addition even though the absolute number of realised triples rises. */
-#define COMP_MAXPROG 448
+#define COMP_MAXPROG 576
 
 struct comp_ctx {
     uint32_t rng;
@@ -3316,6 +3316,7 @@ struct comp_ctx {
     int used_iter;        /* an iterator is emitted at most once per program    */
     int call_site;        /* index of the call insn awaiting its target, or -1  */
     int used_dynskb;      /* one skb dynptr per program keeps slot use simple   */
+    int used_ringbuf;     /* likewise for the ringbuf reservation                */
 };
 
 static uint32_t comp_rand(struct comp_ctx *c) {
@@ -3336,6 +3337,7 @@ enum comp_piece {
     CP_PKT,      /* packet pointer with a program-proven range, then a LOAD     */
     CP_CALL,     /* a subprogram call — the only piece that opens a second FRAME  */
     CP_DYNSKB,   /* an SKB dynptr and a READ-ONLY slice of it                     */
+    CP_RINGBUF,  /* reserve/submit a ringbuf dynptr — REFERENCE tracking          */
     CP_PIECE_N
 };
 
@@ -3352,6 +3354,7 @@ static const char *comp_piece_name(enum comp_piece p) {
     case CP_PKT:    return "pkt";
     case CP_CALL:   return "call";
     case CP_DYNSKB: return "dynskb";
+    case CP_RINGBUF: return "ringbuf";
     default:        return "?";
     }
 }
@@ -3363,7 +3366,17 @@ static const char *comp_piece_name(enum comp_piece p) {
    piece. These tables are corpus-wide, so selection can prefer a piece that completes a
    combination nothing has produced yet; ties fall back to the seeded RNG, which keeps the
    whole corpus reproducible. */
-static int g_from_skb_id, g_slice_ro_id;
+/* Read off the kernel's own helper mapper (include/uapi/linux/bpf.h):
+   FN(ringbuf_reserve_dynptr, 198), FN(ringbuf_submit_dynptr, 199). Verified, not guessed —
+   a wrong helper id loads fine and calls a different function. */
+#ifndef BPF_FUNC_ringbuf_reserve_dynptr
+#define BPF_FUNC_ringbuf_reserve_dynptr 198
+#endif
+#ifndef BPF_FUNC_ringbuf_submit_dynptr
+#define BPF_FUNC_ringbuf_submit_dynptr 199
+#endif
+
+static int g_from_skb_id, g_slice_ro_id, g_ringbuf_fd;
 
 static unsigned char g_seen_pair[CP_PIECE_N][CP_PIECE_N];
 static unsigned char g_seen_triple[CP_PIECE_N][CP_PIECE_N][CP_PIECE_N];
@@ -3393,6 +3406,7 @@ static int comp_can(const struct comp_ctx *c, enum comp_piece p) {
        patched afterwards, so a second would need a second patch site. */
     case CP_CALL:   return c->scalar_regs != 0 && c->call_site < 0;
     case CP_DYNSKB: return c->scalar_regs != 0 && !c->used_dynskb && c->stack_next > -300;
+    case CP_RINGBUF: return c->scalar_regs != 0 && !c->used_ringbuf && c->stack_next > -380;
     default:        return 0;
     }
 }
@@ -3504,6 +3518,48 @@ static int comp_emit(struct bpf_insn *ins, int n, struct comp_ctx *c, enum comp_
         c->narrowed_max = -1;
         break;
     }
+    case CP_RINGBUF: {
+        /* A CORRECTNESS PROPERTY THE POOL DID NOT HAVE. Everything else here is about
+           bounds; a ringbuf reservation is about REFERENCES — the verifier must prove the
+           reservation is released on EVERY path, or the program leaks it and is rejected.
+           A third dynptr type (RINGBUF) and a new map type come along with it.
+           The null branch of the slice jumps to the SUBMIT, not to the program's exit:
+           routing it to the exit would leave the reservation live on that path and the
+           verifier would reject every program containing this piece, which is a leak the
+           generator would be creating rather than a property it is testing. */
+        int r = comp_scalar_reg(c);
+        c->stack_next -= 16;
+        int slot = c->stack_next;
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = g_ringbuf_fd};
+        ins[n++] = (struct bpf_insn){0};
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_2, 16);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_3, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_4, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_4, slot);
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_ringbuf_reserve_dynptr);
+
+        ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, slot);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_2, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_3, BPF_REG_10);
+        c->stack_next -= 32;
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_3, c->stack_next);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_4, 8);
+        ins[n++] = BPF_KFUNC_CALL(g_slice_ro_id);
+        const int jnull = n;
+        ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_LDX_MEM(BPF_B, r, BPF_REG_0, comp_pick(c, 8));
+        ins[jnull].off = n - jnull - 1;          /* -> the submit, never the exit */
+
+        ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, slot);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_2, 0);
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_ringbuf_submit_dynptr);
+        c->used_ringbuf = 1;
+        c->narrowed_max = -1;
+        break;
+    }
     case CP_DYNSKB: {
         /* A SECOND dynptr TYPE. The LOCAL dynptr of 0053 is built over a map value; this
            one is built over the skb, so the slice carries a different type flag
@@ -3592,6 +3648,7 @@ static void run_comp_prog(const struct iter_ids *ids, int slice_id, uint32_t see
     c.stack_next = -32;
     c.call_site = -1;
     c.used_dynskb = 0;
+    c.used_ringbuf = 0;
     ins[n++] = BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_1, c.ctx_slot);
 
     ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
@@ -3809,8 +3866,6 @@ static void run_generated_comp_family(void) {
                "---LOG---\n---END---\n", slice_id, g_slice_ro_id, g_from_skb_id);
         return;
     }
-    printf("CHANNEL btf=ok slice_rdwr=%d slice_ro=%d from_skb=%d\n",
-           slice_id, g_slice_ro_id, g_from_skb_id);
     union bpf_attr m;
     memset(&m, 0, sizeof(m));
     m.map_type = BPF_MAP_TYPE_ARRAY;
@@ -3820,11 +3875,18 @@ static void run_generated_comp_family(void) {
     m.map_type = BPF_MAP_TYPE_ARRAY;
     m.key_size = 4; m.value_size = COMP_VALUE; m.max_entries = 1;
     int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
-    if (map_in < 0 || map_out < 0) {
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_RINGBUF;
+    m.key_size = 0; m.value_size = 0; m.max_entries = 1 << 12;   /* page-aligned pow2 */
+    g_ringbuf_fd = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0 || g_ringbuf_fd < 0) {
         printf("===PROG gencomp type=sched_cls ===\n"
-               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+               "RESULT decision=error map_create_failed in=%d out=%d ring=%d errno=%d\n"
+               "---LOG---\n---END---\n", map_in, map_out, g_ringbuf_fd, errno);
         return;
     }
+    printf("CHANNEL btf=ok slice_rdwr=%d slice_ro=%d from_skb=%d ringbuf_fd=%d\n",
+           slice_id, g_slice_ro_id, g_from_skb_id, g_ringbuf_fd);
     memset(g_seen_pair, 0, sizeof(g_seen_pair));
     memset(g_seen_triple, 0, sizeof(g_seen_triple));
     /* Fixed seeds: the walk is random but the CORPUS is reproducible, which is what a
