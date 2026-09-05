@@ -3252,6 +3252,204 @@ static int emit_iter_loop(struct bpf_insn *ins, int n, const struct iter_ids *id
     return n;
 }
 
+// ---- reaching RANGE_WITHIN on purpose (--gen-rw) ----------------------------
+// 0051 predicted that the precision short-circuit would stop working inside a loop,
+// because it is gated on `exact == NOT_EXACT`. The measurement said otherwise: a may_goto
+// loop does not select RANGE_WITHIN, since the gate on the main path is
+// `incomplete_read_marks` and not the presence of a back-edge.
+//
+// There IS a call site that passes RANGE_WITHIN unconditionally (states.c:1333):
+//
+//     if (is_iter_next_insn(env, insn_idx)) {
+//             if (states_equal(env, &sl->state, cur, RANGE_WITHIN)) { ... }
+//
+// but note WHICH instruction it applies to: the iterator's next-call site, not every
+// instruction in the loop body. So to put the precision pair under that comparison, the
+// two states have to MEET at the loop head — which means the split has to happen BEFORE
+// the iterator loop, not inside it. Getting that wrong would compare the pair at an
+// ordinary instruction and measure the same NOT_EXACT path all over again.
+//
+// PREDICTION, now aimed at a call site rather than at "a loop": with the pair meeting at
+// the iter_next instruction, the precision short-circuit is off, so the dead-register arm
+// can no longer buy a prune and the gap that 0050 measured should CLOSE. The flat pair
+// rides along in the same capture so the comparison is within one run.
+#define RW_STORE_OFF 40
+
+static void run_rw_prog(const struct iter_ids *ids, int use_iter, int store_src,
+                        int idx, int map_in, int map_out) {
+    struct bpf_insn ins[96];
+    int n = 0, jexit[4], nx = 0;
+
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);
+    ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_0, 4);
+
+    /* The split is BEFORE the loop on purpose: the two states must MEET at the
+       iterator's next-call site, which is the instruction states.c:1333 compares with
+       RANGE_WITHIN. Splitting inside the body would put the meeting point at an ordinary
+       instruction and measure the main NOT_EXACT path again. */
+    const int jsplit = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_8, 0, 0);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_7, 8);
+    const int jmerge = n; ins[n++] = BPF_JMP_IMM(BPF_JA, 0, 0, 0);
+    ins[jsplit].off = n - jsplit - 1;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_7, 16);
+    ins[jmerge].off = n - jmerge - 1;
+
+    if (use_iter)
+        n = emit_iter_loop(ins, n, ids, 0, 4, LB_NOP);
+
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_0);
+    ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_2,
+                             store_src == 7 ? BPF_REG_7 : BPF_REG_6);
+    const int store_insn = n;
+    ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_2, RW_STORE_OFF, -1);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);
+    ins[n++] = BPF_EXIT_INSN();
+    const int exit0 = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    for (int i = 0; i < nx; i++)
+        ins[jexit[i]].off = exit0 - jexit[i] - 1;
+
+    struct prune_load base = prune_load_once(ins, n, 0, g_log, sizeof(g_log));
+    struct prune_load freq = prune_load_once(ins, n, BPF_F_TEST_STATE_FREQ,
+                                             g_log2, sizeof(g_log2));
+    struct prune_load inv  = prune_load_once(ins, n, BPF_F_TEST_REG_INVARIANTS,
+                                             g_log2, sizeof(g_log2));
+
+    g_log[0] = '\0';
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)ins;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = sizeof(g_log);
+    attr.log_buf = (uint64_t)(unsigned long)g_log;
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int e = errno;
+
+    unsigned long mp_r7 = 0;
+    for (const char *q = g_log; (q = strstr(q, "regs=r7 ")) != NULL; q++) mp_r7++;
+    unsigned long iter_states = 0;
+    for (const char *q = g_log; (q = strstr(q, "state=active")) != NULL; q++) iter_states++;
+
+    char name[96];
+    snprintf(name, sizeof(name), "genrw#%s.s%d#%03d",
+             use_iter ? "iter" : "flat", store_src, idx);
+    printf("===PROG %s type=socket_filter ===\n", name);
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+           fd >= 0 ? "accept" : "reject", fd, fd >= 0 ? 0 : e);
+    printf("STORE insn=%d reg=2 off=%d size=1\n", store_insn, RW_STORE_OFF);
+    printf("RW ctx=%s store_src=%d r7_backtracked=%lu iter_active=%lu\n",
+           use_iter ? "iter" : "flat", store_src, mp_r7, iter_states);
+    printf("PRUNE fall=%s taken=s%d fall_safe=1 taken_safe=1 stack=0"
+           " base_verdict=%s base_errno=%d base_states=%lu base_reason=%s"
+           " freq_verdict=%s freq_errno=%d freq_states=%lu freq_reason=%s"
+           " inv_verdict=%s inv_errno=%d inv_reason=%s\n",
+           use_iter ? "iter" : "flat", store_src,
+           base.accept ? "accept" : "reject", base.err, base.states, base.reason,
+           freq.accept ? "accept" : "reject", freq.err, freq.states, freq.reason,
+           inv.accept ? "accept" : "reject", inv.err, inv.reason);
+
+    if (fd >= 0) {
+        unsigned char pkt[64];
+        memset(pkt, 0, sizeof(pkt));
+        for (int i = 0; i < LOOPR_INPUTS_N; i++) {
+            uint32_t in = LOOPR_INPUTS[i];
+            unsigned char zero[RTW_VALUE_SIZE], val[16];
+            memset(zero, 0, sizeof(zero));
+            memset(val, 0, sizeof(val));
+            memcpy(val + 0, &in, 4);
+            uint32_t sel = i & 1;
+            memcpy(val + 4, &sel, 4);
+            int ue = rt_map_set_bytes(map_in, 0, val);
+            int ze = rt_map_set_bytes(map_out, 0, zero);
+            union bpf_attr t;
+            memset(&t, 0, sizeof(t));
+            t.test.prog_fd = fd;
+            t.test.data_in = (uint64_t)(unsigned long)pkt;
+            t.test.data_size_in = sizeof(pkt);
+            t.test.repeat = 1;
+            int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+            unsigned char out[RTW_VALUE_SIZE];
+            memset(out, 0, sizeof(out));
+            int ge = rt_map_get(map_out, 0, out);
+            if (r < 0 || ue < 0 || ze < 0 || ge < 0) {
+                printf("RUNTIME input=0x%08x error=1 testrun_errno=%d\n",
+                       in, r < 0 ? errno : 0);
+                continue;
+            }
+            int off = -1;
+            for (int b = 0; b < RTW_VALUE_SIZE; b++)
+                if (out[b] == RTW_SENTINEL) { off = b; break; }
+            int executed = (t.test.retval == 1);
+            if (off < 0)
+                printf("RUNTIME input=0x%08x store_off=none store_len=0 store_size=1"
+                       " executed=%d\n", in, executed);
+            else {
+                int len = 0;
+                for (int b = off; b < RTW_VALUE_SIZE && out[b] == RTW_SENTINEL; b++) len++;
+                printf("RUNTIME input=0x%08x store_off=%d store_len=%d store_size=1"
+                       " executed=%d\n", in, off, len, executed);
+            }
+        }
+        close(fd);
+    }
+    printf("---LOG---\n%s\n---END---\n", g_log);
+}
+
+static void run_generated_rw_family(void) {
+    struct iter_ids ids;
+    if (iter_resolve(&ids) < 0) {
+        printf("===PROG genrw type=socket_filter ===\n"
+               "RESULT decision=error btf_resolve_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 16; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = RTW_VALUE_SIZE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
+        printf("===PROG genrw type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    const struct { int use_iter, src; } arms[] = {
+        { 0, 7 },   /* flat baseline: r7 decides -> precise, no prune  */
+        { 0, 6 },   /* flat baseline: r7 dead    -> imprecise, prune   */
+        { 1, 7 },   /* the pair meets at the iter_next insn            */
+        { 1, 6 },   /* ...where RANGE_WITHIN should disable the prune  */
+    };
+    int idx = 0;
+    for (unsigned i = 0; i < sizeof(arms) / sizeof(arms[0]); i++)
+        run_rw_prog(&ids, arms[i].use_iter, arms[i].src, idx++, map_in, map_out);
+    close(map_in);
+    close(map_out);
+}
+
 // ---- which exact_level our shapes reach (--gen-exact) -----------------------
 // `regsafe` takes an `exact_level` and behaves very differently per level (states.c):
 //   EXACT        -> regs_exact(): memcmp + check_ids, the strictest possible comparison
@@ -5392,6 +5590,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-exact") == 0) {
         run_generated_exact_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-rw") == 0) {
+        run_generated_rw_family();
         return 0;
     }
 

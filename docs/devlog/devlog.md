@@ -4244,3 +4244,68 @@ kendi eleştirdiğimiz şey olurdu. Kabul edilen programlar diğer her aile gibi
 payda 32.
 
 `exact_level_calibration.rs` 6 test. Workspace 255 yeşil.
+
+---
+
+## 0052 — RANGE_WITHIN'e bilerek girmek (`--gen-rw`): tahmin ikinci kez çürüdü, ve enstrümanın sınırı bulundu
+
+### 1. Nişanı düzeltmek
+
+0051 bir may_goto döngüsünün RANGE_WITHIN seçtirmediğini ölçmüştü. Bu bacak, seviyeyi
+**koşulsuz** geçen bir çağrı yerine nişan aldı — `states.c:1333`, iterator'ın next-call
+instruction'ı. Kritik ayrıntı: o karşılaştırma **yalnız o instruction'a** uygulanıyor,
+döngü gövdesindeki her insn'e değil. Dolayısıyla iki state'in **döngü başında** buluşması
+gerekiyor, yani split döngüden ÖNCE olmalı. İçeride olsaydı çift sıradan bir
+instruction'da karşılaşır ve yine ana NOT_EXACT yolunu ölçerdik.
+
+### 2. Ölçüm
+
+| kol | r7 geri-izleme | iter_active | base_states |
+|---|---|---|---|
+| flat.s7 | 19 | 0 | 3 |
+| flat.s6 | 0 | 0 | 2 |
+| iter.s7 | 64 | **14** | 8 |
+| iter.s6 | 0 | **7** | 5 |
+
+Ölü-register kolu iterator bağlamında **hâlâ birleştiriyor**, ve maliyet tam:
+**aktif-iterator state sayısının yarısı** (7'ye 14). Precise kol register'ın iki değerini
+de her iterator state'inde taşıyor, imprecise kol tek birleşik değer taşıyor — oran tam 2.
+
+**4 program, 4 kabul**, `store_locations_checked=32`, `prune_pairs_checked=4`,
+`finding_count=0`, `parser_unrecognized=0`.
+
+### 3. Ama tahmin hâlâ çözülmedi — ve sebebi enstrümanın sınırı
+
+`:1333`'ü sonuna kadar okuyunca kendi okumam düzeldi:
+
+```c
+if (states_equal(env, &sl->state, cur, RANGE_WITHIN)) {
+        ...
+        if (iter_state->iter.state == BPF_ITER_STATE_ACTIVE) {
+                loop = true;
+                goto hit;          /* <- hit BUDAMA yolunun kendisi */
+        }
+```
+
+Yani RANGE_WITHIN orada **budayabiliyor**. Ama blok `sl->state.branches` ile kapılı ve
+tamamlanmış state'ler ana karşılaştırmaya (`:1405`, `loop ? RANGE_WITHIN : NOT_EXACT`)
+düşüyor. **İkisi de bizim çiftimizi birleştirebilir, ve log hangisinin ateşlediğini
+söylemiyor.** 2× oranı bir birleşmenin OLDUĞUNU kanıtlıyor; onu bir seviyeye
+ATFEDEMİYOR.
+
+**Bacağın asıl sonucu bu sınır:** dışarıdan işareti olan tek seviye EXACT
+("infinite loop detected", 0051'de işaretçi olarak kullanıldı). *"X bağlamı Y seviyesini
+seçer"* biçimindeki tahminler bu enstrümanla test edilemez. OI-14 olarak kapatıldı ki
+üçüncü kez denenmesin. Ölçülebilir olan şey — birleşmenin olup olmadığı ve maliyeti —
+teste yazıldı.
+
+Seviye atfetmek kernel'in şu an basmadığı bir şeyi gerektiriyor; ucuz yolu yerel ağaca bir
+debug yaması, ki bu da test edilen şeyi değiştirmek demek ve ayrı bir karar.
+
+### 4. Testler
+
+`range_within_calibration.rs` 7 test: iterator kollarının gerçekten iterator kullandığı
+(yoksa karşılaştırma iki düz-çizgi programı arasında olurdu), flat temel çizgisinin aynı
+capture'da bulunması, **2:1 oranı**, **sınırın test olarak yazılması** (hiçbir kol
+seviyeyi ilan etmiyor, log seviyeyi asla adlandırmıyor), oracle'ların paydayla sessizliği,
+diş, ve parser kör noktası yok. Workspace 262 yeşil.

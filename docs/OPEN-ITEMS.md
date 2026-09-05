@@ -323,6 +323,29 @@ excluded, the same way the pure-tnum arm was excluded from `--gen-prune`.
   would be vacuous. If this is ever revisited it has to come through referenced dynptrs,
   which is its own infrastructure step.
 
+## OI-14 — A prune's exact_level is not observable from the log (measured bound, CLOSED)
+
+- **Status:** CLOSED by measurement 2026-09-05 (devlog 0052), recorded so the attempt is
+  not repeated.
+- `regsafe` behaves very differently per `exact_level`, and two legs tried to test
+  predictions of the form "context X selects level Y": 0051 (may_goto loop) and 0052
+  (splitting before an iterator loop so the states meet at the next-call instruction,
+  states.c:1333, which passes RANGE_WITHIN unconditionally).
+- **Both predictions failed, and the second explains why they are untestable this way.**
+  Reading :1333 to the end, `loop = true; goto hit;` — `hit` IS the prune path, so
+  RANGE_WITHIN can merge states there. But the block is gated on `sl->state.branches`, and
+  completed states fall through to the main comparison at :1405 with
+  `loop ? RANGE_WITHIN : NOT_EXACT`. Both can merge the same pair, and **nothing in the
+  log names which one fired.**
+- **EXACT is the only level with an external marker**: reaching it prints "infinite loop
+  detected at insn %d" (used as a marker in 0051).
+- **What remains measurable** is whether a merge happened and what it cost — 0052 pins
+  that with an exact 2:1 ratio of active-iterator states between the precise and imprecise
+  arms. Aim future legs at merge/cost observables, not at level attribution.
+- Reaching level attribution would need something the kernel does not currently print;
+  the cheap version would be a debug patch to the local tree, which changes the thing
+  under test and is its own decision.
+
 ## OI-12 — Agni's coverage window is unverified, and it is the reason we are leaving the ALU axis
 
 - **Status:** OPEN, raised 2026-09-05 (devlog 0042).
