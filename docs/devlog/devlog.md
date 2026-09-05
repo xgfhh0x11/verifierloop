@@ -4605,3 +4605,58 @@ sayı: yapısal red 0, her parça erişilebilir, her eksen sayacı sıfırı ter
 **kombinasyon kapsaması düşmemiş.**
 
 `composition_calibration.rs` 8 test. Workspace 277 yeşil.
+
+---
+
+## 0057 — Onuncu parça: subprog çağrısı, ve metrik-4'ün göreliye çevrilmesi
+
+### 1. Parça: `call` — havuzdaki tek YAPISAL yeni şey
+
+Diğer dokuz parça tek bir frame içinde çalışıyor. `call` ikinci bir **frame** açıyor, ve
+`states_equal` frame'leri ayrı ayrı karşılaştırıyor. 0048 skaler link id'lerinin sınırı
+geçtiğini ölçmüştü; kompozisyonda bu artık önceki parçaların kurduğu **her** id yapısıyla
+rastgele karşılaşıyor.
+
+Callee argümanını daraltıp döndürüyor, yani caller'ın sonra dayandığı sınır **başka bir
+frame'in içinde** kanıtlanmış oluyor — parçanın havuzda olma sebebi tam olarak bu.
+
+Yapısal risk gerçekti: çağrı insn'i sonradan yamalanıyor (callee ana gövdenin son
+exit'inden sonra ekleniyor, adresi ancak o zaman biliniyor). **Sıfır bozuk program üretti**
+— 54 reddin hepsi semantik.
+
+### 2. Metrik-4 düştü, tam da öngörüldüğü gibi
+
+10 parça / 192 program: **çiftler 97/97 (%100)**, ama **üçlüler 645/916 (%70)** —
+9 parçadaki %87'den. Mutlak sayı *arttı* (592 → 645); oran düştü çünkü erişilebilir uzay
+**N³** ile büyüdü (679 → 916).
+
+Bu, reviewer'ın keskinleştirmesinin somut kanıtı: **metrik-4 mutlak eşik olamaz.** Sabit
+bir eşik her parça eklemesinde sahte alarm verirdi, üstelik gerçekleşen üçlü sayısı
+artarken. Guard artık gözlenen parça setinden hesaplanan **erişilebilir uzaya oran**:
+çiftler tam kapsanmalı, üçlüler erişilebilirin en az %85'i. `comp_can`'in program başına
+bir kez verdiği parçalar (`dynptr`, `iter`, `call`) erişilebilir sayımından düşülüyor —
+tekrarları yapı gereği imkânsız, kapsama aleyhine sayılmamalı.
+
+### 3. Korpus parçayla büyüdü: 192 → 320
+
+| metrik | 9 parça / 192 | 10 parça / 192 | **10 parça / 320** |
+|---|---|---|---|
+| yapısal red | 0 | 0 | **0** |
+| çiftler | 79/79 | 97/97 | **97/97 (%100)** |
+| üçlüler | 592/679 (%87) | 645/916 (%70) | **877/916 (%96)** |
+| kabul | 169/192 | 155/192 | **266/320** |
+| `store_locations_checked` | 1033 | 974 | **1740** |
+| `tnum_bounds_checked` | 1867 | 2273 | **3808** |
+| `reg32_checked` | 13 | 7 | **12** |
+
+`finding_count=0`, `parser_unrecognized=0`. 54 reddin hepsi semantik
+(`unbounded memory access` 30, `math between…unbounded` 13,
+`invalid access to map value` 11).
+
+### 4. Yol boyunca
+
+Yama deseni iki aile tarafından paylaşıldığı için ilk düzenleme benzersiz eşleşmedi ve
+**hiçbir şey yazılmadan** durdu (assert). Kompozisyona özgü satıra çapalayıp tekrarladım.
+Bu, sessizce yanlış aileyi düzenlemekten iyi bir başarısızlık modu.
+
+`composition_calibration.rs` 8 test. Workspace 277 yeşil.

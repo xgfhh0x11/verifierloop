@@ -3296,7 +3296,10 @@ static int emit_iter_loop(struct bpf_insn *ins, int n, const struct iter_ids *id
 // Determinism is not optional: a finding has to be replayable, so the walk is driven by a
 // seeded xorshift and the seed is printed with every program.
 #define COMP_VALUE 64
-#define COMP_MAXPROG 192
+/* The corpus has to grow with the pool: the achievable adjacent-triple space grows as
+   N^3 (679 at nine pieces, 916 at ten), so a fixed program count means coverage falls off
+   with every addition even though the absolute number of realised triples rises. */
+#define COMP_MAXPROG 320
 
 struct comp_ctx {
     uint32_t rng;
@@ -3311,6 +3314,7 @@ struct comp_ctx {
     int ctx_slot;         /* where the skb context pointer was spilled          */
     int iter_slot;        /* the iterator's 8-byte slot, or 0 if unused         */
     int used_iter;        /* an iterator is emitted at most once per program    */
+    int call_site;        /* index of the call insn awaiting its target, or -1  */
 };
 
 static uint32_t comp_rand(struct comp_ctx *c) {
@@ -3329,6 +3333,7 @@ enum comp_piece {
     CP_ALU32,    /* 32-bit ALU: the only piece that lifts reg32 off zero        */
     CP_ITER,     /* an open-coded iterator loop — a different back-edge kind    */
     CP_PKT,      /* packet pointer with a program-proven range, then a LOAD     */
+    CP_CALL,     /* a subprogram call — the only piece that opens a second FRAME  */
     CP_PIECE_N
 };
 
@@ -3343,6 +3348,7 @@ static const char *comp_piece_name(enum comp_piece p) {
     case CP_ALU32:  return "alu32";
     case CP_ITER:   return "iter";
     case CP_PKT:    return "pkt";
+    case CP_CALL:   return "call";
     default:        return "?";
     }
 }
@@ -3378,6 +3384,9 @@ static int comp_can(const struct comp_ctx *c, enum comp_piece p) {
        context pointer, which the prologue spilled because r1 is clobbered by every
        helper call before it. */
     case CP_PKT:    return c->scalar_regs != 0;
+    /* One subprogram per program: the callee is appended after the main body and its call
+       patched afterwards, so a second would need a second patch site. */
+    case CP_CALL:   return c->scalar_regs != 0 && c->call_site < 0;
     default:        return 0;
     }
 }
@@ -3489,6 +3498,22 @@ static int comp_emit(struct bpf_insn *ins, int n, struct comp_ctx *c, enum comp_
         c->narrowed_max = -1;
         break;
     }
+    case CP_CALL: {
+        /* The only piece that opens a second FRAME. states_equal compares each frame in
+           turn, and 0048 measured that a scalar's link id survives into the callee's
+           argument registers — so this piece puts whatever id structure the earlier
+           pieces built across a frame boundary. Only r1-r5 cross; r6-r9 are callee-saved
+           and the callee below touches neither. */
+        int r = comp_scalar_reg(c);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_1, r);
+        c->call_site = n;
+        ins[n++] = (struct bpf_insn){.code = BPF_JMP | BPF_CALL, .dst_reg = 0,
+                                     .src_reg = BPF_PSEUDO_CALL, .off = 0, .imm = 0};
+        ins[n++] = BPF_MOV64_REG(r, BPF_REG_0);   /* the callee's bounded return value */
+        c->narrowed_max = 15;                     /* proven INSIDE the callee's frame   */
+        c->narrow_reg = r;
+        break;
+    }
     case CP_PKT: {
         /* A LOAD, deliberately, not a store: a packet store would move the observation
            channel from the map value to the packet and break the coordinate mapping the
@@ -3527,6 +3552,7 @@ static void run_comp_prog(const struct iter_ids *ids, int slice_id, uint32_t see
     c.ctx_slot = -16;
     c.iter_slot = -24;
     c.stack_next = -32;
+    c.call_site = -1;
     ins[n++] = BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_1, c.ctx_slot);
 
     ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
@@ -3633,6 +3659,22 @@ static void run_comp_prog(const struct iter_ids *ids, int slice_id, uint32_t see
     ins[n++] = BPF_EXIT_INSN();
     for (int i = 0; i < nx; i++)
         ins[jexit[i]].off = exit0 - jexit[i] - 1;
+
+    /* The callee goes after the main body's last exit, and its call is patched now that
+       the address is known. It narrows its argument and returns it, so the bound the
+       caller then relies on exists only because of what happened inside a DIFFERENT
+       frame — which is the whole reason this piece is in the pool. */
+    if (c.call_site >= 0) {
+        const int sub = n;
+        ins[c.call_site].imm = sub - c.call_site - 1;
+        const int jhigh = n;
+        ins[n++] = BPF_JMP_IMM(BPF_JGT, BPF_REG_1, 15, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_0, BPF_REG_1);
+        ins[n++] = BPF_EXIT_INSN();
+        ins[jhigh].off = n - jhigh - 1;
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+        ins[n++] = BPF_EXIT_INSN();
+    }
 
     const int PT = BPF_PROG_TYPE_SCHED_CLS;
     struct prune_load base = prune_load_typed(ins, n, 0, g_log, sizeof(g_log), PT);

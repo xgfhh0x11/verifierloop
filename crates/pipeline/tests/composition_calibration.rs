@@ -38,9 +38,9 @@ use pipeline::normalize::{self, UnparsedKind};
 use pipeline::verifier_log::VerifierLogParser;
 use std::collections::BTreeSet;
 
-const COMP: &str = include_str!("fixtures/volume/gen-comp-192.log");
-const PROGRAMS: usize = 192;
-const ACCEPTED: usize = 169;
+const COMP: &str = include_str!("fixtures/volume/gen-comp-320.log");
+const PROGRAMS: usize = 320;
+const ACCEPTED: usize = 266;
 
 fn run_diff(text: &str, tag: &str) -> (normalize::NormalizedMetrics, diff::DiffFindings) {
     let dir = std::env::temp_dir().join(format!("vl-comp-{}-{tag}", std::process::id()));
@@ -172,7 +172,7 @@ fn the_corpus_reaches_the_oracles_in_bulk() {
         out.summary.finding_count
     );
     assert!(
-        out.summary.store_locations_checked >= 1000,
+        out.summary.store_locations_checked >= 1600,
         "the runtime oracles must actually be fed: got {}",
         out.summary.store_locations_checked
     );
@@ -200,7 +200,7 @@ fn the_corpus_contains_shapes_no_hand_written_family_produced() {
         .flat_map(|r| r.split(',').filter(|k| !k.is_empty()))
         .collect();
     assert!(
-        kinds.len() >= 9,
+        kinds.len() >= 10,
         "every piece in the pool must actually be reachable from the walk: {kinds:?}"
     );
     let mixed = all
@@ -230,33 +230,68 @@ fn the_corpus_contains_shapes_no_hand_written_family_produced() {
 /// piece that completes an unseen triple, then an unseen pair, then anything, with ties
 /// broken by the seeded RNG so the corpus stays reproducible — and recipes start at three,
 /// because a two-piece recipe contributes no triple at all. Triples went 35% -> 87%.
+/// Pieces `comp_can` permits at most once per program, so a combination repeating one of
+/// them is unreachable by construction and must not count against coverage.
+const ONCE_ONLY: &[&str] = &["dynptr", "iter", "call"];
+
+fn achievable(kinds: &[&str], arity: usize) -> usize {
+    let n = kinds.len();
+    let total = n.pow(arity as u32);
+    (0..total)
+        .filter(|i| {
+            let mut idx = *i;
+            let mut combo = Vec::with_capacity(arity);
+            for _ in 0..arity {
+                combo.push(kinds[idx % n]);
+                idx /= n;
+            }
+            ONCE_ONLY
+                .iter()
+                .all(|o| combo.iter().filter(|k| *k == o).count() <= 1)
+        })
+        .count()
+}
+
 #[test]
 fn the_walk_covers_the_combination_space_not_just_the_pieces() {
-    let all: Vec<Vec<&str>> = recipes()
+    let owned: Vec<Vec<String>> = recipes()
         .iter()
-        .map(|r| r.split(',').filter(|k| !k.is_empty()).map(|k| k.to_string()).collect::<Vec<_>>())
-        .map(|v| v.into_iter().map(|s| Box::leak(s.into_boxed_str()) as &str).collect())
+        .map(|r| r.split(',').filter(|k| !k.is_empty()).map(str::to_string).collect())
         .collect();
     assert!(
-        all.iter().all(|r| r.len() >= 3),
+        owned.iter().all(|r| r.len() >= 3),
         "a two-piece recipe contributes no triple, so the walk must not emit one"
     );
+    let all: Vec<Vec<&str>> =
+        owned.iter().map(|r| r.iter().map(String::as_str).collect()).collect();
+    let kinds: Vec<&str> = {
+        let set: BTreeSet<&str> = all.iter().flatten().copied().collect();
+        set.into_iter().collect()
+    };
     let pairs: BTreeSet<(&str, &str)> =
         all.iter().flat_map(|r| r.windows(2).map(|w| (w[0], w[1]))).collect();
     let triples: BTreeSet<(&str, &str, &str)> =
         all.iter().flat_map(|r| r.windows(3).map(|w| (w[0], w[1], w[2]))).collect();
-    eprintln!("COMP pairs={} triples={}", pairs.len(), triples.len());
+    let ap = achievable(&kinds, 2);
+    let at = achievable(&kinds, 3);
+    eprintln!(
+        "COMP pieces={} pairs={}/{} triples={}/{}",
+        kinds.len(), pairs.len(), ap, triples.len(), at
+    );
+    // RELATIVE, not absolute. The achievable triple space grows as N^3 with the pool — 679
+    // at nine pieces, 916 at ten — so a fixed threshold would fire a false alarm on every
+    // addition even while the absolute number of realised triples RISES (592 -> 645 when
+    // `call` joined). The corpus is expected to grow with the pool; what must hold is the
+    // FRACTION of the reachable space the walk actually visits.
     assert_eq!(
-        pairs.len(), 79,
-        "every adjacent pair the requirements allow must be realised — 79 of the 81 \
-         combinations, the two missing ones being a piece following itself where the \
-         context permits it only once"
+        pairs.len(), ap,
+        "every adjacent pair the requirements allow must be realised"
     );
     assert!(
-        triples.len() >= 500,
-        "the coverage-directed walk must reach most of the 679 achievable triples, or the \
-         corpus is exploring a corner of the combination space: got {}",
-        triples.len()
+        triples.len() * 100 >= at * 85,
+        "the coverage-directed walk must reach most of the achievable triples, or the \
+         corpus is exploring a corner of the combination space: {}/{}",
+        triples.len(), at
     );
 }
 
