@@ -3263,6 +3263,381 @@ static int emit_iter_loop(struct bpf_insn *ins, int n, const struct iter_ids *id
     return n;
 }
 
+/* Not in the distro uapi header. The value is read off the kernel's own helper mapper,
+   `FN(dynptr_from_mem, 197, ##ctx)` in include/uapi/linux/bpf.h — verified rather than
+   guessed, because a wrong helper id is not a load error, it calls a DIFFERENT helper. */
+#ifndef BPF_FUNC_dynptr_from_mem
+#define BPF_FUNC_dynptr_from_mem 197
+#endif
+
+// ---- composition generator (--gen-comp) -------------------------------------
+// THE SECOND HALF OF THE FOURTH PIVOT. Switching surface (0053) addressed one axis:
+// mature code versus fresh. It did NOT address the other: every family so far, this one's
+// predecessors included, produces shapes whose bug class I can NAME. "Clean" has therefore
+// only ever meant "clean on the shapes I thought to write". This generator composes the
+// pieces built across 0043-0053 at random, with the oracles held fixed, so that "clean"
+// starts to say something about shapes nobody named.
+//
+// THE HARD PART IS NOT THE ORACLE, IT IS VALIDITY. A randomly concatenated program is
+// almost always rejected, and a rejected program never reaches the runtime oracles — a
+// denominator-zero trap one layer up from the ones 0041-0050 kept finding. The fix is to
+// stop treating a program as a byte string and treat it as a walk over a typed CONTEXT:
+// every piece declares what it REQUIRES of the live state and what it PROVIDES, and the
+// generator only ever picks a piece whose requirements currently hold.
+//
+// The context has to carry more than register types, and dynptr is the reason: its
+// interface is the richest of the pieces. It consumes a 16-byte STACK_DYNPTR slot pair
+// that the verifier tracks by id, and it yields a PTR_TO_MEM whose size is a constant the
+// caller chose — plus, for the observation channel, an OFFSET into the map value that the
+// slice's base corresponds to. That last field is 0053's coordinate translation
+// generalised: the store's declared offset is always expressed in the coordinates the
+// sentinel readback uses.
+//
+// Determinism is not optional: a finding has to be replayable, so the walk is driven by a
+// seeded xorshift and the seed is printed with every program.
+#define COMP_VALUE 64
+#define COMP_MAXPROG 48
+
+struct comp_ctx {
+    uint32_t rng;
+    int scalar_regs;      /* bitmask over r6..r9 holding non-constant scalars   */
+    int mapval_reg;       /* register holding the map_value pointer, or -1      */
+    int mem_reg;          /* register holding a dynptr slice (PTR_TO_MEM), or -1*/
+    int mem_size;         /* the slice's proven size (the caller's constant)    */
+    int store_base_off;   /* where the store pointer's base sits in map_out     */
+    int stack_next;       /* next free stack offset, growing down from -16      */
+    int narrowed_max;     /* the tightest umax proven on a scalar so far, or -1 */
+    int narrow_reg;       /* which register that bound belongs to               */
+};
+
+static uint32_t comp_rand(struct comp_ctx *c) {
+    c->rng ^= c->rng << 13; c->rng ^= c->rng >> 17; c->rng ^= c->rng << 5;
+    return c->rng;
+}
+static int comp_pick(struct comp_ctx *c, int n) { return (int)(comp_rand(c) % (unsigned)n); }
+
+enum comp_piece {
+    CP_SHAPE,    /* ALU on a live scalar                                        */
+    CP_LINK,     /* rB = rA (optionally + const): a shared-id class             */
+    CP_NARROW,   /* branch that proves an upper bound on a scalar               */
+    CP_SPILL,    /* spill a scalar to the stack and reload it                   */
+    CP_LOOP,     /* a complete bounded may_goto loop with a shaping body        */
+    CP_DYNPTR,   /* build a dynptr over the map value and take a writable slice */
+    CP_PIECE_N
+};
+
+static const char *comp_piece_name(enum comp_piece p) {
+    switch (p) {
+    case CP_SHAPE:  return "shape";
+    case CP_LINK:   return "link";
+    case CP_NARROW: return "narrow";
+    case CP_SPILL:  return "spill";
+    case CP_LOOP:   return "loop";
+    case CP_DYNPTR: return "dynptr";
+    default:        return "?";
+    }
+}
+
+/* Can this piece run in the current context? This predicate IS the validity story: a
+   piece that is emitted without its requirements produces a program the verifier throws
+   away, and a thrown-away program teaches the oracles nothing. */
+static int comp_can(const struct comp_ctx *c, enum comp_piece p) {
+    switch (p) {
+    case CP_SHAPE:  return c->scalar_regs != 0;
+    case CP_LINK:   return __builtin_popcount(c->scalar_regs) >= 2;
+    case CP_NARROW: return c->scalar_regs != 0;
+    case CP_SPILL:  return c->scalar_regs != 0 && c->stack_next > -200;
+    case CP_LOOP:   return c->scalar_regs != 0;
+    /* dynptr needs the map value, a free 16-byte slot pair, and it is emitted at most
+       once because a second slice would overwrite the first's coordinate mapping. */
+    case CP_DYNPTR: return c->mapval_reg >= 0 && c->mem_reg < 0 && c->stack_next > -160;
+    default:        return 0;
+    }
+}
+
+static int comp_scalar_reg(struct comp_ctx *c) {
+    int cands[4], n = 0;
+    for (int r = 6; r <= 9; r++)
+        if (c->scalar_regs & (1 << r)) cands[n++] = r;
+    return cands[comp_pick(c, n)];
+}
+
+static int comp_emit(struct bpf_insn *ins, int n, struct comp_ctx *c, enum comp_piece p,
+                     const struct iter_ids *ids, int slice_id, int map_out, int *jexit,
+                     int *nx) {
+    switch (p) {
+    case CP_SHAPE: {
+        int r = comp_scalar_reg(c);
+        static const int ops[] = { BPF_AND, BPF_OR, BPF_XOR, BPF_LSH, BPF_RSH, BPF_ADD };
+        int op = ops[comp_pick(c, 6)];
+        int imm = (op == BPF_LSH || op == BPF_RSH) ? 1 + comp_pick(c, 3)
+                                                   : 1 + comp_pick(c, 15);
+        ins[n++] = BPF_ALU64_IMM(op, r, imm);
+        c->narrowed_max = -1;               /* any shaping invalidates a proven bound */
+        break;
+    }
+    case CP_LINK: {
+        int a = comp_scalar_reg(c), b;
+        do { b = comp_scalar_reg(c); } while (b == a);
+        ins[n++] = BPF_MOV64_REG(b, a);
+        if (comp_pick(c, 2)) ins[n++] = BPF_ALU64_IMM(BPF_ADD, b, 4);
+        c->narrowed_max = -1;
+        break;
+    }
+    case CP_NARROW: {
+        int r = comp_scalar_reg(c);
+        int bound = 1 + comp_pick(c, 15);
+        jexit[(*nx)++] = n;
+        ins[n++] = BPF_JMP_IMM(BPF_JGT, r, bound, 0);
+        c->narrowed_max = bound;
+        c->narrow_reg = r;
+        break;
+    }
+    case CP_SPILL: {
+        int r = comp_scalar_reg(c);
+        c->stack_next -= 8;
+        ins[n++] = BPF_STX_MEM(BPF_DW, BPF_REG_10, r, c->stack_next);
+        ins[n++] = BPF_LDX_MEM(BPF_DW, r, BPF_REG_10, c->stack_next);
+        break;
+    }
+    case CP_LOOP: {
+        /* Every register the body touches must be live BEFORE the head: may_goto can
+           break out on entry and the zero-iteration path would otherwise read an
+           uninitialised register (0051 learned this the hard way). The body only shapes
+           a register that is already a live scalar, so that holds by construction. */
+        int r = comp_scalar_reg(c);
+        const int head = n;
+        const int jbreak = n; ins[n++] = BPF_MAY_GOTO_INSN(0);
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, r, 7);
+        const int jback = n;
+        ins[jback] = BPF_JMP_IMM(BPF_JA, 0, 0, head - jback - 1);
+        n++;
+        ins[jbreak].off = n - jbreak - 1;
+        c->narrowed_max = -1;
+        break;
+    }
+    case CP_DYNPTR: {
+        int off = 8 * comp_pick(c, 3);          /* 0, 8 or 16 */
+        int szk = 8;
+        c->stack_next -= 16;
+        int slot = c->stack_next;
+        ins[n++] = BPF_MOV64_REG(BPF_REG_1, c->mapval_reg);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_2, 32);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_3, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_4, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_4, slot);
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_dynptr_from_mem);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, slot);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_2, off);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_3, BPF_REG_10);
+        c->stack_next -= 64;
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_3, c->stack_next);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_4, szk);
+        ins[n++] = BPF_KFUNC_CALL(slice_id);
+        jexit[(*nx)++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_8, BPF_REG_0);
+        c->scalar_regs &= ~(1 << 8);            /* r8 now holds a pointer, not a scalar */
+        c->mem_reg = BPF_REG_8;
+        c->mem_size = szk;
+        c->store_base_off = off;                /* the coordinate translation, generalised */
+        break;
+    }
+    default: break;
+    }
+    (void)ids; (void)map_out;
+    return n;
+}
+
+static void run_comp_prog(const struct iter_ids *ids, int slice_id, uint32_t seed,
+                          int idx, int map_in, int map_out) {
+    struct bpf_insn ins[160];
+    int n = 0, jexit[16], nx = 0;
+    struct comp_ctx c;
+    memset(&c, 0, sizeof(c));
+    c.rng = seed ? seed : 1;
+    c.mapval_reg = -1; c.mem_reg = -1; c.narrowed_max = -1; c.narrow_reg = -1;
+    c.stack_next = -16;
+
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_0, 4);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_9, BPF_REG_0, 8);
+    c.scalar_regs = (1 << 6) | (1 << 7) | (1 << 9);
+
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_8, BPF_REG_0);
+    c.mapval_reg = BPF_REG_8;
+
+    /* The walk. Only pieces whose requirements hold are ever offered. */
+    char recipe[128]; recipe[0] = '\0';
+    int steps = 2 + comp_pick(&c, 4);
+    for (int i = 0; i < steps && n < 120; i++) {
+        enum comp_piece avail[CP_PIECE_N]; int na = 0;
+        for (int p = 0; p < CP_PIECE_N; p++)
+            if (comp_can(&c, (enum comp_piece)p)) avail[na++] = (enum comp_piece)p;
+        if (!na) break;
+        enum comp_piece p = avail[comp_pick(&c, na)];
+        n = comp_emit(ins, n, &c, p, ids, slice_id, map_out, jexit, &nx);
+        strncat(recipe, comp_piece_name(p), sizeof(recipe) - strlen(recipe) - 2);
+        strncat(recipe, ",", sizeof(recipe) - strlen(recipe) - 2);
+    }
+
+    /* Epilogue: one store whose safety is decidable from the context, expressed in the
+       observation channel's coordinates. Through a slice the base sits at the slice's
+       offset in the map value; otherwise at 0. */
+    int store_reg, store_off, base_off;
+    if (c.mem_reg >= 0) {
+        store_reg = c.mem_reg;
+        store_off = comp_pick(&c, c.mem_size);       /* inside the proven slice */
+        base_off = c.store_base_off;
+    } else {
+        int r = comp_scalar_reg(&c);
+        ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_8, r);
+        store_reg = BPF_REG_8;
+        /* Safe only if a bound is currently proven on that very register; otherwise the
+           program is expected to be rejected, which is a legitimate outcome. */
+        store_off = (c.narrowed_max >= 0 && c.narrow_reg == r)
+                        ? COMP_VALUE - 1 - c.narrowed_max : 0;
+        base_off = 0;
+    }
+    const int store_insn = n;
+    ins[n++] = BPF_ST_MEM(BPF_B, store_reg, store_off, -1);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);
+    ins[n++] = BPF_EXIT_INSN();
+    const int exit0 = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    for (int i = 0; i < nx; i++)
+        ins[jexit[i]].off = exit0 - jexit[i] - 1;
+
+    const int PT = BPF_PROG_TYPE_SCHED_CLS;
+    struct prune_load base = prune_load_typed(ins, n, 0, g_log, sizeof(g_log), PT);
+    struct prune_load freq = prune_load_typed(ins, n, BPF_F_TEST_STATE_FREQ,
+                                              g_log2, sizeof(g_log2), PT);
+    struct prune_load inv  = prune_load_typed(ins, n, BPF_F_TEST_REG_INVARIANTS,
+                                              g_log2, sizeof(g_log2), PT);
+
+    g_log[0] = '\0';
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = PT;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)ins;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = sizeof(g_log);
+    attr.log_buf = (uint64_t)(unsigned long)g_log;
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int e = errno;
+
+    char name[96];
+    snprintf(name, sizeof(name), "gencomp#s%08x#%03d", seed, idx);
+    printf("===PROG %s type=sched_cls ===\n", name);
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+           fd >= 0 ? "accept" : "reject", fd, fd >= 0 ? 0 : e);
+    printf("STORE insn=%d reg=%d off=%d size=1\n", store_insn, store_reg,
+           base_off + store_off);
+    printf("COMP seed=0x%08x insns=%d recipe=%s slice=%d base_off=%d\n",
+           seed, n, recipe[0] ? recipe : "-", c.mem_reg >= 0, base_off);
+    printf("PRUNE fall=comp taken=s%d fall_safe=1 taken_safe=1 stack=1"
+           " base_verdict=%s base_errno=%d base_states=%lu base_reason=%s"
+           " freq_verdict=%s freq_errno=%d freq_states=%lu freq_reason=%s"
+           " inv_verdict=%s inv_errno=%d inv_reason=%s\n", idx,
+           base.accept ? "accept" : "reject", base.err, base.states, base.reason,
+           freq.accept ? "accept" : "reject", freq.err, freq.states, freq.reason,
+           inv.accept ? "accept" : "reject", inv.err, inv.reason);
+
+    if (fd >= 0) {
+        unsigned char pkt[64];
+        memset(pkt, 0, sizeof(pkt));
+        for (int i = 0; i < LOOPR_INPUTS_N; i++) {
+            uint32_t in = LOOPR_INPUTS[i];
+            unsigned char zero[RTW_VALUE_SIZE], val[16];
+            memset(zero, 0, sizeof(zero));
+            memset(val, 0, sizeof(val));
+            memcpy(val + 0, &in, 4); memcpy(val + 4, &in, 4); memcpy(val + 8, &in, 4);
+            int ue = rt_map_set_bytes(map_in, 0, val);
+            int ze = rt_map_set_bytes(map_out, 0, zero);
+            union bpf_attr t;
+            memset(&t, 0, sizeof(t));
+            t.test.prog_fd = fd;
+            t.test.data_in = (uint64_t)(unsigned long)pkt;
+            t.test.data_size_in = sizeof(pkt);
+            t.test.repeat = 1;
+            int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+            unsigned char out[RTW_VALUE_SIZE];
+            memset(out, 0, sizeof(out));
+            int ge = rt_map_get(map_out, 0, out);
+            if (r < 0 || ue < 0 || ze < 0 || ge < 0) {
+                printf("RUNTIME input=0x%08x error=1 testrun_errno=%d\n",
+                       in, r < 0 ? errno : 0);
+                continue;
+            }
+            int soff = -1;
+            for (int b = 0; b < RTW_VALUE_SIZE; b++)
+                if (out[b] == RTW_SENTINEL) { soff = b; break; }
+            int executed = (t.test.retval == 1);
+            if (soff < 0)
+                printf("RUNTIME input=0x%08x store_off=none store_len=0 store_size=1"
+                       " executed=%d\n", in, executed);
+            else {
+                int len = 0;
+                for (int b = soff; b < RTW_VALUE_SIZE && out[b] == RTW_SENTINEL; b++) len++;
+                printf("RUNTIME input=0x%08x store_off=%d store_len=%d store_size=1"
+                       " executed=%d\n", in, soff, len, executed);
+            }
+        }
+        close(fd);
+    }
+    printf("---LOG---\n%s\n---END---\n", g_log);
+}
+
+static void run_generated_comp_family(void) {
+    struct iter_ids ids;
+    iter_resolve(&ids);
+    int slice_id = btf_find_func_id("bpf_dynptr_slice_rdwr");
+    if (slice_id <= 0) {
+        printf("===PROG gencomp type=sched_cls ===\n"
+               "RESULT decision=error btf_resolve_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 16; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = COMP_VALUE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
+        printf("===PROG gencomp type=sched_cls ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    /* Fixed seeds: the walk is random but the CORPUS is reproducible, which is what a
+       finding needs. Each program prints its own seed so one can be replayed alone. */
+    for (int i = 0; i < COMP_MAXPROG; i++)
+        run_comp_prog(&ids, slice_id, 0x9E3779B9u * (uint32_t)(i + 1), i, map_in, map_out);
+    close(map_in);
+    close(map_out);
+}
+
 // ---- dynptr slices: a two-part safety contract (--gen-dyn) ------------------
 // FIRST LEG ON A FRESH SURFACE. Everything up to here has probed the verifier's most
 // hardened regions -- ALU transfer functions, ranges, pruning, state comparison. dynptr
@@ -3298,12 +3673,6 @@ static int emit_iter_loop(struct bpf_insn *ins, int n, const struct iter_ids *id
 #define DYN_VALUE 64      /* map_out size, and the buffer the dynptr is built over */
 #define DYN_SIZE  32      /* the dynptr's declared extent, deliberately < DYN_VALUE */
 
-/* Not in the distro uapi header. The value is read off the kernel's own helper mapper,
-   `FN(dynptr_from_mem, 197, ##ctx)` in include/uapi/linux/bpf.h — verified rather than
-   guessed, because a wrong helper id is not a load error, it calls a DIFFERENT helper. */
-#ifndef BPF_FUNC_dynptr_from_mem
-#define BPF_FUNC_dynptr_from_mem 197
-#endif
 
 /* off = dynptr offset passed to the slice, szk = the constant the verifier trusts,
    k = the store's offset within the slice. */
@@ -5819,6 +6188,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-dyn") == 0) {
         run_generated_dyn_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-comp") == 0) {
+        run_generated_comp_family();
         return 0;
     }
 

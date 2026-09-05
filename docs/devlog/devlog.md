@@ -4400,3 +4400,76 @@ bir yönden yeniden geldi ve düzeltme tuttu. Bu, "belirsizliği diff'te tahmin 
 kaynakta çöz" kuralının en iyi doğrulaması.
 
 `dynptr_calibration.rs` 7 test. Workspace 269 yeşil.
+
+---
+
+## 0054 — Kompozisyon jeneratörü (`--gen-comp`): adlandırılmamış şekiller, ve geçerlilik ölçümle kapandı
+
+### 1. Dördüncü pivotun ikinci yarısı
+
+0053 yüzeyi değiştirdi (olgun → taze kod). Ama diğer ekseni değiştirmedi: o aile de dâhil
+şimdiye kadarki **her** aile, bug sınıfını **adlandırabildiğim** şekilleri üretti.
+Dolayısıyla "temiz" bugüne kadar yalnız *"yazmayı düşündüğüm şekillerde temiz"* demekti.
+Bu jeneratör 0043-0053'te kurulan parçaları — link biçimleri, spill, ALU şekillendirme,
+branch daraltma, sınırlı döngü, dynptr slice — **rastgele birleştiriyor**, oracle'lar
+sabit tutularak.
+
+### 2. Asıl zorluk oracle değil, GEÇERLİLİK
+
+Rastgele uç uca eklenmiş bir program neredeyse her zaman reddedilir, ve reddedilen program
+runtime oracle'larına hiç ulaşmaz — 0041-0050'nin sürekli bulduğu payda-sıfır tuzağının
+bir katman yukarısı. Çözüm, programı bir byte dizisi değil **tipli bir BAĞLAM üzerinde
+yürüyüş** olarak ele almak: her parça canlı durumdan ne **istediğini** ve ne **sağladığını**
+bildiriyor, ve jeneratör yalnız gereksinimleri o an sağlanan parçaları öneriyor.
+
+**Bağlam register tiplerinden fazlasını taşımak zorunda, ve sebebi dynptr** — parçaların
+en zengin arayüzü onda. Verifier'ın id ile takip ettiği 16-byte'lık bir `STACK_DYNPTR` slot
+çiftini tüketiyor, ve geriye çağıranın seçtiği bir sabit boyutlu `PTR_TO_MEM` **artı** map
+value içinde slice tabanının karşılık geldiği bir **offset** veriyor. O son alan 0053'ün
+koordinat çevirisinin genelleştirilmiş hâli: store'un bildirilen offset'i her zaman
+sentinel geri-okumasının kullandığı koordinatta.
+
+### 3. Geçerlilik sonucu — ve sıfırı yorumlanabilir kılan şey bu
+
+**48 program, 29 kabul / 19 red.** Ama ham kabul oranı yanlış sayı; red meşru bir karar.
+Doğru soru redlerin **semantik** mi (store gerçekten sınır dışı) yoksa **yapısal** mı
+(jeneratör bozuk program üretti) olduğu:
+
+| | |
+|---|---|
+| bounds kaynaklı red | **19** |
+| yapısal red (tanımsız register / ulaşılamaz insn / geçersiz insn) | **0** |
+
+Jeneratörün ürettiği **her** program yapısal olarak sağlam, ve kararını belirleyen tek şey
+oracle'ın zaten sorduğu semantik soru. Reviewer'ın uyardığı arayüz-uyumluluğu problemi
+tahminle değil ölçümle kapandı.
+
+### 4. Sayılar
+
+`store_locations_checked=205` — **herhangi bir runtime bacağının bugüne kadarki en geniş
+paydası** (0041'de 170'ti). `runtime_writes_checked=205`, `prune_pairs_checked=48` (48
+programın hepsi kernel-vs-kernel differential'ı için kullanılabilir),
+`tnum_bounds_checked=421`, `finding_count=0`, `parser_unrecognized=0`.
+
+### 5. Yenilik
+
+Tarifler gerçekten kombinasyon: `spill,link,dynptr`, `spill,dynptr,spill,narrow`,
+`shape,link,narrow,narrow,link`, `spill,link,link,spill,spill` — elle yazdığım hiçbir
+ailenin üretemeyeceği şekiller. Test bunu sabitliyor: en az 20 farklı tarif, ve en az bir
+tarif dynptr'ı başka iki parça türüyle birleştirmeli. Tek şekli 48 kez üreten bir jeneratör
+diğer bütün testleri geçer ve hiçbir şey kanıtlamazdı.
+
+### 6. Determinizm
+
+Bir bulgu tekrarlanabilir olmak zorunda: yürüyüş tohumlanmış bir xorshift ile sürülüyor ve
+her program kendi tohumunu basıyor, yani korpus yeniden üretilebilir ve tek bir program tek
+başına oynatılabilir.
+
+### 7. Bu "temiz"in anlamı
+
+Bu, on bacaklık ekseninkinden farklı bir sıfır. Orada "adlandırdığım şekiller temiz"ti;
+burada korpusun bir kısmı benim adlandırmadığım kombinasyonlardan oluşuyor. Hâlâ küçük bir
+korpus (48 program) ve parça havuzu altı türle sınırlı — ama ilk kez ifade,
+"düşündüklerim temiz"in ötesine geçiyor.
+
+`composition_calibration.rs` 6 test. Workspace 275 yeşil.
