@@ -1,9 +1,35 @@
 # Kapsama Haritası — Taranan Yüzeyler ve Açık Uçlar
 
-> Durum: HEAD `8824e73`+ (43 commit). Kaynak: `harness/diffharness.c` generator aileleri
-> (`--gen*`), `crates/pipeline/tests/*_calibration.rs` pinlenmiş ölçümler, devlog 0025–0037.
+> **BU BELGE BİR DÖNEM ENSTANTANESİDİR — devlog 0025–0037 arası, HEAD `8824e73`+.**
+> Sonraki bacaklar burada YOK. Güncel durum için `docs/devlog/devlog.md` (0038'den
+> itibaren) ve `crates/pipeline/tests/*_calibration.rs`. Aşağıdaki §0 neyin değiştiğini
+> özetliyor; kalan bölümler kendi dönemlerinin ölçümleri olarak okunmalı — bilerek
+> güncellenmiyorlar, çünkü devlog zaten kanonik kayıt ve iki yerde tutulan bir sayı er geç
+> ayrışır.
+>
+> Kaynak: `harness/diffharness.c` generator aileleri (`--gen*`),
+> `crates/pipeline/tests/*_calibration.rs` pinlenmiş ölçümler, devlog 0025–0037.
 > Bu belge kararı **kod tabanına dayandırılmış** bir haritadır: her sayı bir generator
 > ailesinden ve onu donduran bir kalibrasyon testinden gelir.
+
+---
+
+## 0. Bu enstantaneden sonra ne oldu (devlog 0038–0068)
+
+Aşağıdaki §5 "bir sonraki hamle" bölümü, kendi döneminde doğruydu ve o hamlelerin hepsi
+yapıldı. Sonrasında proje iki kez yön değiştirdi:
+
+| dönem | bacaklar | ne kurdu |
+|---|---|---|
+| **Runtime ground truth** | 0036–0042 | Verifier log'una güvenmeyi bıraktı. Retval, OOB-yazma, store genişliği, paket yazma, **store KONUMU** (`--gen-loc`, asıl av) ve ilk kernel-vs-kernel farkı (`--gen-prune`). |
+| **State comparison** | 0043–0052 | Back-edge (may_goto, iterator), scalar id remapping, id-map bijection, çoklu frame, spill + delta aritmetiği, precision, `exact_level`. On bacak, altı oracle tamiri, **sıfır kernel bulgusu** — ve dördüncü pivotu tetikleyen şey bu oldu. |
+| **Fresh surface + composition** | 0053–0060 | dynptr (taze yüzey) ve **kompozisyon jeneratörü**: program artık bir bayt dizisi değil, **tipli bir bağlam üzerinde yürüyüş**. Adlandırılmamış şekiller. |
+| **Calibration** | 0061–0068 | "Oracle gerçekten kernel'ın SAHİP OLDUĞU bir hatayı görüyor mu?" Beş gerçek-bug çifti, her biri farklı türde bir sınır buldu. Ve payda kuralı bir CI guard'ına dönüştü. |
+
+Bu haritanın kalıcı katkısı §1'deki çerçeve (yüzey = program şekli × izlenen tip) ve §3–4'ün
+açık-uç listesi. O listedeki Tier-3 kalemlerinin çoğu kapandı: T3-1 bounded loop (0043–0045),
+T3-2 subprog (0048, 0057), T3-3 stack spill (0049). Açık kalanlar: T3-4 (iki pointer farkı),
+T3-5 (map-in-map), T3-6 (packet_meta / XDP), ve T2 kalemlerinin bir kısmı.
 
 ---
 
