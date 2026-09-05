@@ -4972,3 +4972,71 @@ yazıldı — kapsıyormuş gibi göstermek, kapsamamaktan kötü olurdu.
 Gerçek-bug kalibrasyonu iki ayrı çıktı veriyor ve ikisi de değerli: **oracle** tarafında
 kör nokta (0061'de iki tane), **input** tarafında kapsama açığı (burada bir tane). İkincisi
 kernel yamalı olsa bile kazanç, çünkü sınıfa dedektör bırakıyor. Workspace 282 yeşil.
+
+---
+
+## 0064 — İkinci kalibrasyon çifti: enstrüman gerçek hatayı, onu içeren kernel üzerinde yakaladı
+
+### 1. Neden bu sefer kernel derlemek gerekti
+
+`3844d153a41a` commit mesajından kalibre edilebilmişti çünkü tutarsız state **normal
+register state'i olarak** basılıyordu. `92424801261d` öyle değil: bozulan register'lar
+(`true_reg2`, `false_reg1/2`) `reg_set_min_max`'in içinde yaşıyor ve normal state olarak
+hiç basılmıyor — yalnız kernel'in kendi *"REG INVARIANTS VIOLATION"* mesajında görünüyorlar.
+
+Yani tespit kanalı parse edilmiş state değil, **verdict**: 0042'nin üçüncü yüklemesi,
+`BPF_F_TEST_REG_INVARIANTS`'ın `reg_bounds_sanity_check`'i uyar-ve-toparla'dan sert
+`-EFAULT`'a çevirdiği yer. Bunu sınamak, hatalı kernel'ı **çalıştırmayı** gerektiriyor.
+
+### 2. Kurulum
+
+`92424801261d~1`'de park edilmiş bir git worktree, ve `build-kernel.sh` artık `SRC`/`OUT`
+alıyor — iki kernel **aynı config'le** derleniyor, çünkü karşılaştırma ancak yalnız fix'te
+farklıysa anlamlı.
+
+Yolda bir tuzak: script `[ -d "$SRC/.git" ]` kontrol ediyordu, ama `.git` bir clone'da
+**dizin**, bir worktree'de **dosya**. Build anında reddetti. Yeniden kullanılan varsayımın
+yeni kullanımda kırılması — bu projenin imza hatası, bu sefer altyapı katmanında.
+
+### 3. Tetikleyici
+
+Commit'in kendi disassembly'sinden transkribe edildi: bilinmeyen skaleri 31 bite maskele,
+bit 1'i kur, sonra **bit 1'i kapalı** bir sabitle eşitlik karşılaştır. False dalı
+matematiksel olarak imkânsız (`0x7ffffffd` = 1111…1101) ama verifier onu yine de analiz
+ediyor, ve o analiz sahte register'ı bozuyor.
+
+### 4. Sonuç — iki taraflı
+
+| | hatalı kernel | düzeltilmiş kernel |
+|---|---|---|
+| `base_verdict` | accept | accept |
+| `inv_verdict` | **reject, errno 14 (EFAULT)** | accept, reason none |
+| kernel ihlal bildirdi mi | **evet** | hayır |
+| pipeline `finding_count` | **1 — `reg_invariants_violation`** | **0** |
+
+Kernel'in kendi mesajı commit'tekiyle birebir çıktı:
+```
+REG INVARIANTS VIOLATION (true_reg2):  range bounds violation u64=[0x7fffffff, 0x7ffffffd]
+REG INVARIANTS VIOLATION (false_reg2): const tnum out of sync with range bounds
+```
+İkisi de bizim invariant'larımızın kernel'daki adları — ve ikincisi **0061'de eklemek
+zorunda kaldığımız** özellik.
+
+### 5. Dürüst kapsam
+
+Bu, **REG_INVARIANTS kanalını** uçtan uca doğruluyor. Parse-edilmiş-state invariant'
+larımızın bu hatayı yakalayacağını **göstermiyor** — yakalayamazlar, çünkü bozulan
+register'lar state olarak hiç basılmıyor. İki bug, iki kanal; birinin sonucu ötekine
+geçmiyor. Teste de böyle yazıldı.
+
+### 6. Kalibrasyonun durumu
+
+İki bağımsız çift, iki farklı kanal:
+
+| çift | kanal | kaynak |
+|---|---|---|
+| `3844d153a41a` (0061) | `const_tnum_range_mismatch`, basılı state | commit mesajı |
+| `92424801261d` (0064) | `reg_invariants_violation`, verdict | **gerçek kernel koşusu** |
+
+`calibration.rs` 7 test, `scripts/run-calibration.sh` ikisini de koşturuyor.
+Workspace 285 yeşil.

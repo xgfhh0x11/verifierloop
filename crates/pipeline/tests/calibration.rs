@@ -47,6 +47,11 @@ use pipeline::verifier_log::VerifierLogParser;
 const BUGGY: &str = include_str!("fixtures/calibration/cve-3844d153a41a-buggy.log");
 const FIXED: &str = include_str!("fixtures/calibration/cve-3844d153a41a-fixed.log");
 
+/// The second pair, and a different KIND of calibration: captured by running the kernel
+/// that had the bug, not quoted from a commit message. See the module note below.
+const FR_BUGGY: &str = include_str!("fixtures/calibration/fakereg-92424801261d-buggy.log");
+const FR_FIXED: &str = include_str!("fixtures/calibration/fakereg-92424801261d-fixed.log");
+
 fn run_diff(text: &str, tag: &str) -> (normalize::NormalizedMetrics, diff::DiffFindings) {
     let dir = std::env::temp_dir().join(format!("vl-cal-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -143,3 +148,78 @@ fn intersecting_the_bounds_is_not_enough_to_catch_it() {
         "a constant tnum must pin both bounds"
     );
 }
+
+// ---------------------------------------------------------------------------------
+// SECOND PAIR: 92424801261d, "bpf: Fix reg_set_min_max corruption of fake_reg" (2024-06)
+//
+// A different kind of calibration, and the reason it is worth the cost of a kernel build.
+// The first pair could be read straight out of a commit message because the inconsistent
+// state was printed as ordinary register state. This one cannot: the violating registers
+// (true_reg2, false_reg1, false_reg2) live inside reg_set_min_max and are never printed
+// that way — they appear only inside the kernel's own "REG INVARIANTS VIOLATION" message.
+//
+// So the detection channel is not a parsed state but a VERDICT: 0042's third load, where
+// BPF_F_TEST_REG_INVARIANTS turns reg_bounds_sanity_check from warn-and-recover into a
+// hard -EFAULT. Both fixtures are real captures — the same probe run against two kernels
+// built from the same config, differing only in whether the fix is applied.
+//
+// HONEST SCOPE: this validates the REG_INVARIANTS channel end to end. It does NOT show
+// that our parsed-state invariants would catch this bug — they cannot, because the
+// corrupt registers are never printed as state. Two bugs, two channels; neither result
+// transfers to the other.
+
+fn accepted_and_inv(text: &str) -> (bool, String) {
+    let line = text.lines().find(|l| l.starts_with("PRUNE ")).expect("a PRUNE line");
+    let f = |k: &str| {
+        line.split_whitespace()
+            .find_map(|t| t.strip_prefix(k))
+            .unwrap()
+            .to_string()
+    };
+    (f("base_verdict=") == "accept", f("inv_reason="))
+}
+
+/// THE FIRING HALF, on the kernel that actually had the bug: the default load succeeds
+/// while the REG_INVARIANTS load faults, and the pipeline turns that into a finding.
+#[test]
+fn the_instrument_catches_the_fake_reg_corruption_on_the_buggy_kernel() {
+    let (base_ok, inv) = accepted_and_inv(FR_BUGGY);
+    assert!(base_ok, "the buggy kernel accepts the program by default");
+    assert_eq!(inv, "efault", "and faults under BPF_F_TEST_REG_INVARIANTS");
+    assert!(
+        FR_BUGGY.contains("REG INVARIANTS VIOLATION"),
+        "the kernel says so itself, which is what makes this capture self-evidencing"
+    );
+    let (_, out) = run_diff(FR_BUGGY, "fr-buggy");
+    assert_eq!(
+        out.findings.iter().filter(|f| f.kind == "reg_invariants_violation").count(), 1,
+        "and the pipeline must report it exactly once: {:?}", out.findings
+    );
+}
+
+/// THE SILENT HALF, on the fixed kernel: same probe, same config, only the fix differs.
+#[test]
+fn the_instrument_is_silent_on_the_fixed_kernel() {
+    let (base_ok, inv) = accepted_and_inv(FR_FIXED);
+    assert!(base_ok);
+    assert_eq!(inv, "none", "no fault once the fix is in");
+    assert!(!FR_FIXED.contains("REG INVARIANTS VIOLATION"));
+    let (_, out) = run_diff(FR_FIXED, "fr-fixed");
+    assert_eq!(out.summary.finding_count, 0, "{:?}", out.findings);
+}
+
+/// The kernel's own diagnosis, pinned: the two properties it names are the two this
+/// project checks under different names, which is why the channel is worth having.
+#[test]
+fn the_kernels_own_violation_names_our_two_invariants() {
+    assert!(
+        FR_BUGGY.contains("range bounds violation"),
+        "an inverted unsigned range — our unsigned_bounds_inverted"
+    );
+    assert!(
+        FR_BUGGY.contains("const tnum out of sync with range bounds"),
+        "a constant tnum that does not pin its bounds — our const_tnum_range_mismatch, \
+         the very property 0061 had to ADD"
+    );
+}
+
