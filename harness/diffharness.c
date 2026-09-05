@@ -2768,11 +2768,17 @@ struct prune_load {
     const char *reason;   /* none | verdict | too_large | too_many_states | efault */
 };
 
-static struct prune_load prune_load_once(const struct bpf_insn *insns, int n,
-                                         uint32_t flags, char *logbuf, size_t logsz) {
+/* `prog_type` is a parameter because not every surface is reachable from
+   socket_filter: bpf_dynptr_slice_rdwr requires a program type that permits direct
+   packet writes (verifier.c:13737, "the prog does not allow writes to packet data") --
+   and it applies that gate to EVERY dynptr type, including a LOCAL dynptr over a map
+   value that has nothing to do with packets. */
+static struct prune_load prune_load_typed(const struct bpf_insn *insns, int n,
+                                          uint32_t flags, char *logbuf, size_t logsz,
+                                          int prog_type) {
     union bpf_attr attr;
     memset(&attr, 0, sizeof(attr));
-    attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+    attr.prog_type = prog_type;
     attr.insn_cnt = n;
     attr.insns = (uint64_t)(unsigned long)insns;
     attr.license = (uint64_t)(unsigned long)"GPL";
@@ -2806,6 +2812,11 @@ static struct prune_load prune_load_once(const struct bpf_insn *insns, int n,
     if (fd >= 0)
         close(fd);
     return r;
+}
+
+static struct prune_load prune_load_once(const struct bpf_insn *insns, int n,
+                                         uint32_t flags, char *logbuf, size_t logsz) {
+    return prune_load_typed(insns, n, flags, logbuf, logsz, BPF_PROG_TYPE_SOCKET_FILTER);
 }
 
 static void run_prune_prog(enum prune_shaper fall, enum prune_shaper taken,
@@ -3250,6 +3261,216 @@ static int emit_iter_loop(struct bpf_insn *ins, int n, const struct iter_ids *id
     ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -ITER_SLOT);
     ins[n++] = BPF_KFUNC_CALL(ids->destroy_id);
     return n;
+}
+
+// ---- dynptr slices: a two-part safety contract (--gen-dyn) ------------------
+// FIRST LEG ON A FRESH SURFACE. Everything up to here has probed the verifier's most
+// hardened regions -- ALU transfer functions, ranges, pruning, state comparison. dynptr
+// is recent code, and the reason it is worth aiming at is visible in what the verifier
+// actually proves about a slice (verifier.c:13729):
+//
+//     regs[BPF_REG_0].mem_size = meta->arg_constant.value;   /* = buffer__szk */
+//     regs[BPF_REG_0].type = PTR_TO_MEM | type_flag;
+//
+// The static bound comes from the CALLER'S CONSTANT, not from the dynptr's extent and
+// not from `size - offset`. The real bound is enforced at runtime (helpers.c):
+//
+//     u64 len = buffer__szk;
+//     err = bpf_dynptr_check_off_len(ptr, offset, len);
+//     if (err) return NULL;
+//     case BPF_DYNPTR_TYPE_LOCAL: return ptr->data + ptr->offset + offset;
+//
+// So safety is a TWO-PART CONTRACT: the verifier proves the store sits inside
+// [0, buffer__szk) of whatever came back, and the runtime guarantees that what came back
+// really has that many bytes, or is NULL. Neither half is sufficient alone, and no
+// earlier leg has had a shape where the two halves come from different places. For a
+// LOCAL dynptr the slice points INTO the original memory, so our existing sentinel
+// readback observes the composition end to end with no new oracle.
+//
+// COORDINATE TRANSLATION, decided BEFORE the capture rather than after a false positive.
+// The slice pointer's base is `map_value + dynptr_offset`, but the verifier sees only a
+// `mem(sz=N)` with no relation to the map value, while the runtime readback is in map
+// value coordinates. The STORE line is generator provenance, so the generator supplies
+// the translation and declares the store at `dynptr_offset + K` -- the offset in the
+// coordinate system the observation channel uses. What that makes checkable is real: the
+// slice must hand back a pointer at exactly `data + offset`, and a store at +K through it
+// must land at exactly `dynptr_offset + K`.
+#define DYN_VALUE 64      /* map_out size, and the buffer the dynptr is built over */
+#define DYN_SIZE  32      /* the dynptr's declared extent, deliberately < DYN_VALUE */
+
+/* Not in the distro uapi header. The value is read off the kernel's own helper mapper,
+   `FN(dynptr_from_mem, 197, ##ctx)` in include/uapi/linux/bpf.h — verified rather than
+   guessed, because a wrong helper id is not a load error, it calls a DIFFERENT helper. */
+#ifndef BPF_FUNC_dynptr_from_mem
+#define BPF_FUNC_dynptr_from_mem 197
+#endif
+
+/* off = dynptr offset passed to the slice, szk = the constant the verifier trusts,
+   k = the store's offset within the slice. */
+static void run_dyn_prog(const struct iter_ids *unused, int slice_id, int off, int szk,
+                         int k, int idx, int map_out) {
+    (void)unused;
+    struct bpf_insn ins[80];
+    int n = 0, jexit[4], nx = 0;
+
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_6, BPF_REG_0);          /* keep the map value */
+
+    /* bpf_dynptr_from_mem(data, size, flags, &dynptr) -- a plain helper, and the dynptr
+       occupies a 16-byte STACK_DYNPTR pair the verifier tracks by id. */
+    ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_6);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_2, DYN_SIZE);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_3, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_4, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_4, -32);
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_dynptr_from_mem);
+
+    /* bpf_dynptr_slice_rdwr(&dynptr, offset, buffer, buffer__szk) */
+    ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -32);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_2, off);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_3, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_3, -128);      /* the optional buffer */
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_4, szk);
+    ins[n++] = BPF_KFUNC_CALL(slice_id);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+
+    const int store_insn = n;
+    ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_0, k, -1);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);
+    ins[n++] = BPF_EXIT_INSN();
+    const int exit0 = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    for (int i = 0; i < nx; i++)
+        ins[jexit[i]].off = exit0 - jexit[i] - 1;
+
+    const int PT = BPF_PROG_TYPE_SCHED_CLS;
+    struct prune_load base = prune_load_typed(ins, n, 0, g_log, sizeof(g_log), PT);
+    struct prune_load freq = prune_load_typed(ins, n, BPF_F_TEST_STATE_FREQ,
+                                              g_log2, sizeof(g_log2), PT);
+    struct prune_load inv  = prune_load_typed(ins, n, BPF_F_TEST_REG_INVARIANTS,
+                                              g_log2, sizeof(g_log2), PT);
+
+    g_log[0] = '\0';
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = PT;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)ins;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = sizeof(g_log);
+    attr.log_buf = (uint64_t)(unsigned long)g_log;
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int e = errno;
+
+    char name[96];
+    snprintf(name, sizeof(name), "gendyn#o%d.z%d.k%d#%03d", off, szk, k, idx);
+    printf("===PROG %s type=sched_cls ===\n", name);
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+           fd >= 0 ? "accept" : "reject", fd, fd >= 0 ? 0 : e);
+    /* Translated into map-value coordinates -- see the note above. */
+    printf("STORE insn=%d reg=0 off=%d size=1\n", store_insn, off + k);
+    printf("DYN dynptr_size=%d slice_off=%d slice_szk=%d store_k=%d"
+           " runtime_slice_ok=%d\n",
+           DYN_SIZE, off, szk, k, (off + szk) <= DYN_SIZE);
+
+    printf("PRUNE fall=o%d taken=z%d fall_safe=%d taken_safe=%d stack=0"
+           " base_verdict=%s base_errno=%d base_states=%lu base_reason=%s"
+           " freq_verdict=%s freq_errno=%d freq_states=%lu freq_reason=%s"
+           " inv_verdict=%s inv_errno=%d inv_reason=%s\n",
+           off, szk, k < szk, (off + szk) <= DYN_SIZE,
+           base.accept ? "accept" : "reject", base.err, base.states, base.reason,
+           freq.accept ? "accept" : "reject", freq.err, freq.states, freq.reason,
+           inv.accept ? "accept" : "reject", inv.err, inv.reason);
+
+    if (fd >= 0) {
+        unsigned char pkt[64];
+        memset(pkt, 0, sizeof(pkt));
+        for (int i = 0; i < LOOPR_INPUTS_N; i++) {
+            uint32_t in = LOOPR_INPUTS[i];
+            unsigned char zero[RTW_VALUE_SIZE];
+            memset(zero, 0, sizeof(zero));
+            int ze = rt_map_set_bytes(map_out, 0, zero);
+            union bpf_attr t;
+            memset(&t, 0, sizeof(t));
+            t.test.prog_fd = fd;
+            t.test.data_in = (uint64_t)(unsigned long)pkt;
+            t.test.data_size_in = sizeof(pkt);
+            t.test.repeat = 1;
+            int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+            unsigned char out[RTW_VALUE_SIZE];
+            memset(out, 0, sizeof(out));
+            int ge = rt_map_get(map_out, 0, out);
+            if (r < 0 || ze < 0 || ge < 0) {
+                printf("RUNTIME input=0x%08x error=1 testrun_errno=%d\n",
+                       in, r < 0 ? errno : 0);
+                continue;
+            }
+            int soff = -1;
+            for (int b = 0; b < RTW_VALUE_SIZE; b++)
+                if (out[b] == RTW_SENTINEL) { soff = b; break; }
+            /* retval 1 only on the path that stored; a NULL slice exits with 0, which is
+               exactly the executed=0 case 0041 added the witness for. */
+            int executed = (t.test.retval == 1);
+            if (soff < 0)
+                printf("RUNTIME input=0x%08x store_off=none store_len=0 store_size=1"
+                       " executed=%d\n", in, executed);
+            else {
+                int len = 0;
+                for (int b = soff; b < RTW_VALUE_SIZE && out[b] == RTW_SENTINEL; b++) len++;
+                printf("RUNTIME input=0x%08x store_off=%d store_len=%d store_size=1"
+                       " executed=%d\n", in, soff, len, executed);
+            }
+        }
+        close(fd);
+    }
+    printf("---LOG---\n%s\n---END---\n", g_log);
+}
+
+static void run_generated_dyn_family(void) {
+    int slice_id = btf_find_func_id("bpf_dynptr_slice_rdwr");
+    if (slice_id <= 0) {
+        printf("===PROG gendyn type=sched_cls ===\n"
+               "RESULT decision=error btf_resolve_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    printf("CHANNEL btf=ok slice_rdwr=%d\n", slice_id);
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = DYN_VALUE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_out < 0) {
+        printf("===PROG gendyn type=sched_cls ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    /* Two independent boundaries, deliberately separated:
+         k vs szk           -> the VERIFIER's static bound (the caller's constant)
+         off + szk vs size  -> the RUNTIME's bound (slice returns NULL past the extent)
+       The `big` and `past` arms are the point of the leg: the verifier accepts a slice
+       claim it has no basis for, and only the runtime NULL keeps the program safe. */
+    const struct { int off, szk, k; } arms[] = {
+        {  0,  8, 0 },   /* interior                                    -> accept, lands 0  */
+        {  0,  8, 7 },   /* last byte of the slice                      -> accept, lands 7  */
+        {  0,  8, 8 },   /* one past the constant: the static off-by-one -> REJECT          */
+        { 24,  8, 7 },   /* off+szk == size exactly                     -> accept, lands 31 */
+        { 28,  8, 0 },   /* off+szk > size: runtime NULL, store skipped -> accept, no store */
+        {  0, 64, 0 },   /* szk twice the dynptr: verifier trusts it anyway                 */
+    };
+    int idx = 0;
+    for (unsigned i = 0; i < sizeof(arms) / sizeof(arms[0]); i++)
+        run_dyn_prog(NULL, slice_id, arms[i].off, arms[i].szk, arms[i].k, idx++, map_out);
+    close(map_out);
 }
 
 // ---- reaching RANGE_WITHIN on purpose (--gen-rw) ----------------------------
@@ -5594,6 +5815,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-rw") == 0) {
         run_generated_rw_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-dyn") == 0) {
+        run_generated_dyn_family();
         return 0;
     }
 

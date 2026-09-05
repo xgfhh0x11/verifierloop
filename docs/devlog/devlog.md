@@ -4309,3 +4309,94 @@ debug yaması, ki bu da test edilen şeyi değiştirmek demek ve ayrı bir karar
 capture'da bulunması, **2:1 oranı**, **sınırın test olarak yazılması** (hiçbir kol
 seviyeyi ilan etmiyor, log seviyeyi asla adlandırmıyor), oracle'ların paydayla sessizliği,
 diş, ve parser kör noktası yok. Workspace 262 yeşil.
+
+---
+
+## 0053 — dynptr slice'ları (`--gen-dyn`): iki parçalı güvenlik sözleşmesi, ve TAZE yüzeyde ilk bacak
+
+### 1. Dördüncü pivot: olgun yüzeyden taze koda
+
+0043-0052 verifier'ın en zırhlı bölgelerini taradı (ALU, range, pruning, state
+karşılaştırması) ve on bacak temiz çıktı. Reviewer'la yapılan strateji kontrolünde iki
+**dik** eksen ayrıldı: **yüzey** (olgun ↔ taze) ve **üretim stratejisi** (adlandırılmış ↔
+adlandırılmamış şekil). Yüzey değiştirmek birincisini çözüyor, ikincisini çözmüyor. Bu
+bacak birincisi; kompozisyon jeneratörü ikincisi olacak.
+
+Geçiş kararı, sıfır-bulgu sayısından **bağımsız** bir ölçütle sınandı: mevcut oracle'lar
+dynptr'a ulaşmıyor — bu bir kapsama boşluğu ve geçen hafta bug bulmuş olsak da aynı
+boşluk olurdu. Ölçüt geçti.
+
+### 2. Neden burası: statik iddia ile gerçek sınır ayrı kaynaklardan
+
+Verifier bir slice hakkında şunu kanıtlıyor (verifier.c:13729):
+```c
+regs[BPF_REG_0].mem_size = meta->arg_constant.value;   /* = buffer__szk */
+regs[BPF_REG_0].type = PTR_TO_MEM | type_flag;
+```
+**Statik sınır ÇAĞIRANIN SABİTİ** — dynptr'ın uzunluğu değil, `size - offset` de değil.
+Gerçek sınır runtime'da (helpers.c):
+```c
+u64 len = buffer__szk;
+err = bpf_dynptr_check_off_len(ptr, offset, len);
+if (err) return NULL;
+case BPF_DYNPTR_TYPE_LOCAL: return ptr->data + ptr->offset + offset;
+```
+Yani güvenlik **iki parçalı bir sözleşme** ve hiçbir yarısı tek başına yetmiyor. Daha önce
+hiçbir ailemizde iki yarının farklı yerlerden geldiği bir şekil olmamıştı. LOCAL bir
+dynptr'da slice orijinal belleğin İÇİNE işaret ettiği için mevcut sentinel-geri-okuma
+oracle'ı bileşimi uçtan uca gözlüyor — **yeni oracle yok, yalnız input yüzeyi değişti.**
+
+### 3. Sonuç
+
+**6 program, 5 kabul / 1 red**, `store_locations_checked=24`, `runtime_writes_checked=24`,
+`prune_pairs_checked=6`, `finding_count=0`, `parser_unrecognized=0`.
+
+| kol | karar | runtime slice | düşüş |
+|---|---|---|---|
+| o0.z8.k0 | kabul | ok | 0 |
+| o0.z8.k7 | kabul | ok | 7 (slice'ın son byte'ı) |
+| o0.z8.k8 | **red** | ok | — (statik off-by-one, `k == szk`) |
+| o24.z8.k7 | kabul | ok | **31** (= 24+7, dynptr'ın son byte'ı) |
+| o28.z8.k0 | kabul | **NULL** | none |
+| o0.z64.k0 | kabul | **NULL** | none |
+
+**Son iki satır bacağın bütün meselesi:** verifier 32 byte'lık bir dynptr üzerinde
+`sz=64`'lük bir slice kanıtı basıyor (`R0=mem(id=2,parent_id=1,sz=64)` — log'da çıplak),
+ve `off+szk > size` olan slice'ı da kabul ediyor. İkisinde de dayanağı yok; programı
+güvende tutan tek şey runtime NULL. Biz de tam olarak onu gözlüyoruz.
+
+`o24.z8.k7`'nin **31**'e düşmesi koordinat çevirisini doğruluyor: slice gerçekten
+`data + offset` döndürüyor.
+
+### 4. Capture'dan ÖNCE çözülen iki şey
+
+**(i) Koordinat çevirisi.** Slice pointer'ın tabanı `map_value + dynptr_offset`; verifier
+yalnız `mem(sz=N)` görüyor (map value ile ilişkisi yok), runtime gözlemi ise map value
+koordinatında. Beş kez oracle varsayımından ısırıldıktan sonra bunu capture'dan önce
+çözdüm: `STORE` satırı zaten generator provenansı, çeviriyi generator yapıyor
+(`off + k`). Böylece sınanabilir kalan şey gerçek bir özellik oluyor — slice'ın tam
+olarak `data + offset` döndürmesi.
+
+**(ii) Helper id'si.** `BPF_FUNC_dynptr_from_mem` iki header'da da yok. `197` tahminimi
+kernel'in kendi mapper'ından doğruladım (`FN(dynptr_from_mem, 197, ##ctx)`) — yanlış
+helper id'si load hatası değil, **başka bir helper'ı çağırmak**.
+
+### 5. Yol boyunca: program tipi kapısı
+
+İlk capture'da **altı kolun altısı da** reddedildi — 0043'ün vakum tell'i (tek biçim
+sonuç = yapısal sorun). Sebep, kaynağı okurken üstünden geçtiğim satırdı
+(verifier.c:13737): `bpf_dynptr_slice_rdwr` **doğrudan paket yazımına izin veren** bir
+program tipi istiyor. Kayda değer olan: kontrol *paket* yazımı hakkında ama **her** dynptr
+tipini kapatıyor — paketle hiç ilgisi olmayan, map value üzerindeki LOCAL bir dynptr'ı
+bile. Aile SCHED_CLS'e taşındı; `prune_load_once` artık `prune_load_typed` üzerinden
+program tipi parametresi alıyor.
+
+### 6. 0041'in tanığı taze yüzeyde bedelini ödedi
+
+Burada NULL slice **tasarlanmış** bir sonuç, dal artefaktı değil — iki kol meşru şekilde
+hiç store etmiyor. `executed` tanığı olmasaydı onların `store_off=none`'ı kol başına üç
+kez `runtime_oob_write` ateşlerdi. 0041'in kaynakta çözdüğü belirsizlik, tamamen farklı
+bir yönden yeniden geldi ve düzeltme tuttu. Bu, "belirsizliği diff'te tahmin etme,
+kaynakta çöz" kuralının en iyi doğrulaması.
+
+`dynptr_calibration.rs` 7 test. Workspace 269 yeşil.
