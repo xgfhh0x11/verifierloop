@@ -391,6 +391,40 @@ fn check_logical_invariants(
                 });
             }
 
+            // A CONSTANT tnum must PIN the bounds. This is strictly stronger than the
+            // intersection test below, and the gap between the two is where a real
+            // soundness bug lived: commit 3844d153a41a ("bpf: Fix insufficient bounds
+            // propagation from adjust_scalar_min_max_vals") fixed a verifier that
+            // produced `R3=scalar(imm=0,umax=1,var_off=(0x0; 0x0))` — tnum exactly 0
+            // while the bounds still said [0,1] — and that state let a pointer be leaked
+            // through adjust_ptr_min_max_vals. The intersection test does NOT catch it:
+            // the tnum span [0,0] sits inside [0,1]. The kernel's own
+            // reg_bounds_sanity_check calls this const_tnum_range_mismatch, and this
+            // check carries the same name deliberately.
+            //
+            // The gate requires a STATED upper bound: an absent `umax=` means U64_MAX by
+            // the log's convention, and treating that as a real bound would fire on every
+            // constant-var_off register whose bounds simply were not printed.
+            if reg.tnum.mask == 0 && reg.umax != u64::MAX {
+                *checkable += 1;
+                if reg.umin != reg.tnum.value || reg.umax != reg.tnum.value {
+                    out.push(DivergenceFinding {
+                        record_index: Some(idx),
+                        source: GroundTruthSource::LogicalInvariant,
+                        kind: "const_tnum_range_mismatch".to_string(),
+                        aspect: "bounds".to_string(),
+                        expected: "a constant tnum pins umin == umax == value".to_string(),
+                        observed: format!(
+                            "var_off=(0x{:x}; 0x0) umin={} umax={}",
+                            reg.tnum.value, reg.umin, reg.umax
+                        ),
+                        detail: format!(
+                            "{where_}: tnum is constant but the unsigned bounds are not"
+                        ),
+                    });
+                }
+            }
+
             // tnum/bounds consistency: the tnum's representable range
             // [value, value|mask] must intersect [umin, umax]. Disjoint => the two
             // range trackers contradict each other (a range-desync logic bug).

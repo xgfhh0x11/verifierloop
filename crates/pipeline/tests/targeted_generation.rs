@@ -55,18 +55,31 @@ fn the_targeted_corpus_gives_the_intrinsic_leg_a_real_denominator() {
 }
 
 #[test]
-fn the_syzkaller_volume_gives_it_nothing_at_all() {
-    // THE measurement of 0025, pinned. Not a defect in syzkaller: its programs are
-    // syscall sequences, and their scalars are either fully known or fully unknown,
-    // never partially known. A tnum tracker is never exercised by such a program, so
-    // the strongest intrinsic check cannot fire on this corpus no matter how long it
-    // runs.
+fn the_syzkaller_volume_reaches_only_the_constant_half_of_the_check() {
+    // 0025's measurement, RE-MEASURED after 0061 added const_tnum_range_mismatch — the
+    // guard below fired exactly as it was written to, and the answer changed in a way
+    // worth recording rather than papering over.
+    //
+    // The original claim was that syzkaller's programs are syscall sequences whose
+    // scalars are either fully known or fully unknown, never PARTIALLY known, so a tnum
+    // tracker is never exercised. That is still true of the intersection check, which is
+    // gated on `mask != 0` and still gets nothing here.
+    //
+    // But the constant half is a different reachability question: `mask == 0` with stated
+    // bounds is exactly the fully-known scalar this corpus is full of, and 357 of them
+    // are now evaluated. So syzkaller does exercise one half of the intrinsic check after
+    // all — and comes back clean on it, which is a stronger statement about the corpus
+    // than "it reaches nothing".
     let (norm, out) = run_diff(SYZ, "syz");
     assert_eq!(norm.records.len(), 151);
     assert_eq!(
-        out.summary.tnum_bounds_checked, 0,
-        "if this ever becomes non-zero the corpus or the parser changed — re-measure \
-         before trusting any 'clean' period from it"
+        out.summary.tnum_bounds_checked, 357,
+        "if this changes the corpus or the parser changed — re-measure before trusting \
+         any 'clean' period from it"
+    );
+    assert_eq!(
+        out.summary.finding_count, 0,
+        "and with a real denominator, clean means something: {:?}", out.findings
     );
 }
 

@@ -4820,3 +4820,95 @@ Koşu 600 saniyeyi aştı ve arka plana alındı — 704 program, ve `loop` par�
 test_run'da may_goto'nun 250 ms'lik zaman bütçesini harcıyor. Bu artık ölçeklemenin
 maliyet sürücüsü: korpus büyüdükçe TIMEOUT onunla birlikte artmalı (704 program ~2400s
 bütçeyle koştu).
+
+---
+
+## 0061 — KALİBRASYON: oracle gerçek bir verifier hatasını yakalıyor mu? (İki kör nokta bulundu)
+
+### 1. Neden bu iş birincildi
+
+On sekiz bacak, sıfır kernel bulgusu. Her bacakta oracle'ın **bizim ektiğimiz** ihlalde
+ateşlediğini kanıtladık; hiçbirinde **kernel'in gerçekten sahip olduğu** bir hatada
+ateşlediğini görmedik. O kanıt olmadan sıfır iki şeyden hangisi olduğunu söylemiyor:
+bpf-next bu yüzeylerde sağlam mı, yoksa oracle'ın kör noktası mı var.
+
+### 2. Hedef seçimi
+
+Ağaçta 2022 sonrası verifier soundness fix'leri tarandı. Seçilen:
+**`3844d153a41a` — "bpf: Fix insufficient bounds propagation from
+adjust_scalar_min_max_vals"** (2022-07-01, Kuee K1r0a bildirmiş):
+
+> *"a corner case where the **tnum becomes constant** … but the register's **bounds are
+> not** … This in turn **allows to leak pointers** through turning a pointer register as is
+> into an unknown scalar via `adjust_ptr_min_max_vals()`."*
+
+Üç sebeple ideal: (a) gerçek bir **soundness** hatası (over-rejection değil), (b) imzası
+tam olarak otuz bacaktır koşturduğumuz özellik, (c) commit **kernel'in kendi bastığı
+hatalı state'i** içeriyor — yani kernel derlemeden yarısı test edilebilir.
+
+```
+before:  9: (07) r3 += -32767  ; R3_w=scalar(imm=0,umax=1,var_off=(0x0; 0x0))   <--- [*]
+after:   9: (07) r3 += -32767  ; R3_w=scalar(imm=0,umax=0,var_off=(0x0; 0x0))
+```
+
+### 3. İlk ölçüm: oracle bu hatayı GÖREMİYORDU
+
+Hatalı state pipeline'a verildi: **`tnum_bounds_checked=0`, `finding_count=0`,
+`parser_unrecognized=0`.** Payda sıfır, ve sessiz. İki ayrı kör nokta çıktı, her biri tek
+başına hatayı görünmez kılmaya yeterdi:
+
+**(i) Parser eski register biçimini tanımıyordu.** Eski kernel'lar `R3_w=` basıyor (`_w` =
+bu insn tarafından yazıldı); `looks_like_reg_token_start` yalnız `R<rakam>=` kabul
+ediyordu. Hiçbir state parse edilmiyor, payda sessizce sıfırlanıyor,
+`parser_unrecognized` 0 kalıyor — payda kuralının yakalamak için var olduğu şeklin ta
+kendisi, yeni bir yönden. *(Kendi fixture'larımızda sıfır `_w` var, yani mevcut
+sonuçlarımız etkilenmiyor — bu tam olarak bir kalibrasyon engeli.)*
+
+**(ii) Invariant yeterince güçlü değildi.** Kontrolümüz yalnız tnum aralığının
+`[umin,umax]` ile **kesiştiğini** sınıyordu. Hatalı state'te aralık [0,0], bounds [0,1] —
+**kesişiyorlar**, yani state parse edilse bile kontrol sessiz kalırdı. Eksik olan, kernel'in
+kendi `reg_bounds_sanity_check`'inde aynı adla bulunan daha güçlü özellik: **sabit bir
+tnum bounds'u sabitlemek zorunda.**
+
+Üstelik `tnum_bounds_checkable` gate'i `mask != 0` şartı koyuyordu — yani sabit tnum'lu
+register'lar kontrolden **tamamen dışlanıyordu**.
+
+### 4. Düzeltme ve sonuç
+
+`_w` biçimi parse ediliyor; `const_tnum_range_mismatch` eklendi (kernel'in kendi adıyla),
+gate'i "üst sınır BASILMIŞ olmalı" (basılmamış `umax` = U64_MAX, onu gerçek sınır saymak
+her sabit-var_off register'ında yanlış ateşlerdi).
+
+**İki taraflı kalibrasyon geçti:**
+- hatalı state → `const_tnum_range_mismatch`, **insn 9 r3** — commit'in `<--- [*]` ile
+  işaretlediği yer, birebir.
+- düzeltilmiş state → **sessiz**. İkisinde de ateşleyen bir kontrol hiçbir şey kanıtlamazdı.
+
+### 5. Güçlü invariant mevcut korpusta ne yaptı
+
+**704-program kompozisyon korpusu: `finding_count=0`**, ama `tnum_bounds_checked`
+8626 → **16326** (sabit-tnum durumu paydayı neredeyse ikiye katladı). Yani bpf-next
+daha güçlü kontrol altında da temiz, ve o sıfır artık belirgin biçimde daha fazlasını
+söylüyor.
+
+**Syzkaller korpusu 0025'in bir iddiasını revize etti.** Guard ateşledi ("re-measure
+before trusting any 'clean'") ve doğru ateşledi: payda 0 → **357**. 0025'in tespiti
+(*"syzkaller'ın skalerleri ya tam bilinen ya tam bilinmeyen, hiç kısmi bilinen değil"*)
+**kesişim** kontrolü için hâlâ doğru — o hâlâ sıfır alıyor. Ama sabit yarı farklı bir
+erişilebilirlik sorusu: *tam bilinen* skaler tam da bu korpusun dolu olduğu şey. 357
+değerlendirme, **0 bulgu** — "hiçbir şeye erişmiyor"dan daha güçlü bir ifade.
+
+### 6. Kalıcı hale getirildi
+
+`calibration.rs` 4 test, fixture'lar `fixtures/calibration/` altında (kernel'in kendi
+çıktısı, commit'ten birebir alıntı): gerçek hatanın yakalandığı, düzeltmede sessiz
+kalındığı, eski register biçiminin sessizce kaybolmadığı, ve **kesişimin yetmediğinin**
+özellik olarak sabitlendiği. Workspace 281 yeşil.
+
+### 7. Ne değişti, dürüstçe
+
+Kalibrasyondan önce: 18 bacak sıfır bulgu, anlamı belirsiz.
+Kalibrasyondan sonra: oracle bu sınıftaki **gerçek bir soundness hatasını yakalıyor** —
+ve o yeteneği ancak bugün kazandı, çünkü iki kör noktası vardı. Bu, sıfırı belirsizlikten
+çıkarıp bilgiye çeviren şey; ve iki kör noktanın varlığı, kalibrasyonun neden birincil iş
+olduğunun kanıtı.

@@ -562,15 +562,38 @@ fn parse_register_evolution(log: &[&str]) -> Vec<RegSnapshot> {
 
 /// True if `s` begins with a `R<digits>=` token.
 fn looks_like_reg_token_start(s: &str) -> bool {
+    reg_token_name_len(s).is_some()
+}
+
+/// Length of a `R<n>` / `R<n>_w` register name at the start of `s`, if it is followed
+/// by `=`.
+///
+/// The `_w` suffix marks a register WRITTEN by the instruction, and older kernels print
+/// it (`R3_w=scalar(...)`). The tree we capture against does not — our fixtures contain
+/// zero `_w` tokens — but a log from an older kernel is exactly what a calibration run
+/// produces, and without this the states do not parse AT ALL: the denominator silently
+/// goes to zero while `parser_unrecognized` stays at zero too, because nothing was
+/// rejected, merely never recognised.
+fn reg_token_name_len(s: &str) -> Option<usize> {
     let b = s.as_bytes();
     if b.is_empty() || b[0] != b'R' {
-        return false;
+        return None;
     }
     let mut i = 1;
     while i < b.len() && b[i].is_ascii_digit() {
         i += 1;
     }
-    i > 1 && i < b.len() && b[i] == b'='
+    if i == 1 {
+        return None;
+    }
+    if b[i..].starts_with(b"_w") {
+        i += 2;
+    }
+    if i < b.len() && b[i] == b'=' {
+        Some(i)
+    } else {
+        None
+    }
 }
 
 /// Split a state string into `R<k>=<expr>` tokens. Robust to spaces inside a
@@ -582,14 +605,8 @@ fn split_reg_tokens(s: &str) -> Vec<&str> {
     let mut starts = Vec::new();
     let mut i = 0;
     while i < n {
-        if b[i] == b'R' && (i == 0 || b[i - 1] == b' ') {
-            let mut j = i + 1;
-            while j < n && b[j].is_ascii_digit() {
-                j += 1;
-            }
-            if j > i + 1 && j < n && b[j] == b'=' {
-                starts.push(i);
-            }
+        if b[i] == b'R' && (i == 0 || b[i - 1] == b' ') && reg_token_name_len(&s[i..]).is_some() {
+            starts.push(i);
         }
         i += 1;
     }
@@ -629,12 +646,10 @@ fn value_head(expr: &str) -> &str {
 
 /// Parse one `R<k>=<expr>` token into a RegState.
 fn parse_reg_token(tok: &str) -> Option<RegState> {
-    let eq = tok.find('=')?;
-    let regpart = &tok[..eq];
-    if !regpart.starts_with('R') {
-        return None;
-    }
-    let reg: u8 = regpart[1..].parse().ok()?;
+    let eq = reg_token_name_len(tok)?;
+    // `R3` or `R3_w` — the write marker is not part of the register's identity.
+    let digits = tok[1..eq].trim_end_matches("_w");
+    let reg: u8 = digits.parse().ok()?;
     Some(build_regstate(reg, value_head(tok[eq + 1..].trim())))
 }
 
