@@ -3557,10 +3557,16 @@ static void run_probe_fakereg(void) {
 // Determinism is not optional: a finding has to be replayable, so the walk is driven by a
 // seeded xorshift and the seed is printed with every program.
 #define COMP_VALUE 64
+/* The constant a delta-link adds. Named because CP_RELINK has to subtract it back out
+   when it converts a bound on the offset member into a bound on the class base. */
+#define COMP_LINK_DELTA 4
+/* The longest recipe the walk emits. It also sizes the jump-patch table below, so the two
+   cannot drift apart. */
+#define COMP_MAXSTEPS 8
 /* The corpus has to grow with the pool: the achievable adjacent-triple space grows as
    N^3 (679 at nine pieces, 916 at ten), so a fixed program count means coverage falls off
    with every addition even though the absolute number of realised triples rises. */
-#define COMP_MAXPROG 704
+#define COMP_MAXPROG 896
 
 struct comp_ctx {
     uint32_t rng;
@@ -3601,6 +3607,7 @@ enum comp_piece {
     CP_DYNSKB,   /* an SKB dynptr and a READ-ONLY slice of it                     */
     CP_RINGBUF,  /* reserve/submit a ringbuf dynptr — REFERENCE tracking          */
     CP_SKREF,    /* socket lookup/release — a REFCOUNTED POINTER with a ref_obj_id */
+    CP_RELINK,   /* re-link from the BASE of an already-synced delta class          */
     CP_PIECE_N
 };
 
@@ -3619,6 +3626,7 @@ static const char *comp_piece_name(enum comp_piece p) {
     case CP_DYNSKB: return "dynskb";
     case CP_RINGBUF: return "ringbuf";
     case CP_SKREF: return "skref";
+    case CP_RELINK: return "relink";
     default:        return "?";
     }
 }
@@ -3680,6 +3688,11 @@ static int comp_can(const struct comp_ctx *c, enum comp_piece p) {
     case CP_DYNSKB: return c->scalar_regs != 0 && !c->used_dynskb && c->stack_next > -300;
     case CP_RINGBUF: return c->scalar_regs != 0 && !c->used_ringbuf && c->stack_next > -380;
     case CP_SKREF:  return c->scalar_regs != 0 && !c->used_skref && c->stack_next > -420;
+    /* Needs three live scalars: the class BASE, the member that carries the delta, and a
+       third register to re-link from the base. It is self-contained — it builds the whole
+       shape itself rather than depending on which register an earlier narrow happened to
+       pick — so it can repeat, and it touches no stack slot or reference. */
+    case CP_RELINK: return __builtin_popcount(c->scalar_regs) >= 3;
     default:        return 0;
     }
 }
@@ -3695,6 +3708,48 @@ static int comp_emit(struct bpf_insn *ins, int n, struct comp_ctx *c, enum comp_
                      const struct iter_ids *ids, int slice_id, int map_out, int *jexit,
                      int *nx) {
     switch (p) {
+    case CP_RELINK: {
+        /* THE SHAPE CALIBRATION PAIR FIVE NAMED (af9e89d8dd39, devlog 0068). A delta-link
+           is built and then SYNCED by a branch on its offset member; the sync is where the
+           buggy kernel stamped the base with ADD_CONST. A SECOND link taken from the base
+           then hits assign_scalar_id_before_mov's ADD_CONST branch, which clears the base's
+           id and mints a fresh one — silently dropping it out of the class. A later, tighter
+           branch on the offset member therefore never reaches the base.
+
+           The piece emits the whole sequence rather than relying on the walk to place a
+           narrow on the right register: which register CP_NARROW picks is random, so as
+           separate pieces the shape would almost never assemble.
+
+           It is DECISION-RELEVANT by construction. The store offset is computed from the
+           SECOND (tighter) bound, which the base only carries if its link survived the
+           re-link. On a kernel with the bug the base keeps the first, looser bound and the
+           store is rejected as out of range — so this shape reaches the oracle through the
+           ordinary verdict, without needing a new channel. */
+        int base = comp_scalar_reg(c), off_reg, dst;
+        do { off_reg = comp_scalar_reg(c); } while (off_reg == base);
+        do { dst = comp_scalar_reg(c); } while (dst == base || dst == off_reg);
+
+        const int k1 = 8 + comp_pick(c, 8);          /* first, looser bound on base   */
+        const int k2 = 1 + comp_pick(c, k1 - 1);     /* second, strictly tighter one  */
+
+        ins[n++] = BPF_MOV64_REG(off_reg, base);     /* link: both take one id        */
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, off_reg, COMP_LINK_DELTA);
+
+        /* off_reg <= k1 + DELTA proves base <= k1 through the class — and this is the
+           sync that corrupts the base's id on a buggy kernel. */
+        jexit[(*nx)++] = n;
+        ins[n++] = BPF_JMP_IMM(BPF_JGT, off_reg, k1 + COMP_LINK_DELTA, 0);
+
+        ins[n++] = BPF_MOV64_REG(dst, base);         /* THE second link               */
+
+        /* And the tighter one, which only reaches the base if the class survived. */
+        jexit[(*nx)++] = n;
+        ins[n++] = BPF_JMP_IMM(BPF_JGT, off_reg, k2 + COMP_LINK_DELTA, 0);
+
+        c->narrowed_max = k2;
+        c->narrow_reg = base;
+        break;
+    }
     case CP_SHAPE: {
         int r = comp_scalar_reg(c);
         static const int ops[] = { BPF_AND, BPF_OR, BPF_XOR, BPF_LSH, BPF_RSH, BPF_ADD };
@@ -3709,7 +3764,7 @@ static int comp_emit(struct bpf_insn *ins, int n, struct comp_ctx *c, enum comp_
         int a = comp_scalar_reg(c), b;
         do { b = comp_scalar_reg(c); } while (b == a);
         ins[n++] = BPF_MOV64_REG(b, a);
-        if (comp_pick(c, 2)) ins[n++] = BPF_ALU64_IMM(BPF_ADD, b, 4);
+        if (comp_pick(c, 2)) ins[n++] = BPF_ALU64_IMM(BPF_ADD, b, COMP_LINK_DELTA);
         c->narrowed_max = -1;
         break;
     }
@@ -3941,7 +3996,14 @@ static int comp_emit(struct bpf_insn *ins, int n, struct comp_ctx *c, enum comp_
 static void run_comp_prog(const struct iter_ids *ids, int slice_id, uint32_t seed,
                           int idx, int map_in, int map_out) {
     struct bpf_insn ins[160];
-    int n = 0, jexit[16], nx = 0;
+    /* SIZING, and it is not slack: every piece that can branch to the common exit parks
+       its jump here for patching. CP_NARROW parks one, the null checks of dynptr/dynskb/
+       ringbuf/skref one each, and CP_RELINK parks TWO — so the bound is the recipe's
+       maximum length times the worst piece, plus the map-lookup null check and the
+       epilogue's optional re-narrow. `jexit[16]` held while every piece parked at most
+       one; adding a two-jump piece put an 8-step recipe over the edge, which would have
+       written past the array with no diagnostic at all. */
+    int n = 0, jexit[2 * COMP_MAXSTEPS + 4], nx = 0;
     struct comp_ctx c;
     memset(&c, 0, sizeof(c));
     c.rng = seed ? seed : 1;
@@ -3991,7 +4053,7 @@ static void run_comp_prog(const struct iter_ids *ids, int slice_id, uint32_t see
     /* Recipes start at three: a two-piece recipe contributes no triple at all, and in the
        first corpus a quarter of the programs were that short. */
     char recipe[160]; recipe[0] = '\0';
-    int steps = 3 + comp_pick(&c, 6);
+    int steps = 3 + comp_pick(&c, COMP_MAXSTEPS - 2);
     int prev = -1, prev2 = -1;
     for (int i = 0; i < steps && n < 130; i++) {
         enum comp_piece avail[CP_PIECE_N]; int na = 0;

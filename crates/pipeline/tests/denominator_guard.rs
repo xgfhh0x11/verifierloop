@@ -127,7 +127,7 @@ fn run(text: &str, tag: &str) -> diff::DiffFindings {
     out
 }
 
-const COMP: &str = include_str!("fixtures/volume/gen-comp-704.log");
+const COMP: &str = include_str!("fixtures/volume/gen-comp-896.log");
 
 /// What the guard bought, measured on the current corpus: the three newly-counted
 /// invariants, and which of them the corpus actually exercises.

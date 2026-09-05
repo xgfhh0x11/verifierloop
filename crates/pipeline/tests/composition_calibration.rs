@@ -38,9 +38,9 @@ use pipeline::normalize::{self, UnparsedKind};
 use pipeline::verifier_log::VerifierLogParser;
 use std::collections::BTreeSet;
 
-const COMP: &str = include_str!("fixtures/volume/gen-comp-704.log");
-const PROGRAMS: usize = 704;
-const ACCEPTED: usize = 595;
+const COMP: &str = include_str!("fixtures/volume/gen-comp-896.log");
+const PROGRAMS: usize = 896;
+const ACCEPTED: usize = 775;
 
 fn run_diff(text: &str, tag: &str) -> (normalize::NormalizedMetrics, diff::DiffFindings) {
     let dir = std::env::temp_dir().join(format!("vl-comp-{}-{tag}", std::process::id()));
@@ -82,6 +82,7 @@ fn rejection_reasons() -> Vec<String> {
         };
         if let Some(line) = log.lines().find(|l| {
             l.starts_with('R') && l.contains("unbounded memory access")
+                || l.starts_with('R') && l.contains("min value is negative")
                 || l.starts_with("invalid access to map value")
                 || l.starts_with("math between")
                 || l.starts_with("Initialize R")
@@ -114,6 +115,13 @@ fn every_rejection_is_semantic_and_none_is_structural() {
         "unbounded memory access",             // the offset register has no proven bound
         "invalid access to map value",         // the constant offset is out of range
         "math between",                        // pointer arithmetic with an unbounded reg
+        // NEW WITH `relink` (0069), and triaged before being allowed in. The delta link
+        // makes the class BASE carry a negative signed lower bound — `rB = rA; rB += 4`
+        // then a bound on rB gives rA `smin = -4` — so adding the base to the store
+        // pointer can be refused for a reason none of the earlier pieces produced. It is a
+        // BOUNDS question like the others, not malformedness: the verifier is asking for
+        // proof the index cannot be negative.
+        "min value is negative",
     ];
     let structural = ["Initialize R", "!read_ok", "unreachable", "unknown opcode",
                       "invalid bpf_ld", "jump out of range",
@@ -204,7 +212,7 @@ fn the_corpus_contains_shapes_no_hand_written_family_produced() {
         .flat_map(|r| r.split(',').filter(|k| !k.is_empty()))
         .collect();
     assert!(
-        kinds.len() >= 13,
+        kinds.len() >= 14,
         "every piece in the pool must actually be reachable from the walk: {kinds:?}"
     );
     let mixed = all
@@ -385,4 +393,122 @@ fn composition_family_opens_no_parser_blind_spot() {
         .filter(|u| u.kind == UnparsedKind::Unrecognized)
         .collect();
     assert!(blind.is_empty(), "parser blind-spots: {blind:?}");
+}
+
+/// THE FOURTEENTH PIECE, `relink` (devlog 0069) — and the only one whose shape was named
+/// by a real bug rather than by reading the verifier.
+///
+/// Calibration pair five (af9e89d8dd39, devlog 0068) returned two things. The first was a
+/// boundary: an over-rejection is invisible to every consistency invariant we own. The
+/// second is this — the INPUT SHAPE that produced it, which no family of ours generated:
+///
+///     rB = rA ; rB += 4          a delta-link
+///     if rB > k1+4 goto exit     the SYNC that stamps the base on a buggy kernel
+///     rC = rA                    the SECOND link, which re-mints the base's id there
+///     if rB > k2+4 goto exit     a tighter bound that only reaches the base if it survived
+///
+/// The piece emits the whole sequence itself rather than hoping the walk places a narrow on
+/// the right register — which register CP_NARROW picks is random, so as separate pieces the
+/// shape would essentially never assemble.
+///
+/// It is DECISION-RELEVANT by construction: the epilogue's store offset is computed from
+/// the second, tighter bound, so a verifier that lost the link keeps the looser one and
+/// rejects the store. The shape therefore reaches the oracle through the ordinary verdict,
+/// with no new channel needed.
+#[test]
+fn the_relink_shape_that_a_real_bug_named_is_actually_generated() {
+    let all = recipes();
+    let with_relink = all.iter().filter(|r| r.split(',').any(|k| k == "relink")).count();
+    assert!(
+        with_relink >= 50,
+        "the shape calibration pair five named must be a real part of the corpus, not a \
+         token appearance: {with_relink} of {}",
+        all.len()
+    );
+    // And it must COMBINE, not just appear — a piece that only ever runs alone tests the
+    // shape but not the composition the generator exists for.
+    let combined = all
+        .iter()
+        .filter(|r| {
+            let ks: BTreeSet<&str> = r.split(',').filter(|k| !k.is_empty()).collect();
+            ks.contains("relink") && ks.len() >= 3
+        })
+        .count();
+    assert!(combined >= 30, "relink must appear alongside other pieces: {combined}");
+
+    // The sequence itself, read out of a capture: link, delta, sync, second link. The
+    // compound id is the kernel's own rendering of the class, so its presence next to a
+    // plain id is what proves the class was built at all.
+    assert!(
+        COMP.contains("id=1+4"),
+        "a delta-linked class must actually be printed by the verifier"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// THE PIECE'S OWN TEETH (devlog 0069): does `relink` actually discriminate on the bug
+// whose shape it encodes?
+//
+// A piece that merely APPEARS in the corpus proves nothing. The whole 896-program corpus
+// was run twice — once on bpf-next tip, once on a kernel built from `af9e89d8dd39~1` with
+// the same config — and the verdicts matched by seed. Measured:
+//
+//     programs matched by seed        896     (recipes identical on both kernels, so the
+//     verdict flips                     7      generator is kernel-independent and the
+//       ... whose recipe has relink     7      comparison means what it says)
+//       ... without relink              0
+//     direction                    accept -> reject, all seven
+//
+// SPECIFICITY IS PERFECT AND SENSITIVITY IS LOW, and both numbers are honest. None of the
+// 598 programs without the piece flipped: nothing else in the corpus is sensitive to this
+// bug. Only 7 of 298 relink programs did, because the shape reaches the verdict only when
+// relink is the LAST bound-establishing piece and the epilogue happens to build its store
+// pointer from the class base. That is the nature of a random composition generator: the
+// shape is present at a rate, not guaranteed.
+//
+// The two fixtures below are those seven programs from each kernel — the corpora
+// themselves are 15-17 MB and are not committed twice.
+// ---------------------------------------------------------------------------
+
+const FLIP_FIXED: &str = include_str!("fixtures/calibration/relink-flips-fixed.log");
+const FLIP_BUGGY: &str = include_str!("fixtures/calibration/relink-flips-buggy.log");
+
+/// The mechanism, read out of the two logs at the same instruction — this is the
+/// commit's own story reproduced by a program the GENERATOR wrote, not a transcribed
+/// selftest.
+///
+///   fixed:  65: if r9 > 0x10  ; R6=scalar(id=8,...umax=12)   base narrowed through the class
+///           66: r7 = r6       ; R6=scalar(id=8,...umax=12)   id STAYS 8
+///           67: if r9 > 0xf   ; R6=scalar(id=8,...umax=11)   and tightens again
+///           69: *(u8 *)(r8+52) with R8 umax=11  ->  52+11 = 63, the last valid byte
+///
+///   buggy:  66: r7 = r6       ; R6=scalar(id=9,...) R7=scalar(id=9,...)   id RE-MINTED
+///           67: if r9 > 0xf   ; R6 not updated at all — the link is gone
+///           69: the same store now reaches 52+12 = 64, one past a 64-byte value
+#[test]
+fn the_relink_piece_discriminates_on_the_kernel_that_had_the_bug() {
+    let fixed_progs = FLIP_FIXED.matches("===PROG ").count();
+    let buggy_progs = FLIP_BUGGY.matches("===PROG ").count();
+    assert_eq!((fixed_progs, buggy_progs), (7, 7));
+
+    // Every one of them accepts on the fixed kernel and rejects on the buggy one.
+    assert_eq!(FLIP_FIXED.matches("RESULT decision=accept").count(), 7);
+    assert_eq!(FLIP_BUGGY.matches("RESULT decision=reject").count(), 7);
+
+    // Every one of them contains the piece.
+    assert_eq!(FLIP_FIXED.matches("relink").count() >= 7, true);
+
+    // And the rejection is the expected one: the store runs off the end of the map value
+    // because the base kept the looser bound.
+    assert!(
+        FLIP_BUGGY.contains("invalid access to map value")
+            || FLIP_BUGGY.contains("max value is outside of the allowed memory range"),
+        "the buggy kernel must reject on BOUNDS, which is the consequence the broken link \
+         produces — any other reason means this fixture is measuring something else"
+    );
+
+    // The id re-mint itself, which is the bug: the same `rX = base` instruction leaves the
+    // base's id alone on one kernel and replaces it on the other.
+    assert!(FLIP_FIXED.contains("66: (bf) r7 = r6                      ; R6=scalar(id=8,"));
+    assert!(FLIP_BUGGY.contains("66: (bf) r7 = r6                      ; R6=scalar(id=9,"));
 }

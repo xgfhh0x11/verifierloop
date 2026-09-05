@@ -5376,3 +5376,94 @@ kompozisyon havuzuna bir `relink` parçası olarak eklemek kendi bacağını hak
 Beş çift, beş farklı cevap: eksik özellik, yanlış kanal, okunamayan format, tamir
 gerektirmeyen doğrulama, ve **görüş alanı dışında bir sınıf**. `calibration.rs` 18 test.
 Workspace 305 yeşil.
+
+---
+
+## 0069 — Ondördüncü parça `relink`: şeklini gerçek bir bug'ın adlandırdığı ilk parça — ve dişleri tuttu
+
+### 1. Nereden geldi
+
+0068'in ikinci getirisi bir girdi şekliydi: **link → sabit ekle → linkli üye üzerinde dallan
+→ TEMEL register'dan İKİNCİ bir link kur.** Hiçbir ailemiz bunu üretmiyordu. Artık
+kompozisyon havuzunda 14. parça.
+
+Parça bütün diziyi kendisi üretiyor, yürüyüşün doğru register'a bir `narrow` koymasını
+ummuyor — CP_NARROW'un hangi register'ı seçtiği rastgele, ayrı parçalar hâlinde şekil
+neredeyse hiç kurulmazdı.
+
+Ve **karar-ilgili** olacak şekilde kuruldu: epilogue'un store offset'i İKİNCİ (daha dar)
+sınırdan hesaplanıyor, o sınır da temele ancak linki hayatta kaldıysa ulaşıyor.
+
+### 2. Dört sağlık metriği
+
+| metrik | sonuç |
+|---|---|
+| 1 — yapısal red = 0 | 121 red, hepsi bounds. Biri **yeni bir sebep**: `min value is negative`. Delta-link temele negatif `smin` veriyor (`rB=rA; rB+=4`, rB'ye sınır → rA `smin=-4`). Bounds sorusu; **triyaj edilip** allowlist'e girdi. |
+| 2 — her parça erişilebilir | 14/14 |
+| 3 — her eksen sayacı sıfırı terk ediyor | store_loc=4560, tnum=22650, order=40214, wellform=753, prune=896, reginv=775, reg32=25 |
+| 4 — kombinasyon kapsaması | çiftler **190/190**, üçlüler **2461/2504 (%98)** |
+
+896 program, 775 accept / 121 reject, `findings=0`, `parser_unrecognized=0`, 895 farklı tarif.
+
+### 3. Parçanın kendi diş testi — ve bu bacağın asıl sonucu
+
+Korpusun **tamamı iki kernel'da koşturuldu**: bpf-next ucu ve `af9e89d8dd39~1`'den aynı
+config'le derlenmiş olan. Tohuma göre eşleştirildi:
+
+| | |
+|---|---|
+| tohumla eşleşen program | **896** |
+| iki kernel'da tarif aynı | **896** (jeneratör kernel'dan bağımsız — karşılaştırma anlamlı) |
+| verdict çevrilmesi | **7** |
+| …tarifinde `relink` olan | **7** |
+| …olmayan | **0** |
+| yön | hepsi accept → reject |
+
+**Özgüllük tam, duyarlılık düşük — ikisi de dürüst.** `relink` içermeyen 598 programın
+hiçbiri çevrilmedi: korpusta bu hataya duyarlı başka hiçbir şey yok. 298 relink
+programından yalnız 7'si çevrildi, çünkü şekil karara ancak relink son sınır-kuran parça
+olduğunda ve epilogue store pointer'ını sınıfın temelinden kurduğunda ulaşıyor. Rastgele
+kompozisyon jeneratörünün doğası bu: şekil garantiyle değil, bir oranla var.
+
+### 4. Mekanizma, elle doğrulandı (a-b-c triyajı)
+
+Aynı instruction'larda, yan yana — ve bu **jeneratörün yazdığı** bir program, elle
+transkribe edilmiş bir selftest değil:
+
+```
+fixed  65: if r9 > 0x10 ; R6=scalar(id=8,...umax=12)   ← temel sınıf üzerinden daraldı
+       66: r7 = r6      ; R6=scalar(id=8,...umax=12)   ← id 8 KALDI
+       67: if r9 > 0xf  ; R6=scalar(id=8,...umax=11)   ← ve daha da daraldı
+       69: *(u8 *)(r8+52), R8 umax=11 → 52+11 = 63, son geçerli bayt   ACCEPT
+
+buggy  66: r7 = r6      ; R6=scalar(id=9,...) R7=scalar(id=9,...)  ← id YENİDEN BASILDI
+       67: if r9 > 0xf  ; R6 hiç güncellenmiyor — link gitti
+       69: aynı store 52+12 = 64'e ulaşıyor, 64 baytlık değerin bir bayt ötesi   REJECT
+```
+
+Bir baytlık sınır. Commit'in kendi anlattığı hikâye, bizim ürettiğimiz bir programda.
+
+### 5. Kendi hatalarım — ikisi de bu bacakta
+
+**(a) `jexit` taşması.** `relink` paylaşılan atlama-yaması tablosuna parça başına **iki**
+giriş yazıyor; her mevcut parça bir tane yazıyordu ve tarif 8 parçaya çıkabiliyor.
+`jexit[16]` bir parça uzağındaydı ve taşma **hiçbir teşhis vermezdi**. Sınır artık
+jeneratörün kendi sabitinden türetiliyor: `jexit[2 * COMP_MAXSTEPS + 4]`. Ders: **bir
+havuza parça eklerken, tüketicilerin ESKİ en-kötü-duruma göre boyutladığı her paylaşılan
+sabit kaynağı denetle.**
+
+**(b) Silinen `CP_SKREF` case'i.** `comp_can`'e `CP_RELINK` eklerken kullandığım
+çok-satırlı string anchor `CP_SKREF` case'ini kapsıyor ve siliyordu; parça
+`default: return 0`'a düşüp havuzdan kayboldu (267 → 0). Bütün öbür sayılar sağlıklıydı —
+**metrik 2 yakaladı** ("seçilmeyen parça dekorasyondur"). Kalıcı refleks: string-replace
+ameliyatından sonra `git diff | grep '^-'` ve her silmeyi oku.
+
+### 6. Bir maliyet notu
+
+Korpus fixture'ı 17MB; `.git` 21MB'a çıktı ve her korpus yenilemesi yeni bir blob ekliyor.
+Korpus tohumlardan yeniden üretilebilir (her program seed'ini basıyor) ama bu VM koşusu
+ister; fixture'ı pinlemek test paketini hermetik tutuyor. İki kernel'lık korpuslar
+commit'lenmedi — çevrilen 7 program her iki kernel'dan ayrı bir fixture olarak pinlendi
+(200KB).
+
+Workspace 307 yeşil. Runner: `scripts/run-comp-diff.sh`.

@@ -395,7 +395,7 @@ fn the_signature_survives_the_kernels_own_omission_rules() {
 /// an absence of evidence.
 #[test]
 fn the_ordering_checks_finally_have_a_denominator() {
-    const COMP: &str = include_str!("fixtures/volume/gen-comp-704.log");
+    const COMP: &str = include_str!("fixtures/volume/gen-comp-896.log");
     let (_, out) = run_diff(COMP, "a32-denom");
     assert!(
         out.summary.bounds_order_checked > 20_000,
