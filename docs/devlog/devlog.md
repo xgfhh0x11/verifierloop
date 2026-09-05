@@ -4767,3 +4767,56 @@ Ayrıca yapısal-red izin listesine `Unreleased reference` eklendi: bir sızınt
 değil **jeneratörün** kusuru olurdu, o yüzden semantik değil yapısal sayılmalı.
 
 `composition_calibration.rs` 8 test. Workspace 277 yeşil.
+
+---
+
+## 0060 — Onüçüncü parça: refcounted socket — referans, bu sefer bir POINTER üzerinden
+
+### 1. Parça
+
+0059 referans takibini havuza bir **dynptr** üzerinden sokmuştu; bu onu bir **pointer**
+üzerinden sokuyor. `bpf_sk_lookup_tcp` `PTR_TO_SOCKET_OR_NULL` döndürüyor ve bir
+`ref_obj_id` taşıyor, `bpf_sk_release` onu tüketiyor.
+
+O id dekor değil: `regsafe`/`stacksafe` onu `check_ids`'ten geçiriyor — yani bu parça,
+0046 ve 0047'nin düz skalerlerle sınadığı **aynı id-eşleme makinesine** refcounted bir
+pointer sokuyor. Havuzdaki iki referans parçası artık aynı özelliği iki farklı taşıyıcıda
+sınıyor.
+
+Erişilebilirlik ve id'ler kaynaktan: `FN(sk_lookup_tcp, 84)`, `FN(sk_release, 86)`, ve
+ikisi de `tc_cls_act_func_proto` içinde (filter.c:8720, 8724) — yani SCHED_CLS'ten
+erişilebilir.
+
+### 2. Referans hiçbir yola sızmıyor
+
+Acquire → oku → release, ve null yolu ikisini de atlıyor. Bu doğru, sızıntı değil: NULL
+bir referans taşımıyor, dolayısıyla o yolda release'i atlamak kuralın kendisi. 0059'un
+ringbuf'ında null dalı submit'e yönlendirilmek zorundaydı (rezervasyon *alınmıştı*);
+burada tam tersi geçerli, ve ayrımı parça bazında düşünmek gerekiyor.
+
+Sonuç doğruladı: **hiç "Unreleased reference" reddi yok**, 109 reddin hepsi bounds.
+
+### 3. Dört sağlık metriği
+
+| | 12 parça / 576 | **13 parça / 704** |
+|---|---|---|
+| yapısal red | 0 | **0** |
+| parça erişilebilirliği | 12/12 | **13/13** (`skref` 267 programda) |
+| eksen sayaçları | reg32 24, tnum 6809 | **reg32 15, tnum 8626** |
+| çiftler | 139/139 | **163/163 (%100)** |
+| üçlüler | 1544/1558 (%99) | **1937/1975 (%98)** |
+| kabul | 492/576 | **595/704** |
+| `store_locations_checked` | 3129 | **3981** |
+
+`finding_count=0`, `parser_unrecognized=0`.
+
+`reg32_checked` 24'ten 15'e düştü — sayaç sıfırı terk etmeye devam ediyor (metrik-3
+geçiyor) ama dalgalanıyor, çünkü hangi programların 32-bit görünümü ayrıştıracak duruma
+ulaştığı rastgele yürüyüşe bağlı. İzlenecek şey sıfır olup olmadığı; mutlak değeri değil.
+
+### 4. Yol boyunca
+
+Koşu 600 saniyeyi aştı ve arka plana alındı — 704 program, ve `loop` parçası her
+test_run'da may_goto'nun 250 ms'lik zaman bütçesini harcıyor. Bu artık ölçeklemenin
+maliyet sürücüsü: korpus büyüdükçe TIMEOUT onunla birlikte artmalı (704 program ~2400s
+bütçeyle koştu).

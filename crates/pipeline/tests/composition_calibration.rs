@@ -38,9 +38,9 @@ use pipeline::normalize::{self, UnparsedKind};
 use pipeline::verifier_log::VerifierLogParser;
 use std::collections::BTreeSet;
 
-const COMP: &str = include_str!("fixtures/volume/gen-comp-576.log");
-const PROGRAMS: usize = 576;
-const ACCEPTED: usize = 492;
+const COMP: &str = include_str!("fixtures/volume/gen-comp-704.log");
+const PROGRAMS: usize = 704;
+const ACCEPTED: usize = 595;
 
 fn run_diff(text: &str, tag: &str) -> (normalize::NormalizedMetrics, diff::DiffFindings) {
     let dir = std::env::temp_dir().join(format!("vl-comp-{}-{tag}", std::process::id()));
@@ -176,7 +176,7 @@ fn the_corpus_reaches_the_oracles_in_bulk() {
         out.summary.finding_count
     );
     assert!(
-        out.summary.store_locations_checked >= 3000,
+        out.summary.store_locations_checked >= 3800,
         "the runtime oracles must actually be fed: got {}",
         out.summary.store_locations_checked
     );
@@ -204,7 +204,7 @@ fn the_corpus_contains_shapes_no_hand_written_family_produced() {
         .flat_map(|r| r.split(',').filter(|k| !k.is_empty()))
         .collect();
     assert!(
-        kinds.len() >= 12,
+        kinds.len() >= 13,
         "every piece in the pool must actually be reachable from the walk: {kinds:?}"
     );
     let mixed = all
@@ -236,7 +236,7 @@ fn the_corpus_contains_shapes_no_hand_written_family_produced() {
 /// because a two-piece recipe contributes no triple at all. Triples went 35% -> 87%.
 /// Pieces `comp_can` permits at most once per program, so a combination repeating one of
 /// them is unreachable by construction and must not count against coverage.
-const ONCE_ONLY: &[&str] = &["dynptr", "iter", "call", "dynskb", "ringbuf"];
+const ONCE_ONLY: &[&str] = &["dynptr", "iter", "call", "dynskb", "ringbuf", "skref"];
 
 fn achievable(kinds: &[&str], arity: usize) -> usize {
     let n = kinds.len();

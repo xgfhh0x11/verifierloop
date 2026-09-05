@@ -3299,7 +3299,7 @@ static int emit_iter_loop(struct bpf_insn *ins, int n, const struct iter_ids *id
 /* The corpus has to grow with the pool: the achievable adjacent-triple space grows as
    N^3 (679 at nine pieces, 916 at ten), so a fixed program count means coverage falls off
    with every addition even though the absolute number of realised triples rises. */
-#define COMP_MAXPROG 576
+#define COMP_MAXPROG 704
 
 struct comp_ctx {
     uint32_t rng;
@@ -3317,6 +3317,7 @@ struct comp_ctx {
     int call_site;        /* index of the call insn awaiting its target, or -1  */
     int used_dynskb;      /* one skb dynptr per program keeps slot use simple   */
     int used_ringbuf;     /* likewise for the ringbuf reservation                */
+    int used_skref;       /* and for the socket reference                        */
 };
 
 static uint32_t comp_rand(struct comp_ctx *c) {
@@ -3338,6 +3339,7 @@ enum comp_piece {
     CP_CALL,     /* a subprogram call — the only piece that opens a second FRAME  */
     CP_DYNSKB,   /* an SKB dynptr and a READ-ONLY slice of it                     */
     CP_RINGBUF,  /* reserve/submit a ringbuf dynptr — REFERENCE tracking          */
+    CP_SKREF,    /* socket lookup/release — a REFCOUNTED POINTER with a ref_obj_id */
     CP_PIECE_N
 };
 
@@ -3355,6 +3357,7 @@ static const char *comp_piece_name(enum comp_piece p) {
     case CP_CALL:   return "call";
     case CP_DYNSKB: return "dynskb";
     case CP_RINGBUF: return "ringbuf";
+    case CP_SKREF: return "skref";
     default:        return "?";
     }
 }
@@ -3369,6 +3372,14 @@ static const char *comp_piece_name(enum comp_piece p) {
 /* Read off the kernel's own helper mapper (include/uapi/linux/bpf.h):
    FN(ringbuf_reserve_dynptr, 198), FN(ringbuf_submit_dynptr, 199). Verified, not guessed —
    a wrong helper id loads fine and calls a different function. */
+/* FN(sk_lookup_tcp, 84) and FN(sk_release, 86) in the kernel's helper mapper; both are
+   exposed by tc_cls_act_func_proto, so SCHED_CLS can reach them. */
+#ifndef BPF_FUNC_sk_lookup_tcp
+#define BPF_FUNC_sk_lookup_tcp 84
+#endif
+#ifndef BPF_FUNC_sk_release
+#define BPF_FUNC_sk_release 86
+#endif
 #ifndef BPF_FUNC_ringbuf_reserve_dynptr
 #define BPF_FUNC_ringbuf_reserve_dynptr 198
 #endif
@@ -3407,6 +3418,7 @@ static int comp_can(const struct comp_ctx *c, enum comp_piece p) {
     case CP_CALL:   return c->scalar_regs != 0 && c->call_site < 0;
     case CP_DYNSKB: return c->scalar_regs != 0 && !c->used_dynskb && c->stack_next > -300;
     case CP_RINGBUF: return c->scalar_regs != 0 && !c->used_ringbuf && c->stack_next > -380;
+    case CP_SKREF:  return c->scalar_regs != 0 && !c->used_skref && c->stack_next > -420;
     default:        return 0;
     }
 }
@@ -3515,6 +3527,39 @@ static int comp_emit(struct bpf_insn *ins, int n, struct comp_ctx *c, enum comp_
         (void)r;
         n = emit_iter_loop(ins, n, ids, 0, 4, LB_MASK);
         c->used_iter = 1;
+        c->narrowed_max = -1;
+        break;
+    }
+    case CP_SKREF: {
+        /* A REFCOUNTED POINTER. The ringbuf piece brought reference tracking in through a
+           dynptr; this brings it through a POINTER — bpf_sk_lookup_tcp returns
+           PTR_TO_SOCKET_OR_NULL carrying a ref_obj_id that bpf_sk_release consumes. That
+           id is not decoration: `regsafe`/`stacksafe` run it through check_ids, so this
+           piece puts a refcounted pointer into the same id-mapping machinery 0046 and
+           0047 probed with plain scalars.
+           The reference never crosses into another piece: acquire, read, release, and the
+           null path skips both — a NULL carries no reference, so skipping the release
+           there is correct rather than a leak. */
+        int r = comp_scalar_reg(c);
+        c->stack_next -= 16;
+        int tup = c->stack_next;                 /* struct bpf_sock_tuple ipv4 = 12 B */
+        ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, tup + 0, 0);
+        ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, tup + 4, 0);
+        ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, tup + 8, 0);
+        ins[n++] = BPF_LDX_MEM(BPF_DW, BPF_REG_1, BPF_REG_10, c->ctx_slot);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, tup);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_3, 12);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_4, -1);  /* BPF_F_CURRENT_NETNS */
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_5, 0);
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_sk_lookup_tcp);
+        const int jnull = n;
+        ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_LDX_MEM(BPF_W, r, BPF_REG_0, 0);   /* bpf_sock->family */
+        ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_0);
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_sk_release);
+        ins[jnull].off = n - jnull - 1;
+        c->used_skref = 1;
         c->narrowed_max = -1;
         break;
     }
@@ -3649,6 +3694,7 @@ static void run_comp_prog(const struct iter_ids *ids, int slice_id, uint32_t see
     c.call_site = -1;
     c.used_dynskb = 0;
     c.used_ringbuf = 0;
+    c.used_skref = 0;
     ins[n++] = BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_1, c.ctx_slot);
 
     ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
