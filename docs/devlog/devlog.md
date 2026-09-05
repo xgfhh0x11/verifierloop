@@ -4660,3 +4660,54 @@ Yama deseni iki aile tarafından paylaşıldığı için ilk düzenleme benzersi
 Bu, sessizce yanlış aileyi düzenlemekten iyi bir başarısızlık modu.
 
 `composition_calibration.rs` 8 test. Workspace 277 yeşil.
+
+---
+
+## 0058 — Onbirinci parça: SKB dynptr (ikinci dynptr TİPİ), korpus 448
+
+### 1. Parça
+
+`bpf_dynptr_from_skb` — `bpf_kfunc_check_set_skb` içinde ve `BPF_PROG_TYPE_SCHED_CLS`'e
+kayıtlı (filter.c:12879), yani ailenin tipiyle doğrudan erişilebilir. BTF id'leri
+çözüldü: `from_skb=82823`, `slice_ro=82836`, `slice_rdwr=82837`.
+
+0053'ün LOCAL dynptr'ı bir map value üzerine kuruluyordu; bu **skb üzerine** kuruluyor,
+yani slice farklı bir tip bayrağı taşıyor (`get_dynptr_type_flag`) ve skb yolundan
+gidiyor — verinin doğrusal olmayabildiği, slice'ın pakete işaret etmek yerine çağıranın
+tamponuna **kopyalayabildiği** yol.
+
+**Salt-okunur `bpf_dynptr_slice` bilerek seçildi, iki sebeple:** `rdwr` varyantının hiç
+kurmadığı `MEM_RDONLY` bayrağını açıyor, ve pakete yazamadığı için gözlem kanalını map
+value'da tutuyor. `CP_PKT`'nin okuma olmasıyla aynı gerekçe — bir paket yazımı bütün
+korpusun paylaştığı koordinat eşlemesini bozardı.
+
+### 2. Dört sağlık metriği
+
+| | 10 parça / 320 | **11 parça / 448** |
+|---|---|---|
+| yapısal red | 0 | **0** (57 reddin hepsi semantik) |
+| her parça erişilebilir | 10/10 | **11/11** (`dynskb` 202 programda) |
+| eksen sayaçları | reg32 12, tnum 3808 | **reg32 25, tnum 5452** |
+| çiftler | 97/97 | **117/117 (%100)** |
+| üçlüler | 877/916 (%96) | **1185/1207 (%98)** |
+| kabul | 266/320 | **391/448** |
+| `store_locations_checked` | 1740 | **2560** |
+
+`finding_count=0`, `parser_unrecognized=0`.
+
+Bu sefer kapsama **düşmedi bile** — 0057'de 10. parça eklendiğinde %87'den %70'e inip
+korpus büyütülerek %96'ya çıkmıştı; burada korpus parçayla birlikte büyütüldüğü için
+metrik hiç gerilemedi (%96 → %98). Kural işliyor: **havuz büyürse korpus da büyümeli**,
+çünkü erişilebilir üçlü uzayı N³ ile artıyor (916 → 1207).
+
+### 3. Memory yeniden yapılandırıldı
+
+Operasyonel bir sorun kapatıldı: `MEMORY.md` 53.6 KB'ye ulaşmış ve limitin (24.4 KB) iki
+katını aştığı için **kısmen yükleniyordu** — yani bir sonraki oturum eksik bilgiyle
+açılacaktı. Tek bir 51.770 karakterlik satır (0025-0057 birikimli checkpoint) sorunun
+tamamıydı.
+
+Dönem dosyalarına bölündü — `state-of-play` (özet + dört sağlık metriği + triyaj kuralı,
+önce okunacak), `harness-gotchas` (birden fazla kez ısıran operasyonel tuzaklar), ve dört
+dönem dosyası (consistency / runtime-oracle / state-comparison / composition). İndeks
+artık **1.8 KB**, giriş başına tek satır.

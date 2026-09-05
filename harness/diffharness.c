@@ -3299,7 +3299,7 @@ static int emit_iter_loop(struct bpf_insn *ins, int n, const struct iter_ids *id
 /* The corpus has to grow with the pool: the achievable adjacent-triple space grows as
    N^3 (679 at nine pieces, 916 at ten), so a fixed program count means coverage falls off
    with every addition even though the absolute number of realised triples rises. */
-#define COMP_MAXPROG 320
+#define COMP_MAXPROG 448
 
 struct comp_ctx {
     uint32_t rng;
@@ -3315,6 +3315,7 @@ struct comp_ctx {
     int iter_slot;        /* the iterator's 8-byte slot, or 0 if unused         */
     int used_iter;        /* an iterator is emitted at most once per program    */
     int call_site;        /* index of the call insn awaiting its target, or -1  */
+    int used_dynskb;      /* one skb dynptr per program keeps slot use simple   */
 };
 
 static uint32_t comp_rand(struct comp_ctx *c) {
@@ -3334,6 +3335,7 @@ enum comp_piece {
     CP_ITER,     /* an open-coded iterator loop — a different back-edge kind    */
     CP_PKT,      /* packet pointer with a program-proven range, then a LOAD     */
     CP_CALL,     /* a subprogram call — the only piece that opens a second FRAME  */
+    CP_DYNSKB,   /* an SKB dynptr and a READ-ONLY slice of it                     */
     CP_PIECE_N
 };
 
@@ -3349,6 +3351,7 @@ static const char *comp_piece_name(enum comp_piece p) {
     case CP_ITER:   return "iter";
     case CP_PKT:    return "pkt";
     case CP_CALL:   return "call";
+    case CP_DYNSKB: return "dynskb";
     default:        return "?";
     }
 }
@@ -3360,6 +3363,8 @@ static const char *comp_piece_name(enum comp_piece p) {
    piece. These tables are corpus-wide, so selection can prefer a piece that completes a
    combination nothing has produced yet; ties fall back to the seeded RNG, which keeps the
    whole corpus reproducible. */
+static int g_from_skb_id, g_slice_ro_id;
+
 static unsigned char g_seen_pair[CP_PIECE_N][CP_PIECE_N];
 static unsigned char g_seen_triple[CP_PIECE_N][CP_PIECE_N][CP_PIECE_N];
 
@@ -3387,6 +3392,7 @@ static int comp_can(const struct comp_ctx *c, enum comp_piece p) {
     /* One subprogram per program: the callee is appended after the main body and its call
        patched afterwards, so a second would need a second patch site. */
     case CP_CALL:   return c->scalar_regs != 0 && c->call_site < 0;
+    case CP_DYNSKB: return c->scalar_regs != 0 && !c->used_dynskb && c->stack_next > -300;
     default:        return 0;
     }
 }
@@ -3498,6 +3504,38 @@ static int comp_emit(struct bpf_insn *ins, int n, struct comp_ctx *c, enum comp_
         c->narrowed_max = -1;
         break;
     }
+    case CP_DYNSKB: {
+        /* A SECOND dynptr TYPE. The LOCAL dynptr of 0053 is built over a map value; this
+           one is built over the skb, so the slice carries a different type flag
+           (get_dynptr_type_flag) and goes down the skb path, where the data may be
+           non-linear and the slice can legitimately copy into the caller's buffer instead
+           of pointing into the packet.
+           The READ-ONLY variant is deliberate twice over: it exercises the MEM_RDONLY
+           flag the rdwr variant never sets, and it cannot write into the packet — a write
+           there would move the observation channel off the map value and break the
+           coordinate mapping the whole corpus shares, the same reason CP_PKT is a load. */
+        int r = comp_scalar_reg(c);
+        c->stack_next -= 16;
+        int slot = c->stack_next;
+        ins[n++] = BPF_LDX_MEM(BPF_DW, BPF_REG_1, BPF_REG_10, c->ctx_slot);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_2, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_3, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_3, slot);
+        ins[n++] = BPF_KFUNC_CALL(g_from_skb_id);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, slot);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_2, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_3, BPF_REG_10);
+        c->stack_next -= 32;
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_3, c->stack_next);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_4, 8);
+        ins[n++] = BPF_KFUNC_CALL(g_slice_ro_id);
+        jexit[(*nx)++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_LDX_MEM(BPF_B, r, BPF_REG_0, comp_pick(c, 8));
+        c->used_dynskb = 1;
+        c->narrowed_max = -1;
+        break;
+    }
     case CP_CALL: {
         /* The only piece that opens a second FRAME. states_equal compares each frame in
            turn, and 0048 measured that a scalar's link id survives into the callee's
@@ -3553,6 +3591,7 @@ static void run_comp_prog(const struct iter_ids *ids, int slice_id, uint32_t see
     c.iter_slot = -24;
     c.stack_next = -32;
     c.call_site = -1;
+    c.used_dynskb = 0;
     ins[n++] = BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_1, c.ctx_slot);
 
     ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
@@ -3762,11 +3801,16 @@ static void run_generated_comp_family(void) {
     struct iter_ids ids;
     iter_resolve(&ids);
     int slice_id = btf_find_func_id("bpf_dynptr_slice_rdwr");
-    if (slice_id <= 0) {
+    g_slice_ro_id = btf_find_func_id("bpf_dynptr_slice");
+    g_from_skb_id = btf_find_func_id("bpf_dynptr_from_skb");
+    if (slice_id <= 0 || g_slice_ro_id <= 0 || g_from_skb_id <= 0) {
         printf("===PROG gencomp type=sched_cls ===\n"
-               "RESULT decision=error btf_resolve_failed errno=%d\n---LOG---\n---END---\n", errno);
+               "RESULT decision=error btf_resolve_failed rdwr=%d ro=%d skb=%d\n"
+               "---LOG---\n---END---\n", slice_id, g_slice_ro_id, g_from_skb_id);
         return;
     }
+    printf("CHANNEL btf=ok slice_rdwr=%d slice_ro=%d from_skb=%d\n",
+           slice_id, g_slice_ro_id, g_from_skb_id);
     union bpf_attr m;
     memset(&m, 0, sizeof(m));
     m.map_type = BPF_MAP_TYPE_ARRAY;
