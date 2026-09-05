@@ -5213,3 +5213,78 @@ aradığı deseni içeriyor, ve onu yutan bir tarayıcı hayalet tür bildirirdi
 - **0066**: alışkanlığı guard'a çevir — atlamak artık derlenmiyor.
 
 Workspace 299 yeşil.
+
+---
+
+## 0067 — Dördüncü kalibrasyon çifti: ilk kez kör nokta YOK, ve 32-bit hatayı 32-bit invariant göremiyor
+
+### 1. Hedef, ve tek satırlık hata
+
+`ae67b9fb8c4e`, "bpf: Fix truncation bug in coerce_reg_to_size_sx()" (2024-10). İşaret
+genişletmeli bir mov'dan sonra verifier yeni sınırları **zincir atama** ile yazıyordu:
+
+```c
+reg->umin_value = reg->u32_min_value = s64_min;
+```
+
+Bu, önce `u32_min_value = (u32)s64_min` (kesme), sonra `umin_value = u32_min_value`
+demek — 64-bit sınır, zaten kesilmiş 32-bit'ten türetiliyor. Fix sadece sırayı
+değiştiriyor.
+
+Ama aynı fonksiyon `var_off = tnum_range(s64_min, s64_max)`'i **kesilmemiş** değerlerden
+kuruyor. Yani hatalı durum:
+
+```
+tnum  : [0xfffffffffffffffe, 0xffffffffffffffff]
+sınır : [0xfffffffe,         0xffffffff]
+```
+
+İki küme **ayrık**. Ve ayrık tnum-vs-sınır bu projenin **en eski** invariant'ı —
+`tnum_bounds_inconsistent`, ilk bacaktan beri diff aşamasında.
+
+### 2. Sonuç: ilk kez tamir gerekmedi
+
+| | |
+|---|---|
+| buggy | **1 bulgu**, `tnum_bounds_inconsistent`, insn 3 r0 |
+| fixed | **0** |
+
+Üç çift üç ayrı delik bulmuştu (eksik özellik / yanlış kanal / okunamayan format).
+Dördüncü hiçbiri bulmadı — ve bu ancak ilk üçü bulduğu için bir anlam taşıyor. En eski
+kontrol ölü ağırlık değilmiş.
+
+### 3. Sezgiye aykırı kısım — ve asıl ders
+
+Bu bir **32-bit kesme** hatası. 0026'nın 32↔64 invariant'ları buna **kör**:
+`reg32_checked` her iki yarıda da 0.
+
+Sebep hatanın kendisi: 64-bit sınırı alt yarısına kesmek iki görünümü **birebir aynı**
+yapıyor, ve `reg32_checkable` 32-bit görünümü 64-bit'in söylemediği bir şey söylemeyen
+register'ları dışarıda bırakıyor. Bozulma, o kontrolün aradığı anlaşmazlığı **silmiş
+oluyor**.
+
+Kanıtı taşıyan şey, kesmeden etkilenmemiş **64-bit tnum**. "32-bit kontrolleri 32-bit
+hatalara nişanla" tam olarak çıkarılmaması gereken ders — testle sabitlendi.
+
+### 4. Provenance
+
+Bu sefer buggy yarı **yeniden kurma gerektirmiyor**: commit'in log'u zaten kendi
+kernel'ının bastığı formatta (2024 log.c, bizim capture aldığımızın aynısı; eksik
+`umax32=` U32_MAX olduğu için normal kuralla bastırılmış).
+
+Fixed yarı ise hiç alıntı değil: `--probe-sx` commit'in kendi disassembly'sini güncel
+kernel'da üç genişlikte üretiyor, capture aynen giriyor. Gerçek çıktı:
+
+```
+3: (bf) r0 = (s8)r0  ; R0=scalar(smin=smin32=-2,smax=smax32=-1,
+                                 umin=0xfffffffffffffffe,umin32=0xfffffffe,
+                                 var_off=(0xfffffffffffffffe; 0x1))
+```
+
+Fix'in içeriği tam burada okunuyor: 64-bit sınır tam genişliğini koruyor, 32-bit olan
+onun kesilmişi.
+
+### 5. Durum
+
+Dört çift, dört farklı sonuç: eksik özellik, yanlış kanal, okunamayan format, ve **tamir
+gerektirmeyen bir doğrulama**. `calibration.rs` 15 test. Workspace 302 yeşil.

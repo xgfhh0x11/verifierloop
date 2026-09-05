@@ -3273,6 +3273,73 @@ static int emit_iter_loop(struct bpf_insn *ins, int n, const struct iter_ids *id
 #define BPF_FUNC_dynptr_from_mem 197
 #endif
 
+// ---- calibration probe: the sign-extension truncation (--probe-sx) -----------
+// The FIXED half of calibration pair four, captured rather than derived.
+//
+// THE BUG. Commit ae67b9fb8c4e, "bpf: Fix truncation bug in coerce_reg_to_size_sx()"
+// (2024-10-14), reported by Shung-Hsi Yu and Zac Ecob. After a sign-extending move the
+// verifier wrote the new bounds with a CHAINED assignment:
+//
+//     reg->umin_value = reg->u32_min_value = s64_min;
+//
+// which is `u32_min_value = (u32)s64_min` first and then `umin_value = u32_min_value` —
+// so the 64-bit bound is set from the already-TRUNCATED 32-bit one. The fix only swaps
+// the order (`reg->u32_min_value = reg->umin_value = s64_min`), which assigns the 64-bit
+// field first and derives the 32-bit one from it.
+//
+// WHY IT IS VISIBLE TO US. The same function sets `var_off = tnum_range(s64_min, s64_max)`
+// from the UNtruncated values, so on the buggy kernel the tnum says
+// [0xfffffffffffffffe, 0xffffffffffffffff] while the unsigned bounds say
+// [0xfffffffe, 0xffffffff]. Those two sets are DISJOINT, and disjoint tnum-vs-bounds is
+// the project's oldest invariant — `tnum_bounds_inconsistent`, from the first leg.
+//
+// THE SHAPE, transcribed from the commit's own disassembly: take an unknown scalar, mask
+// it to one bit, add a constant that puts the pair just below the width's sign boundary,
+// then sign-extend at that width. `r0 &= 1` then `r0 += 254` gives [254, 255], and
+// `(s8)` maps that to [-2, -1] — both negative, which is the branch the bug lives in.
+// The s16 and s32 arms are the same shape at the other two widths.
+//
+// This probe runs on the CURRENT kernel, so what it captures is the FIXED behaviour. The
+// buggy side comes from the commit message, which quotes the corrupted state directly.
+static void run_probe_sx(void) {
+    static const struct { const char *name; int off; int add; } ARMS[] = {
+        {"s8",  8,  254},        /* [254,255]     -> (s8)  -> [-2,-1] */
+        {"s16", 16, 65534},      /* [65534,65535] -> (s16) -> [-2,-1] */
+        {"s32", 32, -2},         /* [-2,-1]       -> (s32) -> [-2,-1] */
+    };
+    for (unsigned a = 0; a < sizeof(ARMS) / sizeof(ARMS[0]); a++) {
+        struct bpf_insn ins[8];
+        int n = 0;
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_get_prandom_u32);
+        ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_0, 1);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_0, ARMS[a].add);
+        /* `r0 = (sN)r0`: BPF_ALU64|BPF_MOV|BPF_X with the width in `off`. */
+        ins[n++] = (struct bpf_insn){.code = BPF_ALU64 | BPF_MOV | BPF_X,
+                                     .dst_reg = BPF_REG_0, .src_reg = BPF_REG_0,
+                                     .off = (short)ARMS[a].off, .imm = 0};
+        ins[n++] = BPF_EXIT_INSN();
+
+        g_log[0] = '\0';
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 2;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        int err = errno;
+        if (fd >= 0) close(fd);
+
+        printf("===PROG sx#ae67b9fb8c4e#%s type=socket_filter ===\n", ARMS[a].name);
+        printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+               fd >= 0 ? "accept" : "reject", fd >= 0 ? 1 : -1, fd >= 0 ? 0 : err);
+        printf("---LOG---\n%s\n---END---\n", g_log);
+    }
+}
+
 // ---- calibration probe: the fake_reg corruption (--probe-fakereg) -----------
 // The SECOND kind of calibration. 0061 tested the oracle against a bug whose inconsistent
 // state the commit message printed, so no kernel had to be built. This one cannot work
@@ -6632,6 +6699,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-fakereg") == 0) {
         run_probe_fakereg();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-sx") == 0) {
+        run_probe_sx();
         return 0;
     }
 

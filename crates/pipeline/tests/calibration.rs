@@ -56,6 +56,11 @@ const FR_FIXED: &str = include_str!("fixtures/calibration/fakereg-92424801261d-f
 const A32_BUGGY: &str = include_str!("fixtures/calibration/alu32-049c4e13714e-buggy.log");
 const A32_FIXED: &str = include_str!("fixtures/calibration/alu32-049c4e13714e-fixed.log");
 
+/// The fourth pair (devlog 0067): commit ae67b9fb8c4e. The buggy half is quoted from the
+/// commit; the fixed half is a REAL capture from the current kernel (`--probe-sx`).
+const SX_BUGGY: &str = include_str!("fixtures/calibration/sx-ae67b9fb8c4e-buggy.log");
+const SX_FIXED: &str = include_str!("fixtures/calibration/sx-ae67b9fb8c4e-fixed.log");
+
 fn run_diff(text: &str, tag: &str) -> (normalize::NormalizedMetrics, diff::DiffFindings) {
     let dir = std::env::temp_dir().join(format!("vl-cal-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -403,4 +408,113 @@ fn the_ordering_checks_finally_have_a_denominator() {
         "got {}",
         buggy.summary.bounds_order_checked
     );
+}
+
+// ---------------------------------------------------------------------------
+// PAIR FOUR (devlog 0067) — commit ae67b9fb8c4e, "bpf: Fix truncation bug in
+// coerce_reg_to_size_sx()" (2024-10-14, reported by Shung-Hsi Yu and Zac Ecob).
+//
+// THE BUG, and it is one line. After a sign-extending move the verifier wrote the new
+// bounds with a CHAINED assignment:
+//
+//     reg->umin_value = reg->u32_min_value = s64_min;
+//
+// which is `u32_min_value = (u32)s64_min` FIRST and then `umin_value = u32_min_value` —
+// the 64-bit bound set from the already-truncated 32-bit one. The fix only swaps the
+// order. The same function then sets `var_off = tnum_range(s64_min, s64_max)` from the
+// UNtruncated values, so the buggy state carries a tnum saying
+// [0xfffffffffffffffe, 0xffffffffffffffff] beside unsigned bounds saying
+// [0xfffffffe, 0xffffffff] — two DISJOINT sets.
+//
+// THE RESULT, and it is the first of its kind here: NO blind spot. The instrument needed
+// no repair at all, and what catches it is this project's OLDEST invariant, the
+// tnum-vs-bounds intersection that has been in the diff stage since the first leg. Three
+// pairs found three different holes; the fourth found none, which is only worth
+// something because the first three did.
+//
+// AND A GENUINELY COUNTERINTUITIVE ONE. This is a bug about 32-bit truncation, and the
+// 32<->64 invariants (0026) are BLIND to it — `reg32_checked` is 0 on both halves. The
+// reason is the bug itself: truncating the 64-bit bound to its low half makes the two
+// views agree exactly, and `reg32_checkable` excludes registers whose 32-bit view says
+// nothing the 64-bit one does not. The corruption erases the very disagreement that
+// check needs. It is the 64-bit tnum, untouched by the truncation, that keeps the
+// evidence. Pinned below, because "aim the 32-bit checks at 32-bit bugs" is exactly the
+// wrong lesson to draw.
+//
+// PROVENANCE. The buggy half is quoted from the commit and needs no derivation — unlike
+// pair three, this log IS in the format its kernel prints (2024-era log.c, the same one
+// we capture against; the omitted `umax32=` is U32_MAX, suppressed by the normal rule).
+// The fixed half is not quoted at all: `--probe-sx` reproduces the commit's own
+// disassembly on the current kernel and the capture goes in verbatim, all three widths.
+// ---------------------------------------------------------------------------
+
+/// THE HEADLINE for pair four: the oldest invariant in the stage catches it, unaided.
+#[test]
+fn the_oldest_invariant_catches_the_sign_extension_truncation() {
+    let (_, out) = run_diff(SX_BUGGY, "sx-buggy");
+    let hits: Vec<_> = out
+        .findings
+        .iter()
+        .filter(|f| f.kind == "tnum_bounds_inconsistent")
+        .collect();
+    assert_eq!(hits.len(), 1, "{:?}", out.findings);
+    assert!(
+        hits[0].detail.contains("insn 3 r0"),
+        "on the instruction the commit marks: {}",
+        hits[0].detail
+    );
+    // The disjointness itself, so a future change that merely renames the kind cannot
+    // pass this test while measuring something else.
+    assert!(
+        hits[0].observed.contains("umin=4294967294 umax=4294967295"),
+        "the truncated 64-bit bounds: {}",
+        hits[0].observed
+    );
+    assert_eq!(out.summary.finding_count, 1, "{:?}", out.findings);
+}
+
+/// THE SILENT HALF — and this one is a real capture, not a derivation.
+#[test]
+fn the_current_kernel_is_silent_at_all_three_sign_extension_widths() {
+    let (norm, out) = run_diff(SX_FIXED, "sx-fixed");
+    assert_eq!(norm.records.len(), 3, "s8, s16 and s32 arms");
+    assert_eq!(
+        norm.unparsed
+            .iter()
+            .filter(|u| u.kind == UnparsedKind::Unrecognized)
+            .count(),
+        0
+    );
+    assert_eq!(out.summary.finding_count, 0, "{:?}", out.findings);
+    // Silence with a denominator behind it, as always.
+    assert!(
+        out.summary.tnum_bounds_checked >= 6,
+        "got {}",
+        out.summary.tnum_bounds_checked
+    );
+    // And the fix's actual content, read off the capture: the 64-bit bound keeps its
+    // full width while the 32-bit one is the truncation of it.
+    assert!(
+        SX_FIXED.contains("umin=0xfffffffffffffffe,umin32=0xfffffffe"),
+        "the fixed kernel must print the untruncated 64-bit bound"
+    );
+}
+
+/// The counterintuitive half, pinned: a 32-bit truncation bug that the 32-bit invariants
+/// cannot see, because the truncation destroys the disagreement they look for.
+#[test]
+fn the_32_bit_invariants_are_blind_to_this_32_bit_bug() {
+    let (_, buggy) = run_diff(SX_BUGGY, "sx-32b");
+    let (_, fixed) = run_diff(SX_FIXED, "sx-32f");
+    assert_eq!(
+        (buggy.summary.reg32_checked, fixed.summary.reg32_checked),
+        (0, 0),
+        "reg32_checkable excludes a register whose 32-bit view says nothing new — and \
+         after the truncation the two views agree exactly, which is the bug"
+    );
+    // So the finding cannot have come from there. It came from the 64-bit tnum.
+    assert!(buggy
+        .findings
+        .iter()
+        .all(|f| f.aspect != "bounds32"));
 }
