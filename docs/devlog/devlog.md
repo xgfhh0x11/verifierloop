@@ -4102,3 +4102,80 @@ slotunun kendisi id taşıyor ve onun üzerinden daralıyor.
 slotun id taşıyıp daraldığının dump'ta görünürlüğü, **delta aritmetiğinin değerle
 sabitlenmesi** (base [0,7] + delta-12 üyesi tam [12,19] + `+12` gösterimi), oracle'ların
 paydayla sessizliği, diş, ve parser kör noktası yok. Workspace 243 yeşil.
+
+---
+
+## 0050 — Precision, budamanın kaldıracı (`--gen-prec`) — ve iki oracle hatası daha
+
+### 1. Kaldıraç
+
+`regsafe` (states.c:551) verifier'ın en güçlü budama kuralını içeriyor:
+
+```c
+if (!rold->precise && exact == NOT_EXACT)
+        return true;
+```
+
+**Imprecise bir eski skaler HERHANGİ bir güncel skalerle eşleşiyor.** Yani precision,
+budamayı durduran şeyin ta kendisi: değeri bellek güvenliğini belirleyen bir register
+precise işaretlenmezse, yalnız o register'da farklılaşan iki state eşitlenir ve güvensiz
+olan budanır. Bunu doğru yapmak zorunda olan `mark_chain_precision`, ve `precise.c`
+kernel'in kendi tehlike listesinde. Backtracker işini log'luyor
+(`mark_precise: frame%d: regs=%s`, backtrack.c:280), yani mekanizma karardan çıkarsanmak
+zorunda değil — gözlemlenebilir.
+
+### 2. Eksen: fark eden register karara giriyor mu
+
+İlk iki kol **tek bir instruction'ın tek bir operandında** farklı — store hangi
+register'ı ekliyor — dolayısıyla aralarındaki her fark precision'dır, başka bir şey değil.
+
+**Ölçüldü:** `c8_16.s7` (store r7'yi kullanıyor) backtracker'ın `regs=r7`'yi **19 kez**
+kovaladığını gösteriyor ve **3** state gezmiş. `c8_16.s6` (store r6'yı kullanıyor, r7 ölü)
+`regs=r7`'yi **hiç** kovalamıyor — onun yerine `regs=r6` — ve **2** state gezmiş. Aradaki
+tek state, `states.c:551`'in buduğu state.
+
+**Dikkat: ham `mark_precise` satır sayısı ters yönde** (s6=27 > s7=23), çünkü backtracker
+başka register'lar için de çalışıyor. Sinyal sayı değil, **hangi register'ın kovalandığı**.
+Bunu teste de bu şekilde yazdım.
+
+Karar sabitin saf fonksiyonu, ve sınır tam bir byte: offset 40'ta `umax <= 23` güvenli,
+yani **23 kabul / 24 red**.
+
+**6 program, 4 kabul / 2 red**, `store_locations_checked=32`, `prune_pairs_checked=6`,
+`parser_unrecognized=0`.
+
+### 3. İki oracle hatası daha — ikisi de a-b-c triyajıyla
+
+İlk capture **24 bulgu** verdi. Triyaj ikisini de bizde buldu, ve ikisi de aynı kök
+sebepten görünür oldu: bu aile ilk kez **sabit offsetli** pointer üretiyor.
+
+**(i) `imm=` vs `off=`.** Verifier sabit offsetli bir pointer'ı `imm=16` diye basıyor,
+`off=16` diye değil. `log.c:682-687`:
+```c
+if (tnum_is_const(reg->var_off)) {          /* pointer with fixed offset */
+        if (reg->var_off.value) { verbose_a("imm="); verbose_snum(env, reg->var_off.value); }
+}
+```
+Yani **`imm=` = `var_off.value`** (var_off sabitken ve sıfır değilken), `off=` ise ayrı
+bir alan (`reg->off`). Yalnız `off=` okumak sabiti 0 yapıyordu, dolayısıyla sabit offsetli
+her store kendi iddiasından kaçmış gibi görünüyordu. Artık `imm=` tnum'un **değerine**
+okunuyor (mask 0), ki semantik evi orası.
+
+**(ii) Ters pencere.** Basılmamış `umax` log konvansiyonunda U64_MAX demek, ve
+`u64::MAX as i64` = **−1**. Bunu aralık ucu olarak kullanmak `hi = base − 1` veriyordu —
+bulgu metnindeki `[40, 39]`. Karşılaştırma artık baştan sona **u64** üzerinde ve değişken
+parça üzerinde yürüyor; **belirtilmemiş bir üst sınır hiçbir şey kısıtlamaz, uç nokta
+değildir.** Bu hata 0041'den beri latentti ve hiç tetiklenmemişti çünkü önceki her ailenin
+pointer'ı basılı bir `umax` taşıyordu.
+
+Düzeltmeden sonra 24 → **0 bulgu**, payda 32'de sabit, ve **tüm suite'in dişleri hâlâ
+ateşliyor** (249 yeşil). Üstelik düzeltme oracle'ı *güçlendiriyor*: sabit offsetli bir
+iddia artık tek NOKTA, yani kontrol en keskin hâlinde — diş testi bunu 48 ile 56
+arasındaki 52'yi ekerek sabitliyor.
+
+### 4. Testler
+
+`precision_calibration.rs` 6 test: kaldıracın iki bağımsız yolla sabitlenmesi (hangi
+register kovalanıyor + state sayısı), bir-byte sınırı, **`imm=` regresyon guard'ı**
+(iddialar tnum değeri 8 ve 16 ile parse edilmeli), oracle'ların paydayla sessizliği,
+nokta-iddia üzerinde diş, parser kör noktası yok. Workspace 249 yeşil.

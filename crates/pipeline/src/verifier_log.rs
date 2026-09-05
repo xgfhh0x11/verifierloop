@@ -707,7 +707,16 @@ fn build_regstate(reg: u8, expr: &str) -> RegState {
     //     perfectly consistent pointer state — a parser bug wearing a finding's
     //     clothes, which is exactly what the golden-fixture guardrail is for.
     let ty = expr.split(['(', ' ']).next().unwrap_or(expr);
-    let (value, mask) = parse_var_off(expr).unwrap_or((0, 0));
+    // `var_off=(v; m)` is printed only when the variable part is NOT a known constant.
+    // When it IS constant the kernel prints the value as `imm=` instead, and only when
+    // it is non-zero (log.c:682-687):
+    //     if (tnum_is_const(reg->var_off)) { if (reg->var_off.value) verbose_a("imm="); }
+    // So for a pointer, `imm=N` means var_off = {value: N, mask: 0} — the landing site is
+    // pinned exactly. Missing it read the constant as 0, which is how a store through a
+    // pointer with a fixed non-zero offset looked like it had escaped its own claim.
+    // `off=` is a DIFFERENT field (reg->off), handled by parse_ptr_const_off.
+    let (value, mask) = parse_var_off(expr)
+        .unwrap_or_else(|| (parse_ptr_field(expr, "imm=").unwrap_or(0) as u64, 0));
     RegState {
         reg,
         reg_type: if ty.is_empty() { expr.to_string() } else { ty.to_string() },
@@ -863,17 +872,26 @@ fn parse_prune_probe(line: &str) -> Option<metrics::core::PruneProbe> {
 /// `var_off=(0x0; 0x7)`, which would read the VARIABLE part's known-bits as if it
 /// were the constant part. The key must start the expression or follow `(` or `,`.
 fn parse_ptr_const_off(expr: &str) -> Option<i64> {
+    parse_ptr_field(expr, "off=")
+}
+
+/// Read one `key=<int>` field out of a pointer's printed state, boundary-aware.
+///
+/// The boundary check is not cosmetic: a plain `find("off=")` also matches inside
+/// `var_off=(0x0; 0x7)`, which would read the VARIABLE part's known bits as if they were
+/// the constant part. The key must start the expression or follow `(` or `,`.
+fn parse_ptr_field(expr: &str, key: &str) -> Option<i64> {
     let b = expr.as_bytes();
     let mut from = 0usize;
-    while let Some(rel) = expr[from..].find("off=") {
+    while let Some(rel) = expr[from..].find(key) {
         let at = from + rel;
         let ok = at == 0 || b[at - 1] == b'(' || b[at - 1] == b',';
         if ok {
-            let rest = &expr[at + "off=".len()..];
+            let rest = &expr[at + key.len()..];
             let end = rest.find([',', ')', ' ']).unwrap_or(rest.len());
             return parse_const_int(rest[..end].trim()).map(|(_, i)| i);
         }
-        from = at + "off=".len();
+        from = at + key.len();
     }
     None
 }

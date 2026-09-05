@@ -687,21 +687,20 @@ fn check_store_location(
         // The store is where the verifier said IF ANY of the claims at this instruction
         // admits it — the program only ever takes one path per run, and we cannot tell
         // from the sentinel alone which one it was.
-        let admitted = claims.iter().any(|p| {
-            let b = p.ptr_off.unwrap_or(0) + site.insn_off;
-            let l = b.saturating_add(p.umin as i64);
-            let h = b.saturating_add(p.umax as i64);
-            let v = off - b;
-            // tnum: `v` is possible iff its bits agree with the known-bit pattern.
-            off >= l && off <= h && v >= 0 && (v as u64 & !p.tnum.mask) == p.tnum.value
-        });
+        let admitted = claims.iter().any(|p| admits(p, site.insn_off, off));
         if admitted {
             continue;
         }
-        let var = off - base;
-        let in_window = off >= lo && off <= hi;
+        // Reported against the FIRST claim; `admits` above already decided against all
+        // of them. An unstated upper bound is not an endpoint, so it is not reported as
+        // one either.
+        let in_window = off >= lo && (ptr.umax == u64::MAX || off <= hi);
         let why = if !in_window {
-            format!("outside the proven window [{lo}, {hi}]")
+            if ptr.umax == u64::MAX {
+                format!("below the proven base {lo}")
+            } else {
+                format!("outside the proven window [{lo}, {hi}]")
+            }
         } else {
             format!(
                 "inside [{lo}, {hi}] but impossible under var_off=(0x{:x}; 0x{:x})",
@@ -838,6 +837,25 @@ fn check_prune_differential(
         detail: "the flagged run rejected for a reason that is not a complexity limit — an over-rejection, not the soundness half"
             .to_string(),
     });
+}
+
+/// Does one printed pointer claim admit a store landing at absolute offset `off`?
+///
+/// The comparison runs on the VARIABLE part `v = off - (ptr_off + insn_off)` and stays in
+/// u64 throughout, which matters: an absent `umax` means U64_MAX by the log's convention,
+/// and `u64::MAX as i64` is -1, so adding it to the base produced an INVERTED window
+/// (`[40, 39]`) that rejected every landing site. An unstated upper bound constrains
+/// nothing; it is not an endpoint. When the tnum mask is 0 the variable part is pinned
+/// exactly and the tnum test alone decides.
+fn admits(p: &metrics::core::RegState, insn_off: i64, off: i64) -> bool {
+    let base = p.ptr_off.unwrap_or(0) + insn_off;
+    let v = match off.checked_sub(base) {
+        Some(v) if v >= 0 => v as u64,
+        _ => return false,
+    };
+    let fits_tnum = (v & !p.tnum.mask) == p.tnum.value;
+    let in_interval = v >= p.umin && (p.umax == u64::MAX || v <= p.umax);
+    fits_tnum && in_interval
 }
 
 fn check_runtime_write_safety(

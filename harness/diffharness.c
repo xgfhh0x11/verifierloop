@@ -3252,6 +3252,205 @@ static int emit_iter_loop(struct bpf_insn *ins, int n, const struct iter_ids *id
     return n;
 }
 
+// ---- precision as the pruning lever (--gen-prec) ----------------------------
+// `regsafe` (states.c:551) contains the single most powerful pruning rule in the
+// verifier:
+//
+//     if (!rold->precise && exact == NOT_EXACT)
+//             return true;
+//
+// An IMPRECISE old scalar matches ANY current scalar. So precision is exactly what stops
+// a prune: if a register whose value decides memory safety is not marked precise, two
+// states differing only in that register are equated and the unsafe one is pruned away.
+// `mark_chain_precision` is what has to get that right, `precise.c` is on the kernel's
+// own danger list, and the backtracker logs its work (`mark_precise: frame%d: regs=%s`,
+// backtrack.c:280), so the mechanism is observable rather than merely inferred.
+//
+// THE AXIS is whether the differing register PARTICIPATES in the deciding access:
+//   * store through r7 -> r7's value decides safety -> it must be marked precise ->
+//     the two states are not equatable -> both paths are explored;
+//   * store through r6 (a masked, always-safe offset) -> r7 is never used -> it need not
+//     be precise -> the short-circuit above applies and the second state CAN be pruned.
+// The two differ in one operand of one instruction, so the state counts and the
+// mark_precise lines isolate precision itself.
+//
+// Store offset 40 makes the decision a pure function of the constant: in bounds iff
+// umax <= 23, so 23 accepts and 24 rejects — an exact one-byte boundary that proves the
+// verdict tracks the VALUE and not the shape.
+#define PREC_STORE_OFF 40
+
+/* store_src: 7 = the register the two paths disagree about (precision required),
+   6 = a masked always-safe offset (r7 unused, precision not required). */
+static void run_prec_prog(int c_fall, int c_taken, int store_src, int idx,
+                          int map_in, int map_out) {
+    struct bpf_insn ins[80];
+    int n = 0, jexit[4], nx = 0;
+
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);
+    ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7);          /* always-safe offset */
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_8, BPF_REG_0, 4);   /* path selector */
+
+    /* The two paths differ ONLY in the constant they put in r7. */
+    const int jsplit = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_8, 0, 0);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_7, c_fall);
+    const int jmerge = n; ins[n++] = BPF_JMP_IMM(BPF_JA, 0, 0, 0);
+    ins[jsplit].off = n - jsplit - 1;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_7, c_taken);
+    ins[jmerge].off = n - jmerge - 1;
+
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_0);
+    ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_2,
+                             store_src == 7 ? BPF_REG_7 : BPF_REG_6);
+    const int store_insn = n;
+    ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_2, PREC_STORE_OFF, -1);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);
+    ins[n++] = BPF_EXIT_INSN();
+    const int exit0 = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    for (int i = 0; i < nx; i++)
+        ins[jexit[i]].off = exit0 - jexit[i] - 1;
+
+    struct prune_load base = prune_load_once(ins, n, 0, g_log, sizeof(g_log));
+    struct prune_load freq = prune_load_once(ins, n, BPF_F_TEST_STATE_FREQ,
+                                             g_log2, sizeof(g_log2));
+    struct prune_load inv  = prune_load_once(ins, n, BPF_F_TEST_REG_INVARIANTS,
+                                             g_log2, sizeof(g_log2));
+
+    g_log[0] = '\0';
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)ins;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = sizeof(g_log);
+    attr.log_buf = (uint64_t)(unsigned long)g_log;
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int e = errno;
+
+    /* How many `mark_precise:` lines the backtracker emitted for the DEFAULT load: the
+       direct observable of whether precision work happened at all. */
+    unsigned long mp = 0;
+    for (const char *q = g_log; (q = strstr(q, "mark_precise:")) != NULL; q++)
+        mp++;
+
+    char name[96];
+    snprintf(name, sizeof(name), "genprec#c%d_%d.s%d#%03d", c_fall, c_taken, store_src, idx);
+    printf("===PROG %s type=socket_filter ===\n", name);
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+           fd >= 0 ? "accept" : "reject", fd, fd >= 0 ? 0 : e);
+    printf("STORE insn=%d reg=2 off=%d size=1\n", store_insn, PREC_STORE_OFF);
+    printf("PREC c_fall=%d c_taken=%d store_src=%d store_off=%d mark_precise_lines=%lu\n",
+           c_fall, c_taken, store_src, PREC_STORE_OFF, mp);
+    printf("PRUNE fall=c%d taken=c%d fall_safe=%d taken_safe=%d stack=0"
+           " base_verdict=%s base_errno=%d base_states=%lu base_reason=%s"
+           " freq_verdict=%s freq_errno=%d freq_states=%lu freq_reason=%s"
+           " inv_verdict=%s inv_errno=%d inv_reason=%s\n",
+           c_fall, c_taken,
+           store_src == 7 ? (c_fall + PREC_STORE_OFF < 64) : 1,
+           store_src == 7 ? (c_taken + PREC_STORE_OFF < 64) : 1,
+           base.accept ? "accept" : "reject", base.err, base.states, base.reason,
+           freq.accept ? "accept" : "reject", freq.err, freq.states, freq.reason,
+           inv.accept ? "accept" : "reject", inv.err, inv.reason);
+
+    if (fd >= 0) {
+        unsigned char pkt[64];
+        memset(pkt, 0, sizeof(pkt));
+        for (int i = 0; i < LOOPR_INPUTS_N; i++) {
+            uint32_t in = LOOPR_INPUTS[i];
+            unsigned char zero[RTW_VALUE_SIZE], val[16];
+            memset(zero, 0, sizeof(zero));
+            memset(val, 0, sizeof(val));
+            memcpy(val + 0, &in, 4);
+            uint32_t sel = i & 1;
+            memcpy(val + 4, &sel, 4);
+            int ue = rt_map_set_bytes(map_in, 0, val);
+            int ze = rt_map_set_bytes(map_out, 0, zero);
+            union bpf_attr t;
+            memset(&t, 0, sizeof(t));
+            t.test.prog_fd = fd;
+            t.test.data_in = (uint64_t)(unsigned long)pkt;
+            t.test.data_size_in = sizeof(pkt);
+            t.test.repeat = 1;
+            int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+            unsigned char out[RTW_VALUE_SIZE];
+            memset(out, 0, sizeof(out));
+            int ge = rt_map_get(map_out, 0, out);
+            if (r < 0 || ue < 0 || ze < 0 || ge < 0) {
+                printf("RUNTIME input=0x%08x error=1 testrun_errno=%d\n",
+                       in, r < 0 ? errno : 0);
+                continue;
+            }
+            int off = -1;
+            for (int b = 0; b < RTW_VALUE_SIZE; b++)
+                if (out[b] == RTW_SENTINEL) { off = b; break; }
+            int executed = (t.test.retval == 1);
+            if (off < 0)
+                printf("RUNTIME input=0x%08x store_off=none store_len=0 store_size=1"
+                       " executed=%d\n", in, executed);
+            else {
+                int len = 0;
+                for (int b = off; b < RTW_VALUE_SIZE && out[b] == RTW_SENTINEL; b++) len++;
+                printf("RUNTIME input=0x%08x store_off=%d store_len=%d store_size=1"
+                       " executed=%d\n", in, off, len, executed);
+            }
+        }
+        close(fd);
+    }
+    printf("---LOG---\n%s\n---END---\n", g_log);
+}
+
+static void run_generated_prec_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 16; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = RTW_VALUE_SIZE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
+        printf("===PROG genprec type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+    /* The first two arms differ in ONE operand of ONE instruction — which register the
+       store adds — so any difference in state count or precision work between them is
+       precision itself and nothing else. 23 vs 24 is the exact one-byte boundary. */
+    const struct { int cf, ct, src; } arms[] = {
+        {  8, 16, 7 },   /* r7 decides safety -> must be precise -> no prune -> accept */
+        {  8, 16, 6 },   /* r7 unused -> need not be precise -> prune allowed -> accept */
+        {  8, 23, 7 },   /* 40 + 23 + 1 == 64 exactly                        -> accept */
+        {  8, 24, 7 },   /* one byte over                                    -> reject */
+        {  8, 40, 7 },   /* well over                                        -> reject */
+        {  8,  8, 7 },   /* identical states, trivial prune                  -> accept */
+    };
+    int idx = 0;
+    for (unsigned i = 0; i < sizeof(arms) / sizeof(arms[0]); i++)
+        run_prec_prog(arms[i].cf, arms[i].ct, arms[i].src, idx++, map_in, map_out);
+    close(map_in);
+    close(map_out);
+}
+
 // ---- spilled links and delta arithmetic (--gen-spill) -----------------------
 // Two gaps left by 0046-0048, both visible in sync_linked_regs (verifier.c:16847):
 //
@@ -4944,6 +5143,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-spill") == 0) {
         run_generated_spill_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-prec") == 0) {
+        run_generated_prec_family();
         return 0;
     }
 
