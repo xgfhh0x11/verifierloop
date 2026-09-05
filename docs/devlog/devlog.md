@@ -4912,3 +4912,63 @@ Kalibrasyondan sonra: oracle bu sınıftaki **gerçek bir soundness hatasını y
 ve o yeteneği ancak bugün kazandı, çünkü iki kör noktası vardı. Bu, sıfırı belirsizlikten
 çıkarıp bilgiye çeviren şey; ve iki kör noktanın varlığı, kalibrasyonun neden birincil iş
 olduğunun kanıtı.
+
+---
+
+## 0062 — Kalibrasyonun ikinci yarısı: gerçek bug hangi INPUT'un önemli olduğunu söyler
+
+### 1. Kalibrasyon iki şey verir, biri gözden kaçmıştı
+
+0061 birinci yarıyı yaptı: gerçek bir bug'a karşı **oracle** test edildi, iki kör nokta
+çıktı. İkinci yarı şu: bir bug raporu aynı zamanda **hangi input şeklinin o sınıfı
+ürettiğini** söylüyor. Kernel yamalı olsa bile o şekli üretmek, sınıfa kalıcı bir dedektör
+bırakıyor.
+
+### 2. Aday taraması
+
+Ağaçta 2020 sonrası, commit mesajında register state **alıntılayan** verifier soundness
+fix'leri tarandı: 23 aday. Dördü doğrudan bizim iddialarımızı sınıyor —
+`f2d67fec0b43` (CVE-2020-8835, 0035'in hedefi), `049c4e13714e` (alu32 const subreg),
+`af9e89d8dd39` (`sync_linked_regs` id korunumu, 0046/0047), `3878ae04e9fc` (linkli
+register'lar arası delta, 0049).
+
+### 3. CVE-2020-8835 commit mesajından kalibre EDİLEMİYOR
+
+İlk hedef oydu, çünkü 0035'in merkezî iddiası *"desync zaten invariant B'dir"*. Ama 2020
+formatındaki log **hiç 32-bit alan basmıyor** (aynı ölçüm 2023 commit'inde 12 alan
+buluyor). İnvariant B tnum32'yi u32 sınırlarıyla karşılaştırıyor; o alanlar yoksa
+karşılaştıracak bir şey de yok.
+
+Yani bu hedef **eski kernel derlemesi gerektiriyor** — 0061'de çizdiğim sınırın tam
+olarak öbür tarafı: "bir bug'ın imzası commit mesajından okunamıyorsa ancak o zaman kernel
+derle". Park edildi, sebebiyle birlikte.
+
+*(2020 formatı ayrıca `inv`/`invP`, `umin_value=`, boşluksuz `var_off=(0xA;0xB)` kullanıyor
+— parser'ın tanımadığı üçüncü bir biçim ailesi. O da kernel derleme kararına bağlı.)*
+
+### 4. `3878ae04e9fc` bizde bir kapsama açığı buldu
+
+Bug: `sync_linked_regs` **32-bit** bir delta'yı 64-bit'miş gibi yayıyor. `known_reg =
+0xFFFFFFFF`, delta 1 iken verifier `0x100000000` diyor; gerçek değer 0'a sarıyor. Commit'in
+kendi ifadesiyle *"can lead to accepting a program with OOB access"*.
+
+Bu **consistent-but-wrong** sınıfı — verifier'ın state'i kendi içinde tutarlı, sadece
+yanlış. Consistency invariant'ları göremez; runtime store-location oracle'ı görür.
+
+Ve asıl mesele: **0049'un delta kolu yalnız alu64 kullanıyordu.** Delta aritmetiğini
+*değerle* sabitlemiştik ama 32-bit biçimi hiç üretmemiştik — bug'ın yaşadığı şekli.
+
+Fix ağacımızda (HEAD 2026-09-03, fix 2024-10), yani bedava bir bug yok. Ama şekil eklendi:
+`SPL_DELTA32`, `--gen-spill` 8 → **12 kol**. Sonuç: 6 kabul / 6 red,
+`store_locations_checked=48`, `finding_count=0`. alu32 linki alu64'le **aynı** [12,19]
+sınırını üretiyor, id `1+12` olarak basılıyor.
+
+**Dürüst kapsam:** kol 32-bit delta *link şeklini* kapsıyor, gerçek bug'ın ihtiyaç duyduğu
+*sarma tetikleyicisini* (taban 2³²'ye yakın) değil. Bu bir sonraki incelik, ve teste öyle
+yazıldı — kapsıyormuş gibi göstermek, kapsamamaktan kötü olurdu.
+
+### 5. Ders
+
+Gerçek-bug kalibrasyonu iki ayrı çıktı veriyor ve ikisi de değerli: **oracle** tarafında
+kör nokta (0061'de iki tane), **input** tarafında kapsama açığı (burada bir tane). İkincisi
+kernel yamalı olsa bile kazanç, çünkü sınıfa dedektör bırakıyor. Workspace 282 yeşil.

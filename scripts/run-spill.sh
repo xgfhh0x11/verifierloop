@@ -23,7 +23,7 @@ HARNESS_ARGS=--gen-spill TIMEOUT=180 scripts/run-harness-vm.sh "$LOG"
 
 echo
 echo "=== decisions (one must REJECT, both must ACCEPT, per shape) ==="
-paste <(grep -oE 'genspill#[a-z]+\.[a-z]+\.s[0-9]+#[0-9]+' "$LOG") \
+paste <(grep -oE 'genspill#[a-z0-9]+\.[a-z]+\.s[0-9]+#[0-9]+' "$LOG") \
       <(grep -E "^RESULT" "$LOG" | grep -oE 'decision=[a-z]+')
 
 echo

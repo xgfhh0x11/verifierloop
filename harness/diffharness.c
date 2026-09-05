@@ -4812,6 +4812,7 @@ enum spill_shape {
     SPL_NONE,      /* no link                                                        */
     SPL_SPILL,     /* r7 = r6, then spill r7: the linked copy lives in a stack slot   */
     SPL_DELTA,     /* r7 = r6; r7 += 4  and  r9 = r6; r9 += 12: two deltas, one base  */
+    SPL_DELTA32,   /* the same, in 32-BIT form: the shape a real bug lived in         */
 };
 
 static const char *spill_shape_name(enum spill_shape p) {
@@ -4819,6 +4820,7 @@ static const char *spill_shape_name(enum spill_shape p) {
     case SPL_NONE:  return "none";
     case SPL_SPILL: return "spill";
     case SPL_DELTA: return "delta";
+    case SPL_DELTA32: return "delta32";
     }
     return "?";
 }
@@ -4834,6 +4836,27 @@ static int emit_spill_shape(struct bpf_insn *ins, int n, enum spill_shape p, int
         if (linked)
             ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_6);
         ins[n++] = BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_7, -16);
+        break;
+    case SPL_DELTA32:
+        /* THE SHAPE A REAL BUG LIVED IN. Commit 3878ae04e9fc ("bpf: Fix incorrect delta
+           propagation between linked registers", 2024-10) fixed sync_linked_regs
+           propagating a 32-BIT delta as if it were 64-bit: with known_reg = 0xFFFFFFFF
+           and a delta of 1 the verifier concluded 0x100000000 while the real value wraps
+           to 0 — "can lead to accepting a program with OOB access".
+           0049 pinned the delta arithmetic by value, but only in the alu64 form, so this
+           shape had never been generated at all. The fix is in our tree, so the expected
+           result is clean; what this arm buys is that the shape is now covered and any
+           regression in that class has a detector. Reading a real bug tells you which
+           INPUT matters, not only whether the oracle can see it. */
+        if (linked) {
+            ins[n++] = BPF_MOV32_REG(BPF_REG_7, BPF_REG_6);
+            ins[n++] = BPF_ALU32_IMM(BPF_ADD, BPF_REG_7, 4);
+            ins[n++] = BPF_MOV32_REG(BPF_REG_9, BPF_REG_6);
+            ins[n++] = BPF_ALU32_IMM(BPF_ADD, BPF_REG_9, 12);
+        } else {
+            ins[n++] = BPF_ALU32_IMM(BPF_ADD, BPF_REG_7, 4);
+            ins[n++] = BPF_ALU32_IMM(BPF_ADD, BPF_REG_9, 12);
+        }
         break;
     case SPL_DELTA:
         if (linked) {
@@ -5019,6 +5042,10 @@ static void run_generated_spill_family(void) {
         { SPL_DELTA, 1, 0, 9 },   /* linked on one path                    -> reject */
         { SPL_DELTA, 1, 1, 9 },   /* delta 12: is the subtraction right?   -> answer */
         { SPL_DELTA, 1, 1, 7 },   /* delta 4, same class                   -> accept */
+        { SPL_DELTA32, 0, 0, 9 },  /* 32-bit delta baseline                 -> reject */
+        { SPL_DELTA32, 1, 0, 9 },  /* linked on one path only               -> reject */
+        { SPL_DELTA32, 1, 1, 9 },  /* the real bug's shape: delta 12, alu32 -> answer */
+        { SPL_DELTA32, 1, 1, 7 },  /* delta 4, alu32                        -> answer */
     };
     int idx = 0;
     for (unsigned i = 0; i < sizeof(arms) / sizeof(arms[0]); i++)

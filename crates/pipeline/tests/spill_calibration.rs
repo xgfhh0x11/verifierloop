@@ -31,9 +31,9 @@ use pipeline::ingest::{self, Source};
 use pipeline::normalize::{self, UnparsedKind};
 use pipeline::verifier_log::VerifierLogParser;
 
-const SPILL: &str = include_str!("fixtures/volume/gen-spill-8.log");
-const PROGRAMS: usize = 8;
-const ACCEPTED: usize = 4;
+const SPILL: &str = include_str!("fixtures/volume/gen-spill-12.log");
+const PROGRAMS: usize = 12;
+const ACCEPTED: usize = 6;
 const SWEEP: usize = 8;
 
 fn run_diff(text: &str, tag: &str) -> (normalize::NormalizedMetrics, diff::DiffFindings) {
@@ -150,6 +150,36 @@ fn two_deltas_off_one_base_are_synced_to_exactly_the_right_ranges() {
         "the kernel renders the compound id as base+delta, which is what makes the \
          arithmetic auditable from the log: {narrow}"
     );
+}
+
+/// THE SHAPE A REAL BUG LIVED IN, added in 0062 after calibration pointed at it. Commit
+/// 3878ae04e9fc ("bpf: Fix incorrect delta propagation between linked registers") fixed
+/// sync_linked_regs propagating a 32-BIT delta as if it were 64-bit — "can lead to
+/// accepting a program with OOB access". 0049 pinned the delta arithmetic by VALUE, but
+/// only in the alu64 form, so this shape had never been generated at all.
+///
+/// The fix is in our tree, so the expected result is clean; what the arm buys is that the
+/// class now has a detector. HONEST SCOPE: this covers the 32-bit delta LINK shape, not
+/// the wraparound trigger the bug needed (a base near 2^32, where a 32-bit add wraps to a
+/// small value while a 64-bit reading would carry into the upper word). That trigger is a
+/// further refinement, not something this arm demonstrates.
+#[test]
+fn the_thirty_two_bit_delta_link_is_covered_and_agrees_with_the_sixty_four_bit_one() {
+    assert!(!accepted("genspill#delta32.no.s9#"), "baseline");
+    assert!(!accepted("genspill#delta32.one.s9#"), "linked on one path only");
+    assert!(accepted("genspill#delta32.both.s9#"), "delta 12 narrows with the class");
+    assert!(accepted("genspill#delta32.both.s7#"), "so does delta 4");
+
+    let block = block_of("genspill#delta32.both.s9#");
+    let narrow = block
+        .lines()
+        .find(|l| l.contains("if r6 > 0x7") && l.contains("R9=scalar(id="))
+        .expect("the narrowing check must appear with the delta register's state");
+    assert!(
+        narrow.contains("umin=smin32=umin32=12") && narrow.contains("umax=smax32=umax32=19"),
+        "the alu32 link must reach the same [12,19] the alu64 one does: {narrow}"
+    );
+    assert!(narrow.contains("+12"), "and carry the compound id: {narrow}");
 }
 
 #[test]
