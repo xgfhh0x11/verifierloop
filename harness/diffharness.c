@@ -73,6 +73,9 @@
 #define BPF_ALU64_REG(OP, DST, SRC)                                            \
     ((struct bpf_insn){.code = BPF_ALU64 | BPF_OP(OP) | BPF_X,                 \
                        .dst_reg = DST, .src_reg = SRC, .off = 0, .imm = 0})
+#define BPF_MOV32_IMM(DST, IMM)                                                \
+    ((struct bpf_insn){.code = BPF_ALU | BPF_MOV | BPF_K,                      \
+                       .dst_reg = DST, .src_reg = 0, .off = 0, .imm = (IMM)})
 #define BPF_ALU32_REG(OP, DST, SRC)                                            \
     ((struct bpf_insn){.code = BPF_ALU | BPF_OP(OP) | BPF_X,                   \
                        .dst_reg = DST, .src_reg = SRC, .off = 0, .imm = 0})
@@ -3269,6 +3272,107 @@ static int emit_iter_loop(struct bpf_insn *ins, int n, const struct iter_ids *id
 #ifndef BPF_FUNC_dynptr_from_mem
 #define BPF_FUNC_dynptr_from_mem 197
 #endif
+
+// ---- calibration probe: the fake_reg corruption (--probe-fakereg) -----------
+// The SECOND kind of calibration. 0061 tested the oracle against a bug whose inconsistent
+// state the commit message printed, so no kernel had to be built. This one cannot work
+// that way: the violating registers (`true_reg2`, `false_reg2`) are internal to
+// reg_set_min_max and are never printed as ordinary register state — they appear only
+// inside the kernel's own "REG INVARIANTS VIOLATION" message. Our detection channel is
+// therefore not the parsed state but the VERDICT: 0042's third load, where
+// BPF_F_TEST_REG_INVARIANTS turns reg_bounds_sanity_check from warn-and-recover into a
+// hard -EFAULT. Testing that requires running the kernel that HAD the bug.
+//
+// THE BUG. Commit 92424801261d, "bpf: Fix reg_set_min_max corruption of fake_reg"
+// (2024-06-13), reported by Juan via a coverage-guided buzzer run. Comparing a register
+// against a CONSTANT makes the verifier build a "fake" register holding that constant and
+// hand it to reg_set_min_max(). regs_refine_cond_op() then intersects the two var_offs
+// and writes the result back into BOTH registers — including the fake one, which was
+// meant to stay constant. The kernel's own checker reports it as
+//   REG INVARIANTS VIOLATION (true_reg2):  range bounds violation u64=[0x7fffffff, 0x7ffffffd]
+//   REG INVARIANTS VIOLATION (false_reg2): const tnum out of sync with range bounds
+// — an inverted unsigned range and a constant tnum that does not pin its bounds, which
+// are our `unsigned_bounds_inverted` and `const_tnum_range_mismatch` under other names.
+//
+// THE TRIGGER, transcribed from the commit's own disassembly: mask an unknown scalar down
+// to 31 bits, set bit 1, then compare for equality against a constant whose bit 1 is
+// CLEAR. The false branch is mathematically unreachable — 0x7ffffffd is 1111...1101 — but
+// the verifier analyses it anyway, and that analysis is what corrupts the fake register.
+//
+// Expected: on the buggy kernel the default load succeeds while the REG_INVARIANTS load
+// returns -EFAULT, which is exactly what `check_prune_differential` reports as
+// reg_invariants_violation. On the fixed kernel all three loads agree and it stays silent.
+static void run_probe_fakereg(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 8; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0) {
+        printf("===PROG fakereg type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+
+    struct bpf_insn ins[32];
+    int n = 0, jexit;
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    jexit = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_DW, BPF_REG_6, BPF_REG_0, 0);   /* unknown scalar   */
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_MOV32_IMM(BPF_REG_0, -1);
+    ins[n++] = BPF_ALU32_IMM(BPF_RSH, BPF_REG_0, 1);           /* r0 = 0x7fffffff  */
+    ins[n++] = BPF_ALU32_REG(BPF_AND, BPF_REG_6, BPF_REG_0);   /* r6 in [0,2^31)   */
+    ins[n++] = BPF_ALU32_IMM(BPF_OR, BPF_REG_6, 2);            /* bit 1 set        */
+    /* The false branch of this compare is unreachable, and analysing it is the bug. */
+    ins[n++] = BPF_JMP32_IMM(BPF_JNE, BPF_REG_6, 0x7ffffffd, 1);
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);
+    const int exit0 = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    ins[n++] = BPF_EXIT_INSN();
+    ins[jexit].off = exit0 - jexit - 1;
+
+    struct prune_load base = prune_load_once(ins, n, 0, g_log, sizeof(g_log));
+    struct prune_load freq = prune_load_once(ins, n, BPF_F_TEST_STATE_FREQ,
+                                             g_log2, sizeof(g_log2));
+    struct prune_load inv  = prune_load_once(ins, n, BPF_F_TEST_REG_INVARIANTS,
+                                             g_log2, sizeof(g_log2));
+
+    g_log[0] = '\0';
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)ins;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = sizeof(g_log);
+    attr.log_buf = (uint64_t)(unsigned long)g_log;
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    if (fd >= 0) close(fd);
+
+    printf("===PROG fakereg#92424801261d#000 type=socket_filter ===\n");
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+           base.accept ? "accept" : "reject", base.accept ? 1 : -1, base.err);
+    printf("PRUNE fall=fakereg taken=c0 fall_safe=1 taken_safe=1 stack=0"
+           " base_verdict=%s base_errno=%d base_states=%lu base_reason=%s"
+           " freq_verdict=%s freq_errno=%d freq_states=%lu freq_reason=%s"
+           " inv_verdict=%s inv_errno=%d inv_reason=%s\n",
+           base.accept ? "accept" : "reject", base.err, base.states, base.reason,
+           freq.accept ? "accept" : "reject", freq.err, freq.states, freq.reason,
+           inv.accept ? "accept" : "reject", inv.err, inv.reason);
+    /* The kernel's own verdict, quoted so a capture is self-explaining. */
+    printf("CHANNEL reg_invariants_violation_in_log=%d\n",
+           strstr(g_log, "REG INVARIANTS VIOLATION") != NULL);
+    printf("---LOG---\n%s\n---END---\n", g_log);
+    close(map_in);
+}
 
 // ---- composition generator (--gen-comp) -------------------------------------
 // THE SECOND HALF OF THE FOURTH PIVOT. Switching surface (0053) addressed one axis:
@@ -6524,6 +6628,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--gen-comp") == 0) {
         run_generated_comp_family();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-fakereg") == 0) {
+        run_probe_fakereg();
         return 0;
     }
 

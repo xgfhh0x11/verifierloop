@@ -9,11 +9,18 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAB="${LAB:-$REPO_ROOT/.lab}"
-SRC="$LAB/bpf-next"
+# SRC and OUT are overridable so a SECOND tree — a git worktree parked at the parent of a
+# known verifier fix — can be built with exactly the same config as the main lab kernel.
+# Calibrating the oracle against a real bug means running the kernel that HAD it, and the
+# comparison only means something if the two kernels differ in the fix and nothing else.
+SRC="${SRC:-$LAB/bpf-next}"
+OUT="${OUT:-$LAB/build/bzImage}"
 FRAG="$REPO_ROOT/config/kernel/bpf-verifier-lab.config"
 JOBS="${JOBS:-$(nproc)}"
 
-[ -d "$SRC/.git" ] || { echo "[build] no source at $SRC — run scripts/fetch-kernel.sh first" >&2; exit 1; }
+# `.git` is a DIRECTORY in a clone but a FILE in a git worktree, and the calibration
+# kernel is built from a worktree parked at a fix's parent commit.
+[ -e "$SRC/.git" ] || { echo "[build] no source at $SRC — run scripts/fetch-kernel.sh first" >&2; exit 1; }
 command -v pahole >/dev/null 2>&1 || { echo "[build] pahole (dwarves) required for DEBUG_INFO_BTF" >&2; exit 1; }
 
 echo "[build] pahole $(pahole --version 2>/dev/null) | gcc $(gcc -dumpfullversion) | -j$JOBS"
@@ -40,7 +47,7 @@ BZ="arch/x86/boot/bzImage"
 [ -f "$BZ" ] || { echo "[build] bzImage not produced" >&2; exit 1; }
 
 mkdir -p "$LAB/build"
-cp "$BZ" "$LAB/build/bzImage"
+mkdir -p "$(dirname "$OUT")"; cp "$BZ" "$OUT"
 [ -f vmlinux ] && cp vmlinux "$LAB/build/vmlinux" || true
 cp .config "$LAB/build/kernel.config"
 
@@ -52,7 +59,7 @@ if readelf -S "$LAB/build/vmlinux" 2>/dev/null | grep -qE '\.BTF([[:space:]]|_id
 else
   echo "[build] WARNING: no .BTF section in $LAB/build/vmlinux"
 fi
-echo "[build] bzImage  -> $LAB/build/bzImage ($(du -h "$BZ" | cut -f1))"
+echo "[build] bzImage  -> $OUT ($(du -h "$BZ" | cut -f1))"
 echo "[build] vmlinux  -> $LAB/build/vmlinux"
 echo "[build] config   -> $LAB/build/kernel.config"
 echo "[build] revision -> $(cat "$LAB/kernel.rev" 2>/dev/null || echo unknown)"
