@@ -4473,3 +4473,69 @@ korpus (48 program) ve parça havuzu altı türle sınırlı — ama ilk kez ifa
 "düşündüklerim temiz"in ötesine geçiyor.
 
 `composition_calibration.rs` 6 test. Workspace 275 yeşil.
+
+---
+
+## 0055 — Havuzu genişlet, korpusu büyüt: 9 parça, 192 program, 971 gözlem
+
+### 1. Üç yeni parça
+
+`alu32` (32-bit ALU), `iter` (açık iterator döngüsü — may_goto'dan farklı bir back-edge
+mekanizması), `pkt` (paket pointer'ı, programın kendi kanıtladığı range ile).
+
+**`pkt` bilerek bir OKUMA.** Store olsaydı gözlem kanalı map_out'tan pakete kayardı ve
+bütün korpusun paylaştığı koordinat eşlemesi bozulurdu. Okuma, `PTR_TO_PACKET`'i ve
+`find_good_pkt_pointers`'ın range takibini kompozisyona sokarken kanalı tek tutuyor ve
+geriye taze bir skaler veriyor. Bağlam bir alan daha kazandı: **spill edilmiş ctx** —
+`r1` yalnız girişte context tutuyor ve ondan önceki her helper çağrısı onu eziyor.
+
+### 2. Geçerlilik sayacı ilk eklemede ateşledi — ve YANLIŞ ateşledi
+
+Genişletilmiş havuzun ilk koşusunda sayaç **16 yapısal red** raporladı. İnceleyince
+hepsinin `invalid access to map value` olduğu çıktı — bu bir **bounds** hatası, yapısal
+değil. Benim `invalid ` kalıbım gevşekti ve semantik bir reddi yapısal saymıştı.
+
+**Gerçek yapısal red: sıfır.** Yani üç yeni parça türü (endişelendiğim iterator slot'u ve
+paket parçası dâhil) arayüz tasarımını bozmadı.
+
+Ama ders sayacın kendisinde: **kurt masalı anlatan bir metrik, olmayan metrikten kötüdür.**
+Sınıflandırma gevşek kalıptan **bilinen-semantik izin listesine** çevrildi — her red sebebi
+sınıflandırılabilmeli, ve listede olmayan bir sebep korpusa güvenilmeden önce triyaja
+zorluyor. Testte de böyle yazılı.
+
+### 3. Verim sorunu ve düzeltmesi
+
+İlk genişletilmiş koşu 192 programda yalnız **79** kabul verdi (%41; 0054'te %60'tı).
+Sebep: yeni parçaların hepsi kanıtlanmış sınırı geçersiz kılıyor, dolayısıyla store çoğu
+zaman sınırsız kalıp reddediliyor — ve **reddedilen program runtime oracle'ına hiç
+ulaşmıyor.** Epilog artık sınır kanıtlanmamışsa store'dan önce dörtte üç olasılıkla bir
+daraltma basıyor; dörtte bir bilerek bırakılıyor, çünkü red meşru bir karar ve red tarafı
+olmayan bir korpus karar yüzeyini hiç sınamaz.
+
+**Kabul 79 → 150 (%78).**
+
+### 4. `reg32` kapsama açığı — parça eklemek yetmiyor
+
+İlk genişletilmiş koşuda `reg32_checked = 0`, üstelik `alu32` en çok kullanılan parça (91
+kez). Sebep: başlangıç skalerleri `BPF_W` yüklemesiyle geliyordu, yani üst 32 bit
+sıfır-genişletilmiş — 32-bit görünüm 64-bit görünümle çakışıyor ve denetlenecek ayrı bir
+şey kalmıyor. 0034'te bu ekseni sıfırdan kaldıran şey "üst-bilinmeyen" kurulumuydu.
+
+Bir skaler artık **64 bit** yükleniyor, böylece alu32'nin üst-bilinmeyen bir operandı
+oluyor. **`reg32_checked` 0 → 5.** Ders: bir parçayı havuza koymak ekseni açmaya yetmiyor;
+parçanın üstünde çalışacağı **durumun** da doğru olması gerekiyor.
+
+### 5. Sonuç
+
+**192 program, 150 kabul / 42 red**, `store_locations_checked=971` (0054'te 205 —
+**neredeyse 5 kat**), `runtime_writes_checked=971`, `prune_pairs_checked=192`,
+`tnum_bounds_checked=1327`, `reg32_checked=5`, `finding_count=0`,
+`parser_unrecognized=0`.
+
+42 reddin hepsi semantik, üç farklı mesajda: `unbounded memory access` (24),
+`math between map_value pointer and register with unbounded min value` (15),
+`invalid access to map value` (3).
+
+Test iki yeni guard kazandı: dokuz parçanın **hepsinin** yürüyüşten erişilebilir olduğu
+(havuza konup hiç seçilmeyen bir parça dekordur), ve alt-register ekseninin gerçekten
+canlı olduğu. Workspace 276 yeşil.

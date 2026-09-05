@@ -32,12 +32,16 @@ echo "[run-comp] building harness + running --gen-comp in the VM ..."
 HARNESS_ARGS=--gen-comp TIMEOUT=180 scripts/run-harness-vm.sh "$LOG"
 
 echo
-echo "=== validity: rejection reasons must be semantic, never structural ==="
-printf "programs               : %s\n" "$(grep -c '^RESULT' "$LOG")"
-printf "accepted               : %s\n" "$(grep -c 'RESULT decision=accept' "$LOG")"
-printf "rejected (bounds)      : %s\n" "$(grep -c 'Add or adjust a bounds check' "$LOG")"
-printf "rejected (STRUCTURAL)  : %s   <- must be 0\n" \
-  "$(grep -cE 'Initialize R|unreachable instruction|invalid ' "$LOG" || true)"
+echo "=== validity: every rejection reason, as the verifier phrased it ==="
+printf "programs : %s\n" "$(grep -c '^RESULT' "$LOG")"
+printf "accepted : %s\n" "$(grep -c 'RESULT decision=accept' "$LOG")"
+echo "-- reasons (all must be SEMANTIC: unbounded access / invalid access to map value /"
+echo "   math between ... unbounded. Anything else — uninitialised register, unreachable"
+echo "   instruction, unknown opcode — is STRUCTURAL and means the walk emitted garbage) --"
+awk '/^===PROG /{r=0} /^RESULT decision=reject/{r=1} /---LOG---/{inlog=1; delete b; nb=0}
+     inlog&&/^[a-zA-Z]/{b[nb++]=$0}
+     /^---END---/{if(r){for(i=0;i<nb;i++) if(b[i] ~ /^(R[0-9]|invalid|math|Initialize|unreachable)/ || b[i] ~ /is not allowed|read_ok|unknown opcode/){print b[i]; break}} inlog=0}' "$LOG" \
+  | sed 's/[0-9]\+/N/g' | sort | uniq -c | sort -rn
 
 echo
 echo "=== novelty: distinct compositions the walk produced ==="

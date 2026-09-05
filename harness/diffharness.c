@@ -3296,7 +3296,7 @@ static int emit_iter_loop(struct bpf_insn *ins, int n, const struct iter_ids *id
 // Determinism is not optional: a finding has to be replayable, so the walk is driven by a
 // seeded xorshift and the seed is printed with every program.
 #define COMP_VALUE 64
-#define COMP_MAXPROG 48
+#define COMP_MAXPROG 192
 
 struct comp_ctx {
     uint32_t rng;
@@ -3305,9 +3305,12 @@ struct comp_ctx {
     int mem_reg;          /* register holding a dynptr slice (PTR_TO_MEM), or -1*/
     int mem_size;         /* the slice's proven size (the caller's constant)    */
     int store_base_off;   /* where the store pointer's base sits in map_out     */
-    int stack_next;       /* next free stack offset, growing down from -16      */
+    int stack_next;       /* next free stack offset, growing down               */
     int narrowed_max;     /* the tightest umax proven on a scalar so far, or -1 */
     int narrow_reg;       /* which register that bound belongs to               */
+    int ctx_slot;         /* where the skb context pointer was spilled          */
+    int iter_slot;        /* the iterator's 8-byte slot, or 0 if unused         */
+    int used_iter;        /* an iterator is emitted at most once per program    */
 };
 
 static uint32_t comp_rand(struct comp_ctx *c) {
@@ -3323,6 +3326,9 @@ enum comp_piece {
     CP_SPILL,    /* spill a scalar to the stack and reload it                   */
     CP_LOOP,     /* a complete bounded may_goto loop with a shaping body        */
     CP_DYNPTR,   /* build a dynptr over the map value and take a writable slice */
+    CP_ALU32,    /* 32-bit ALU: the only piece that lifts reg32 off zero        */
+    CP_ITER,     /* an open-coded iterator loop — a different back-edge kind    */
+    CP_PKT,      /* packet pointer with a program-proven range, then a LOAD     */
     CP_PIECE_N
 };
 
@@ -3334,6 +3340,9 @@ static const char *comp_piece_name(enum comp_piece p) {
     case CP_SPILL:  return "spill";
     case CP_LOOP:   return "loop";
     case CP_DYNPTR: return "dynptr";
+    case CP_ALU32:  return "alu32";
+    case CP_ITER:   return "iter";
+    case CP_PKT:    return "pkt";
     default:        return "?";
     }
 }
@@ -3351,6 +3360,14 @@ static int comp_can(const struct comp_ctx *c, enum comp_piece p) {
     /* dynptr needs the map value, a free 16-byte slot pair, and it is emitted at most
        once because a second slice would overwrite the first's coordinate mapping. */
     case CP_DYNPTR: return c->mapval_reg >= 0 && c->mem_reg < 0 && c->stack_next > -160;
+    case CP_ALU32:  return c->scalar_regs != 0;
+    /* One iterator per program: a second would reuse the slot the first is still
+       tracked in, and the verifier follows that slot by id. */
+    case CP_ITER:   return c->scalar_regs != 0 && !c->used_iter;
+    /* The packet piece needs a free scalar register to land the loaded byte in, and the
+       context pointer, which the prologue spilled because r1 is clobbered by every
+       helper call before it. */
+    case CP_PKT:    return c->scalar_regs != 0;
     default:        return 0;
     }
 }
@@ -3443,6 +3460,43 @@ static int comp_emit(struct bpf_insn *ins, int n, struct comp_ctx *c, enum comp_
         c->store_base_off = off;                /* the coordinate translation, generalised */
         break;
     }
+    case CP_ALU32: {
+        /* The 32-bit path is its own transfer function: alu32 zero-extends where alu64
+           does not, which is why the verifier keeps BPF_ADD_CONST32 and ADD_CONST64 as
+           distinct link flags. It is also the only piece that lifts reg32_checked off
+           zero, so the corpus otherwise never exercises the sub-register view. */
+        int r = comp_scalar_reg(c);
+        static const int ops32[] = { BPF_AND, BPF_OR, BPF_ADD, BPF_LSH };
+        ins[n++] = BPF_ALU32_IMM(ops32[comp_pick(c, 4)], r, 1 + comp_pick(c, 15));
+        c->narrowed_max = -1;
+        break;
+    }
+    case CP_ITER: {
+        int r = comp_scalar_reg(c);
+        (void)r;
+        n = emit_iter_loop(ins, n, ids, 0, 4, LB_MASK);
+        c->used_iter = 1;
+        c->narrowed_max = -1;
+        break;
+    }
+    case CP_PKT: {
+        /* A LOAD, deliberately, not a store: a packet store would move the observation
+           channel from the map value to the packet and break the coordinate mapping the
+           whole corpus shares. A load still brings PTR_TO_PACKET and the range the
+           program proves for itself (find_good_pkt_pointers) into the composition, and
+           hands back a fresh scalar. */
+        int r = comp_scalar_reg(c);
+        ins[n++] = BPF_LDX_MEM(BPF_DW, BPF_REG_1, BPF_REG_10, c->ctx_slot);
+        ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_2, BPF_REG_1, 76);   /* skb->data     */
+        ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_3, BPF_REG_1, 80);   /* skb->data_end */
+        ins[n++] = BPF_MOV64_REG(BPF_REG_4, BPF_REG_2);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_4, 8);
+        jexit[(*nx)++] = n;
+        ins[n++] = BPF_JMP_REG(BPF_JGT, BPF_REG_4, BPF_REG_3, 0);  /* proves 8 bytes */
+        ins[n++] = BPF_LDX_MEM(BPF_B, r, BPF_REG_2, comp_pick(c, 8));
+        c->narrowed_max = -1;
+        break;
+    }
     default: break;
     }
     (void)ids; (void)map_out;
@@ -3457,7 +3511,13 @@ static void run_comp_prog(const struct iter_ids *ids, int slice_id, uint32_t see
     memset(&c, 0, sizeof(c));
     c.rng = seed ? seed : 1;
     c.mapval_reg = -1; c.mem_reg = -1; c.narrowed_max = -1; c.narrow_reg = -1;
-    c.stack_next = -16;
+    /* Fixed slots first, then the bump allocator: fp-4 key, fp-16 the spilled context,
+       fp-24 the iterator. r1 holds the context only at entry and every helper call
+       clobbers it, so it has to be saved before anything else runs. */
+    c.ctx_slot = -16;
+    c.iter_slot = -24;
+    c.stack_next = -32;
+    ins[n++] = BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_1, c.ctx_slot);
 
     ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
     ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
@@ -3469,7 +3529,12 @@ static void run_comp_prog(const struct iter_ids *ids, int slice_id, uint32_t see
     jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
     ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);
     ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_0, 4);
-    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_9, BPF_REG_0, 8);
+    /* r9 is loaded 64 bits wide ON PURPOSE. A 32-bit load zero-extends, so the sub-
+       register view coincides with the 64-bit one and there is nothing for the 32/64
+       consistency check to evaluate -- which is why the first widened corpus scored
+       reg32_checked = 0 even though alu32 was its most-used piece. An upper-unknown
+       operand is what gives alu32 a distinct 32-bit view to constrain. */
+    ins[n++] = BPF_LDX_MEM(BPF_DW, BPF_REG_9, BPF_REG_0, 8);
     c.scalar_regs = (1 << 6) | (1 << 7) | (1 << 9);
 
     ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
@@ -3507,6 +3572,19 @@ static void run_comp_prog(const struct iter_ids *ids, int slice_id, uint32_t see
         base_off = c.store_base_off;
     } else {
         int r = comp_scalar_reg(&c);
+        /* YIELD. Most pieces invalidate whatever bound was proven, so without this the
+           corpus mostly ends in "R<n> unbounded memory access" and the runtime oracles
+           go hungry -- a rejected program observes nothing. Re-proving a bound here turns
+           those into programs that actually reach the oracle. It is done only three times
+           in four, because a rejection is a legitimate verdict and a corpus with no
+           reject side would stop exercising the decision surface at all. */
+        if (c.narrowed_max < 0 && comp_pick(&c, 4) != 0) {
+            int bound = 1 + comp_pick(&c, 15);
+            jexit[nx++] = n;
+            ins[n++] = BPF_JMP_IMM(BPF_JGT, r, bound, 0);
+            c.narrowed_max = bound;
+            c.narrow_reg = r;
+        }
         ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_8, r);
         store_reg = BPF_REG_8;
         /* Safe only if a bound is currently proven on that very register; otherwise the

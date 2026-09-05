@@ -38,9 +38,9 @@ use pipeline::normalize::{self, UnparsedKind};
 use pipeline::verifier_log::VerifierLogParser;
 use std::collections::BTreeSet;
 
-const COMP: &str = include_str!("fixtures/volume/gen-comp-48.log");
-const PROGRAMS: usize = 48;
-const ACCEPTED: usize = 29;
+const COMP: &str = include_str!("fixtures/volume/gen-comp-192.log");
+const PROGRAMS: usize = 192;
+const ACCEPTED: usize = 150;
 
 fn run_diff(text: &str, tag: &str) -> (normalize::NormalizedMetrics, diff::DiffFindings) {
     let dir = std::env::temp_dir().join(format!("vl-comp-{}-{tag}", std::process::id()));
@@ -69,22 +69,90 @@ fn recipes() -> Vec<String> {
 /// whether rejections are SEMANTIC (the store is genuinely out of bounds) or STRUCTURAL
 /// (the generator emitted something malformed). Structural rejections would mean the walk
 /// is producing garbage the oracle can never see.
+/// Every distinct rejection reason in the corpus, as the verifier phrased it.
+fn rejection_reasons() -> Vec<String> {
+    let mut out = Vec::new();
+    for block in COMP.split("===PROG ").skip(1) {
+        if !block.contains("RESULT decision=reject") {
+            continue;
+        }
+        let log = match block.split_once("---LOG---") {
+            Some((_, l)) => l,
+            None => continue,
+        };
+        if let Some(line) = log.lines().find(|l| {
+            l.starts_with('R') && l.contains("unbounded memory access")
+                || l.starts_with("invalid access to map value")
+                || l.starts_with("math between")
+                || l.starts_with("Initialize R")
+                || l.contains("unreachable instruction")
+                || l.contains("!read_ok")
+                || l.starts_with("invalid bpf_ld")
+                || l.contains("unknown opcode")
+                || l.contains("jump out of range")
+        }) {
+            out.push(line.split(',').next().unwrap_or(line).trim().to_string());
+        }
+    }
+    out
+}
+
+/// THE VALIDITY METRIC, and the reviewer's warning answered with a measurement. Raw accept
+/// rate is the wrong number: a rejection is a legitimate verdict. The right question is
+/// whether rejections are SEMANTIC (the store is genuinely out of bounds) or STRUCTURAL
+/// (the generator emitted something malformed). Structural rejections would mean the walk
+/// is producing garbage the oracle can never see.
+///
+/// This is written as an ALLOWLIST rather than a pattern for "structural", because the
+/// first version used a loose `invalid ` match and counted "invalid access to map value"
+/// — a BOUNDS error — as structural. A metric that cries wolf is worse than none. Any
+/// rejection reason not on this list is unclassified and must be triaged before the
+/// corpus is trusted.
 #[test]
-fn every_generated_program_is_structurally_well_formed() {
-    let bounds = COMP.matches("Add or adjust a bounds check").count();
-    let structural = COMP.matches("Initialize R").count()
-        + COMP.matches("unreachable instruction").count()
-        + COMP.matches("invalid ").count();
+fn every_rejection_is_semantic_and_none_is_structural() {
+    let semantic = [
+        "unbounded memory access",             // the offset register has no proven bound
+        "invalid access to map value",         // the constant offset is out of range
+        "math between",                        // pointer arithmetic with an unbounded reg
+    ];
+    let structural = ["Initialize R", "!read_ok", "unreachable", "unknown opcode",
+                      "invalid bpf_ld", "jump out of range"];
+    let reasons = rejection_reasons();
     let rejects = COMP.matches("RESULT decision=reject").count();
-    eprintln!("COMP rejects={rejects} bounds={bounds} structural={structural}");
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for r in &reasons {
+        seen.insert(r.clone());
+    }
+    eprintln!("COMP rejects={rejects} classified={} distinct={:?}", reasons.len(), seen);
     assert_eq!(
-        structural, 0,
-        "a structural rejection means the typed walk emitted something malformed, and a \
-         malformed program teaches the oracles nothing"
+        reasons.len(), rejects,
+        "every rejection must be classifiable — an unrecognised reason means a shape the \
+         generator produces that nobody has looked at"
     );
-    assert_eq!(
-        bounds, rejects,
-        "every rejection must be the semantic question the oracle already asks"
+    for r in &seen {
+        assert!(
+            semantic.iter().any(|p| r.contains(p)),
+            "unclassified rejection reason, triage before trusting the corpus: {r}"
+        );
+        assert!(
+            !structural.iter().any(|p| r.contains(p)),
+            "a structural rejection means the typed walk emitted something malformed, and \
+             a malformed program teaches the oracles nothing: {r}"
+        );
+    }
+}
+
+/// The sub-register axis has to be LIVE in the corpus, not merely present as a piece. The
+/// first widened run scored reg32_checked = 0 while alu32 was its most-used piece: the
+/// initial scalars came from 32-bit loads, which zero-extend, so the 32-bit view coincided
+/// with the 64-bit one and there was nothing to check. One scalar is now loaded 64 bits
+/// wide to give alu32 an upper-unknown operand.
+#[test]
+fn the_sub_register_view_is_actually_exercised() {
+    let (_, out) = run_diff(COMP, "reg32");
+    assert!(
+        out.summary.reg32_checked > 0,
+        "alu32 pieces must produce a distinct 32-bit view, or the axis is decorative"
     );
 }
 
@@ -104,7 +172,7 @@ fn the_corpus_reaches_the_oracles_in_bulk() {
         out.summary.finding_count
     );
     assert!(
-        out.summary.store_locations_checked >= 200,
+        out.summary.store_locations_checked >= 900,
         "the runtime oracles must actually be fed: got {}",
         out.summary.store_locations_checked
     );
@@ -124,8 +192,16 @@ fn the_corpus_contains_shapes_no_hand_written_family_produced() {
     assert_eq!(all.len(), PROGRAMS, "every program declares its recipe");
     let distinct: BTreeSet<&String> = all.iter().collect();
     assert!(
-        distinct.len() >= 20,
+        distinct.len() >= 80,
         "the walk must actually vary: only {} distinct recipes", distinct.len()
+    );
+    let kinds: BTreeSet<&str> = all
+        .iter()
+        .flat_map(|r| r.split(',').filter(|k| !k.is_empty()))
+        .collect();
+    assert!(
+        kinds.len() >= 9,
+        "every piece in the pool must actually be reachable from the walk: {kinds:?}"
     );
     let mixed = all
         .iter()
