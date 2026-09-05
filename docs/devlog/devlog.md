@@ -4539,3 +4539,69 @@ parçanın üstünde çalışacağı **durumun** da doğru olması gerekiyor.
 Test iki yeni guard kazandı: dokuz parçanın **hepsinin** yürüyüşten erişilebilir olduğu
 (havuza konup hiç seçilmeyen bir parça dekordur), ve alt-register ekseninin gerçekten
 canlı olduğu. Workspace 276 yeşil.
+
+---
+
+## 0056 — Kapsama-yönlendirmeli yürüyüş: çift değil ÜÇLÜ cephesi (%35 → %87)
+
+### 1. Dördüncü sağlık metriği, ve ölçümün soruyu bir kat yukarı taşıması
+
+Reviewer'ın eklediği metrik: "her parça erişilebilir" yetmez, çünkü hedeflediğimiz bug
+sınıfları **iki ya da daha fazla özelliğin etkileşiminde** yaşıyor. Asıl soru, parça
+kullanım sayısı değil, **parça-kombinasyon uzayının** ne kadarının gerçekleştiği.
+
+Çözüm kurmadan önce ölçtüm, ve cevap tahmin edilenden iyi çıktı — ama sınırı bir kat
+yukarı taşıdı:
+
+| | uniform yürüyüş |
+|---|---|
+| bitişik sıralı çiftler | **79 / 79** erişilebilir (%100) |
+| bitişik üçlüler | **235 / 679** (%35) |
+
+Eksik iki çift (`dynptr→dynptr`, `iter→iter`) **tasarım gereği imkânsız** — `comp_can`
+her ikisini program başına bir kez veriyor. Yani çift uzayı zaten doygun; cephe üçlüde.
+Ve tarif uzunlukları 2–5'ti: **2 uzunluğundaki 48 program hiç üçlü üretmiyordu.**
+
+### 2. Uniform yürüyüş → kapsama-yönlendirmeli yürüyüş
+
+Korpus boyunca görülen bitişik çift/üçlü tabloları tutuluyor. Seçim sırası: önce
+**görülmemiş bir ÜÇLÜ** tamamlayan parça, sonra görülmemiş bir çift, sonra herhangi biri.
+Beraberlikler tohumlanmış RNG ile çözülüyor, yani yönlendirme **tekrarlanabilirliğe hiç
+mal olmuyor** — korpus hâlâ tohumlardan yeniden üretilebilir. Tarifler 3'ten başlıyor.
+
+**Üçlüler: 235 → 592 / 679 (%35 → %87).** Aynı 192 program.
+
+### 3. Yönlendirme her sayıyı birden iyileştirdi
+
+| | önce | sonra |
+|---|---|---|
+| kabul | 150 / 192 | **169 / 192** |
+| `store_locations_checked` | 971 | **1033** |
+| `tnum_bounds_checked` | 1327 | **1867** |
+| `reg32_checked` | 5 | **13** |
+| bitişik üçlü | 235 (%35) | **592 (%87)** |
+
+23 reddin hepsi semantik (`math between…unbounded` 8, `unbounded memory access` 8,
+`invalid access to map value` 7), **yapısal red sıfır**. `finding_count=0`,
+`parser_unrecognized=0`.
+
+Bu, beklenmedik bir yan etki değil: daha çeşitli kombinasyonlar daha çeşitli register
+durumları üretiyor, o da hem daha çok programı kabul edilebilir kılıyor hem de daha çok
+invariant kontrolünü besliyor. Kapsama sürüşü yalnız çeşitliliği değil **paydayı** da
+büyütüyor.
+
+### 4. Yol boyunca
+
+Kapsama tabloları ilk denemede `enum comp_piece`'ten **önce** yerleşti ve derleme
+`CP_PIECE_N undeclared` verdi — bu oturumda üçüncü kez aynı sıralama tuzağı
+(0045'te `LOOPR_INPUTS`, 0054'te `BPF_FUNC_dynptr_from_mem`). VM bayat binary'yi koştu ve
+sayılar birebir aynı çıktı; **değişmeyen sayı, değişikliğin uygulanmadığının tell'i** oldu.
+
+### 5. Guard
+
+Metrik kalıcı teste çevrildi: her tarif en az 3 parça (2'lik tarif üçlü üretmez), bitişik
+çiftler tam 79, bitişik üçlüler en az 500. Bir sonraki parça eklendiğinde izlenecek dört
+sayı: yapısal red 0, her parça erişilebilir, her eksen sayacı sıfırı terk etmiş, ve
+**kombinasyon kapsaması düşmemiş.**
+
+`composition_calibration.rs` 8 test. Workspace 277 yeşil.

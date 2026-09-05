@@ -40,7 +40,7 @@ use std::collections::BTreeSet;
 
 const COMP: &str = include_str!("fixtures/volume/gen-comp-192.log");
 const PROGRAMS: usize = 192;
-const ACCEPTED: usize = 150;
+const ACCEPTED: usize = 169;
 
 fn run_diff(text: &str, tag: &str) -> (normalize::NormalizedMetrics, diff::DiffFindings) {
     let dir = std::env::temp_dir().join(format!("vl-comp-{}-{tag}", std::process::id()));
@@ -172,7 +172,7 @@ fn the_corpus_reaches_the_oracles_in_bulk() {
         out.summary.finding_count
     );
     assert!(
-        out.summary.store_locations_checked >= 900,
+        out.summary.store_locations_checked >= 1000,
         "the runtime oracles must actually be fed: got {}",
         out.summary.store_locations_checked
     );
@@ -214,6 +214,49 @@ fn the_corpus_contains_shapes_no_hand_written_family_produced() {
         mixed > 0,
         "at least one program must combine a dynptr slice with two other piece kinds — \
          that is a shape no earlier family could emit at all"
+    );
+}
+
+/// THE FOURTH HEALTH METRIC: combination diversity. "Every piece is reachable" is not
+/// enough, because the bug classes this project is aimed at live in the INTERACTION of two
+/// or more features — so what matters is how much of the piece-COMBINATION space the walk
+/// realises, not how often each piece appears.
+///
+/// Measuring it changed the generator. A uniform walk saturated the adjacent PAIR space
+/// immediately (every achievable pair, with the only two missing — dynptr after dynptr and
+/// iter after iter — impossible by construction, since each is emitted at most once per
+/// program), but reached just 35% of the achievable adjacent TRIPLES: 235 of 679. So the
+/// frontier was one level above where the metric was first aimed. The walk now prefers a
+/// piece that completes an unseen triple, then an unseen pair, then anything, with ties
+/// broken by the seeded RNG so the corpus stays reproducible — and recipes start at three,
+/// because a two-piece recipe contributes no triple at all. Triples went 35% -> 87%.
+#[test]
+fn the_walk_covers_the_combination_space_not_just_the_pieces() {
+    let all: Vec<Vec<&str>> = recipes()
+        .iter()
+        .map(|r| r.split(',').filter(|k| !k.is_empty()).map(|k| k.to_string()).collect::<Vec<_>>())
+        .map(|v| v.into_iter().map(|s| Box::leak(s.into_boxed_str()) as &str).collect())
+        .collect();
+    assert!(
+        all.iter().all(|r| r.len() >= 3),
+        "a two-piece recipe contributes no triple, so the walk must not emit one"
+    );
+    let pairs: BTreeSet<(&str, &str)> =
+        all.iter().flat_map(|r| r.windows(2).map(|w| (w[0], w[1]))).collect();
+    let triples: BTreeSet<(&str, &str, &str)> =
+        all.iter().flat_map(|r| r.windows(3).map(|w| (w[0], w[1], w[2]))).collect();
+    eprintln!("COMP pairs={} triples={}", pairs.len(), triples.len());
+    assert_eq!(
+        pairs.len(), 79,
+        "every adjacent pair the requirements allow must be realised — 79 of the 81 \
+         combinations, the two missing ones being a piece following itself where the \
+         context permits it only once"
+    );
+    assert!(
+        triples.len() >= 500,
+        "the coverage-directed walk must reach most of the 679 achievable triples, or the \
+         corpus is exploring a corner of the combination space: got {}",
+        triples.len()
     );
 }
 

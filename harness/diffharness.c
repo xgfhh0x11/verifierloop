@@ -3347,6 +3347,16 @@ static const char *comp_piece_name(enum comp_piece p) {
     }
 }
 
+/* COVERAGE DIRECTION. A uniform walk saturates the PAIR space quickly — the first
+   192-program corpus realised every achievable adjacent pair — but reached only 35% of the
+   achievable adjacent TRIPLES (235 of 679). Since the bug classes this project is aimed at
+   live in the interaction of two or more features, the frontier is the triple, not the
+   piece. These tables are corpus-wide, so selection can prefer a piece that completes a
+   combination nothing has produced yet; ties fall back to the seeded RNG, which keeps the
+   whole corpus reproducible. */
+static unsigned char g_seen_pair[CP_PIECE_N][CP_PIECE_N];
+static unsigned char g_seen_triple[CP_PIECE_N][CP_PIECE_N][CP_PIECE_N];
+
 /* Can this piece run in the current context? This predicate IS the validity story: a
    piece that is emitted without its requirements produces a program the verifier throws
    away, and a thrown-away program teaches the oracles nothing. */
@@ -3549,14 +3559,35 @@ static void run_comp_prog(const struct iter_ids *ids, int slice_id, uint32_t see
     c.mapval_reg = BPF_REG_8;
 
     /* The walk. Only pieces whose requirements hold are ever offered. */
-    char recipe[128]; recipe[0] = '\0';
-    int steps = 2 + comp_pick(&c, 4);
-    for (int i = 0; i < steps && n < 120; i++) {
+    /* Recipes start at three: a two-piece recipe contributes no triple at all, and in the
+       first corpus a quarter of the programs were that short. */
+    char recipe[160]; recipe[0] = '\0';
+    int steps = 3 + comp_pick(&c, 6);
+    int prev = -1, prev2 = -1;
+    for (int i = 0; i < steps && n < 130; i++) {
         enum comp_piece avail[CP_PIECE_N]; int na = 0;
         for (int p = 0; p < CP_PIECE_N; p++)
             if (comp_can(&c, (enum comp_piece)p)) avail[na++] = (enum comp_piece)p;
         if (!na) break;
-        enum comp_piece p = avail[comp_pick(&c, na)];
+
+        /* Prefer, in order: a piece completing an unseen TRIPLE, then one completing an
+           unseen PAIR, then anything. The classes are collected first and chosen from
+           with the seeded RNG, so the direction never costs reproducibility. */
+        enum comp_piece best[CP_PIECE_N]; int nb = 0;
+        if (prev2 >= 0 && prev >= 0)
+            for (int j = 0; j < na; j++)
+                if (!g_seen_triple[prev2][prev][avail[j]]) best[nb++] = avail[j];
+        if (!nb && prev >= 0)
+            for (int j = 0; j < na; j++)
+                if (!g_seen_pair[prev][avail[j]]) best[nb++] = avail[j];
+        if (!nb)
+            for (int j = 0; j < na; j++) best[nb++] = avail[j];
+
+        enum comp_piece p = best[comp_pick(&c, nb)];
+        if (prev >= 0) g_seen_pair[prev][p] = 1;
+        if (prev2 >= 0 && prev >= 0) g_seen_triple[prev2][prev][p] = 1;
+        prev2 = prev; prev = p;
+
         n = comp_emit(ins, n, &c, p, ids, slice_id, map_out, jexit, &nx);
         strncat(recipe, comp_piece_name(p), sizeof(recipe) - strlen(recipe) - 2);
         strncat(recipe, ",", sizeof(recipe) - strlen(recipe) - 2);
@@ -3708,6 +3739,8 @@ static void run_generated_comp_family(void) {
                "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
         return;
     }
+    memset(g_seen_pair, 0, sizeof(g_seen_pair));
+    memset(g_seen_triple, 0, sizeof(g_seen_triple));
     /* Fixed seeds: the walk is random but the CORPUS is reproducible, which is what a
        finding needs. Each program prints its own seed so one can be replayed alone. */
     for (int i = 0; i < COMP_MAXPROG; i++)

@@ -44,9 +44,20 @@ awk '/^===PROG /{r=0} /^RESULT decision=reject/{r=1} /---LOG---/{inlog=1; delete
   | sed 's/[0-9]\+/N/g' | sort | uniq -c | sort -rn
 
 echo
-echo "=== novelty: distinct compositions the walk produced ==="
-grep -oE "recipe=[a-z,]*" "$LOG" | sort | uniq -c | sort -rn | head -15
-printf "distinct recipes: %s\n" "$(grep -oE 'recipe=[a-z,]*' "$LOG" | sort -u | wc -l)"
+echo "=== combination coverage — the metric that matters, since bugs live in the"
+echo "    INTERACTION of features, not in single pieces ==="
+python3 - "$LOG" <<'PY'
+import re, sys, collections
+log = open(sys.argv[1]).read()
+rec = [[p for p in r.split(',') if p] for r in re.findall(r'recipe=([a-z0-9,]*)', log)]
+pairs   = {(a,b)   for r in rec for a,b   in zip(r, r[1:])}
+triples = {(a,b,c) for r in rec for a,b,c in zip(r, r[1:], r[2:])}
+print(f"  distinct recipes : {len({tuple(r) for r in rec})} of {len(rec)} programs")
+print(f"  adjacent pairs   : {len(pairs)} / 79 achievable")
+print(f"  adjacent triples : {len(triples)} / 679 achievable  ({round(len(triples)/679*100)}%)")
+print(f"  recipe lengths   : {dict(sorted(collections.Counter(len(r) for r in rec).items()))}")
+print(f"  piece usage      : {dict(collections.Counter(p for r in rec for p in r).most_common())}")
+PY
 
 echo
 echo "=== pipeline measurement (the numbers) ==="
