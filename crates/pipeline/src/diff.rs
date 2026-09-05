@@ -183,6 +183,30 @@ pub struct DiffSummary {
     /// what surfaced this: the bug's whole signature is `u32_min_value=1,u32_max_value=0`.
     #[serde(default)]
     pub bounds_order_checked: u64,
+    /// tnum WELL-FORMEDNESS comparisons that could have failed — `value & mask` can only
+    /// be non-zero when both halves are non-zero, so a register with an all-unknown or
+    /// all-known tnum contributes nothing.
+    #[serde(default)]
+    pub tnum_wellformed_checked: u64,
+    /// Programs whose `BPF_F_TEST_REG_INVARIANTS` load actually ran against an accepted
+    /// baseline — the denominator for `reg_invariants_violation`.
+    ///
+    /// This is the channel calibration pair two (92424801261d, devlog 0064) certified, and
+    /// until 0065 nothing counted it: the check lives inside `check_prune_differential`
+    /// but is deliberately independent of `prune_pairs_checked`, which only counts pairs
+    /// where the state-freq flag changed the state space. A rejected baseline says nothing
+    /// about the invariant, so those are excluded.
+    #[serde(default)]
+    pub reg_invariants_checked: u64,
+    /// Records carrying a JIT-vs-interpreter execution comparison.
+    ///
+    /// MEASURED 2026-09-06: this is ZERO on every capture the project has ever taken. The
+    /// verifier-log parser sets `jit_interp_diff: None` unconditionally ("v0: ALWAYS_ON
+    /// kernel, no interp"), so that invariant has never examined a single real record and
+    /// its silence has always been an absence of evidence. Reported so it cannot keep
+    /// reading like the other legs' zeros.
+    #[serde(default)]
+    pub jit_interp_checked: u64,
     /// Runtime ground-truth samples (BPF_PROG_TEST_RUN retvals) actually compared
     /// against the verifier's proven bound on the return register. The denominator
     /// for the runtime oracle — the ONLY leg that does not trust the verifier log
@@ -214,6 +238,36 @@ pub struct DiffSummary {
     /// construction, so this direction is an expected artefact of the instrument.
     #[serde(default)]
     pub prune_resource_artifacts: u64,
+}
+
+impl DiffSummary {
+    /// Read a denominator by the field name [`INVARIANT_DENOMINATORS`] uses.
+    ///
+    /// `None` means the name does not resolve — which the registry guard treats as a
+    /// failure, since a denominator nobody can read is not a denominator.
+    pub fn denominator(&self, field: &str) -> Option<u64> {
+        Some(match field {
+            "helper_args_checked" => self.helper_args_checked,
+            "documented_cases_checked" => self.documented_cases_checked,
+            "tnum_bounds_checked" => self.tnum_bounds_checked,
+            "reg32_checked" => self.reg32_checked,
+            "bounds_order_checked" => self.bounds_order_checked,
+            "tnum_wellformed_checked" => self.tnum_wellformed_checked,
+            "reg_invariants_checked" => self.reg_invariants_checked,
+            "jit_interp_checked" => self.jit_interp_checked,
+            "runtime_checked" => self.runtime_checked,
+            "runtime_writes_checked" => self.runtime_writes_checked,
+            "store_locations_checked" => self.store_locations_checked,
+            "prune_pairs_checked" => self.prune_pairs_checked,
+            _ => return None,
+        })
+    }
+
+    /// The denominator behind a finding kind, or `None` if the kind is unregistered.
+    pub fn denominator_for_kind(&self, kind: &str) -> Option<u64> {
+        let (_, field) = INVARIANT_DENOMINATORS.iter().find(|(k, _)| *k == kind)?;
+        self.denominator(field)
+    }
 }
 
 /// The DIFF_FINDINGS payload for a period.
@@ -279,6 +333,9 @@ pub fn run(
     let mut tnum_bounds_checked = 0u64;
     let mut reg32_checked = 0u64;
     let mut bounds_order_checked = 0u64;
+    let mut tnum_wellformed_checked = 0u64;
+    let mut reg_invariants_checked = 0u64;
+    let mut jit_interp_checked = 0u64;
     let mut runtime_checked = 0u64;
     let mut runtime_writes_checked = 0u64;
     let mut store_locations_checked = 0u64;
@@ -293,6 +350,8 @@ pub fn run(
             &mut findings,
             &mut tnum_bounds_checked,
             &mut bounds_order_checked,
+            &mut tnum_wellformed_checked,
+            &mut jit_interp_checked,
         );
         check_subregister_invariants(
             idx,
@@ -310,6 +369,7 @@ pub fn run(
             &mut findings,
             &mut prune_pairs_checked,
             &mut prune_resource_artifacts,
+            &mut reg_invariants_checked,
         );
         check_helper_proto(idx, record, ground_truth, &mut findings);
         check_helper_observations(
@@ -339,6 +399,9 @@ pub fn run(
         tnum_bounds_checked,
         reg32_checked,
         bounds_order_checked,
+        tnum_wellformed_checked,
+        reg_invariants_checked,
+        jit_interp_checked,
         runtime_checked,
         runtime_writes_checked,
         store_locations_checked,
@@ -370,6 +433,8 @@ fn check_logical_invariants(
     out: &mut Vec<DivergenceFinding>,
     checkable: &mut u64,
     order_checked: &mut u64,
+    wellformed_checked: &mut u64,
+    jit_checked: &mut u64,
 ) {
     for snap in &record.core.register_evolution {
         for reg in &snap.regs {
@@ -380,6 +445,12 @@ fn check_logical_invariants(
 
             // tnum well-formedness: known bits (value) and unknown bits (mask) must
             // be disjoint. A bit that is both known-1 and unknown is a corrupt tnum.
+            // `value & mask` can only be non-zero when BOTH halves are: an all-known
+            // tnum (mask 0) and an all-unknown one (value 0) are well-formed by
+            // construction and cannot contribute evidence either way.
+            if reg.tnum.value != 0 && reg.tnum.mask != 0 {
+                *wellformed_checked += 1;
+            }
             let overlap = reg.tnum.value & reg.tnum.mask;
             if overlap != 0 {
                 out.push(DivergenceFinding {
@@ -487,6 +558,7 @@ fn check_logical_invariants(
     // JIT/interpreter equivalence: a verified program must execute identically
     // under the JIT and the interpreter. Any divergence is a soundness violation.
     if let Some(d) = &record.core.jit_interp_diff {
+        *jit_checked += 1;
         if d.retval_jit != d.retval_interp || !d.data_out_equal {
             out.push(DivergenceFinding {
                 record_index: Some(idx),
@@ -662,6 +734,44 @@ fn check_documented_behavior(
     }
     true
 }
+
+/// EVERY invariant's denominator, by finding kind.
+///
+/// The standing rule out of 0025 was "never report zero findings without a denominator".
+/// 0065 showed that rule has a hole: an invariant can be added with NO denominator at all,
+/// and then the rule cannot even fire, because there is no counter to look at. Four checks
+/// had lived that way — the two 64-bit and two 32-bit ordering checks — for thirty-five
+/// legs, and auditing the rest turned up three more (`tnum_malformed`,
+/// `reg_invariants_violation`, `jit_interp_divergence`).
+///
+/// So the rule is now structural: every kind this stage can emit MUST name the counter
+/// that says how often its check could have fired. `denominator_registry_covers_every_finding_kind`
+/// scans this file for `kind: "..."` literals and fails if one is missing here, so a new
+/// invariant cannot reach CI without declaring what it was measured against.
+///
+/// The second element is a `DiffSummary` field name, resolved by
+/// [`DiffSummary::denominator`].
+pub const INVARIANT_DENOMINATORS: &[(&str, &str)] = &[
+    ("const_tnum_range_mismatch", "tnum_bounds_checked"),
+    ("documented_behavior_mismatch", "documented_cases_checked"),
+    ("documented_message_drift", "documented_cases_checked"),
+    ("helper_arg_type_mismatch", "helper_args_checked"),
+    ("jit_interp_divergence", "jit_interp_checked"),
+    ("prune_soundness_desync", "prune_pairs_checked"),
+    ("prune_verdict_disagreement", "prune_pairs_checked"),
+    ("reg32_reg64_inconsistent", "reg32_checked"),
+    ("reg_invariants_violation", "reg_invariants_checked"),
+    ("runtime_bound_violation", "runtime_checked"),
+    ("runtime_oob_write", "runtime_writes_checked"),
+    ("s32_bounds_inverted", "bounds_order_checked"),
+    ("signed_bounds_inverted", "bounds_order_checked"),
+    ("store_location_desync", "store_locations_checked"),
+    ("tnum32_bounds_inconsistent", "reg32_checked"),
+    ("tnum_bounds_inconsistent", "tnum_bounds_checked"),
+    ("tnum_malformed", "tnum_wellformed_checked"),
+    ("u32_bounds_inverted", "bounds_order_checked"),
+    ("unsigned_bounds_inverted", "bounds_order_checked"),
+];
 
 /// Whether an ordering comparison on `[lo, hi]` could possibly have reported a
 /// violation, and therefore counts toward `bounds_order_checked`.
@@ -847,6 +957,7 @@ fn check_prune_differential(
     out: &mut Vec<DivergenceFinding>,
     checked: &mut u64,
     artifacts: &mut u64,
+    inv_checked: &mut u64,
 ) {
     let p = match &record.core.prune_probe {
         Some(p) => p,
@@ -856,6 +967,11 @@ fn check_prune_differential(
     // warn-and-recover to a hard -EFAULT. This is independent of the pruning
     // question, and it is checked even when the flag changed nothing: an EFAULT here
     // is the verifier reporting an internal inconsistency about ITSELF.
+    // The denominator: the invariant load only says something when the baseline
+    // ACCEPTED the program. A rejected baseline never reached the state in question.
+    if p.base_accept {
+        *inv_checked += 1;
+    }
     if p.inv_reason == "efault" && p.base_accept {
         out.push(DivergenceFinding {
             record_index: Some(idx),

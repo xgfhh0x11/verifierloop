@@ -81,6 +81,19 @@ fn main() {
         "         bound-ordering comparisons that could have failed: {}",
         dif.summary.bounds_order_checked
     );
+    println!(
+        "         tnum well-formedness: {}   |   REG_INVARIANTS loads on accepted \
+         programs: {}",
+        dif.summary.tnum_wellformed_checked, dif.summary.reg_invariants_checked
+    );
+    // The gap the registry guard exposed (0066): this invariant has never examined a
+    // record, because the parser sets jit_interp_diff to None unconditionally.
+    if dif.summary.jit_interp_checked == 0 {
+        println!(
+            "         JIT-vs-interpreter: 0 comparisons — this leg has NEVER run. Its\n\
+             \x20          silence is an absence of evidence, not a clean result."
+        );
+    }
     // The intrinsic leg's denominator is the one that was missing until 0025, and
     // its absence hid the real state of the corpus: the committed syzkaller volume
     // scores ZERO here, so that leg's "0 findings" was 0 out of 0.

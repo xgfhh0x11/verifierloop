@@ -82,6 +82,14 @@ class DiffSummary:
     # resolves to its extreme and can never be on the wrong side, so only comparisons
     # with both endpoints away from their extremes are counted.
     bounds_order_checked: int = 0
+    # tnum well-formedness (0066). `value & mask` can only be non-zero when a register
+    # carries known-1 bits AND unknown bits at once; nine committed families never do.
+    tnum_wellformed_checked: int = 0
+    # The REG_INVARIANTS verdict channel (0066) — the one calibration pair two certified.
+    reg_invariants_checked: int = 0
+    # MEASURED 0 on every capture ever taken: the verifier-log parser sets
+    # jit_interp_diff=None unconditionally, so this invariant has never run (0066).
+    jit_interp_checked: int = 0
 
 
 @dataclass

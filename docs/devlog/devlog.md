@@ -5136,3 +5136,80 @@ yapılan her şeyi geri alır** — stale-binary ipucunun editör hâli.
 
 Üç bağımsız çift, üç ayrı kör nokta tipi. `calibration.rs` 12 test + 3 parser unit testi,
 hiçbiri VM istemiyor. Workspace 293 yeşil.
+
+---
+
+## 0066 — Payda kuralını alışkanlıktan GUARD'a çevirmek: üç paydasız invariant daha, biri hiç koşmamış
+
+Reviewer'ın 0065 üzerine önerisi: "yeni bir invariant eklenirken paydası tanımlanmadan CI
+geçmesin. Yoksa 40. bacakta dördüncü bir paydasız-invariant çıkar."
+
+Haklıydı — ama tahmininden fazlası çıktı: **üç tane.**
+
+### 1. Kuralın deliği
+
+0025'in duran kuralı "sıfır paydada sessiz kalma" idi. 0065 gösterdi ki kuralın
+göremediği bir delik var: bir invariant **hiç payda tanımlanmadan** eklenebiliyor, ve o
+zaman kural ateşlenemiyor bile — bakılacak bir sayaç yok.
+
+Diff aşamasının bütün bulgu türlerini denetledim. 19 türden 4'ü (0065'te düzelttiğim
+sıralama kontrolleri) zaten paydasızdı. Kalanlarda üç tane daha:
+
+| bulgu | ne zamandan beri paydasız |
+|---|---|
+| `tnum_malformed` | ilk bacaktan beri |
+| `reg_invariants_violation` | 0042'den beri — **kalibrasyon çift-2'nin sertifikaladığı kanal** |
+| `jit_interp_divergence` | başından beri |
+
+### 2. `jit_interp_divergence` — asıl yakalanan
+
+Bu invariant **hiçbir kaydı hiç incelememiş**. `verifier_log.rs` `jit_interp_diff`'i
+koşulsuz `None` yapıyor (`// v0: ALWAYS_ON kernel, no interp`). Yani projenin aldığı her
+capture'da bu bacağın sessizliği bir kanıt yokluğu — 0025'in ortaya çıkarmak için
+yazıldığı şeklin ta kendisi, kırk bacak boyunca gözden kaçmış çünkü kimse saymamış.
+
+Düzeltilmedi, **sabitlendi**: `jit_interp_checked` sıfır olduğunu bildiriyor, ve test
+bunu bilinen bir boşluk olarak pinliyor ("bir interpreter kanalı doğduğunda bu assert
+ters döner ve testi gerçek bir payda istemek üzere yeniden yaz").
+
+### 3. Ölçüm — ve iki yeni sayacın söyledikleri
+
+| korpus | `tnum_wellformed` | `reg_invariants` | `jit_interp` |
+|---|---|---|---|
+| `gen-comp-704` | 351 | **595** | 0 |
+| `gen-mixed-396` | 422 | 0 | 0 |
+| `gen-pkt-242` | 330 | 0 | 0 |
+| `gen-pktcmp-240` | **0** | 0 | 0 |
+| `syz-replay-184` | **0** | 0 | 0 |
+
+İki şey çıktı:
+
+**(a)** Well-formedness kontrolü sandığımdan çok daha ince: 704 programda 351. Çünkü
+`value & mask` ancak bir register aynı anda hem bilinen-1 bitleri hem bilinmeyen bitleri
+taşıyorsa sıfırdan farklı olabilir, ve çoğu durum ikisinden biri. **Dokuz aile bu
+kontrolde tam sıfır alıyor** — iki syzkaller korpusu ve 240 programlık paket-karşılaştırma
+süpürmesi dahil. Onların "bozuk tnum yok"u baştan beri 0/0'dı.
+
+**(b)** `reg_invariants_checked=595` — kompozisyon korpusunun kabul sayısı. Yani
+0064'te sertifikaladığımız VERDICT kanalı bu korpusta 595 kez gerçekten koşmuş, ve
+temiz. Bu sayı olmadan o "0 ihlal" hiçbir şey demiyordu.
+
+### 4. Guard
+
+`INVARIANT_DENOMINATORS`: her bulgu türü → paydası olan sayaç. Test kendi kaynağını
+(`src/diff.rs`) tarıyor, her `kind: "..."` literalini çıkarıyor ve kayıt defterinde
+olmayanı reddediyor. Ters yön de kapalı: artık üretilmeyen bir tür için kayıt kalırsa o
+da hata (kapsam hakkında artık doğru olmayan bir iddia).
+
+Dişler sınandı: `tnum_malformed`'ı `brand_new_uncounted_check` diye yeniden adlandırdım,
+iki test de doğru mesajla düştü. Yorum satırları taranmıyor — bu dosyanın kendi metni
+aradığı deseni içeriyor, ve onu yutan bir tarayıcı hayalet tür bildirirdi.
+
+### 5. Bu kuralın olgunlaşma çizgisi
+
+- **0025**: payda diye bir şey olduğunu keşfet.
+- **0025-0064**: her yeni bacakta payda ekle (alışkanlık).
+- **0065**: alışkanlığın dört invariant'ı atladığını fark et.
+- **0066**: alışkanlığı guard'a çevir — atlamak artık derlenmiyor.
+
+Workspace 299 yeşil.
