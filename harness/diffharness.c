@@ -36,6 +36,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/ioctl.h>
 #include <time.h>
 #include <unistd.h>
 #include <sys/syscall.h>
@@ -3460,6 +3462,149 @@ static void report_jit_mode(int argc, char **argv) {
     int fd = open(path, O_RDONLY);
     if (fd >= 0) { ssize_t r = read(fd, buf, sizeof(buf) - 1); (void)r; close(fd); actual = atoi(buf); }
     printf("JITMODE requested=%s actual=%d\n", want_off ? "interp" : "default", actual);
+}
+
+// ---- KCOV: does the verifier's code coverage actually vary per program? ------
+//
+// The plan is coverage-guided generation: keep and mutate the programs that reach kernel
+// code nothing has reached yet. That only works if a program's load actually PRODUCES a
+// distinguishing coverage signal — if two different programs light up the same PCs, the
+// feedback carries no information and the whole idea is dead. So this measures it before
+// anything is built on it.
+//
+// KCOV is per-task and excludes interrupts, so what it records here is essentially the
+// BPF_PROG_LOAD syscall path — the verifier. CONFIG_KCOV_INSTRUMENT_ALL means every
+// kernel function is instrumented, so the absolute counts are large; what matters is
+// whether the SETS differ.
+#define KCOV_INIT_TRACE _IOR('c', 1, unsigned long)
+#define KCOV_ENABLE     _IO('c', 100)
+#define KCOV_DISABLE    _IO('c', 101)
+#define KCOV_TRACE_PC   0
+#define KCOV_ENTRIES    (1 << 18)
+
+struct kcov_ctx { int fd; unsigned long *area; };
+
+static int kcov_open(struct kcov_ctx *k) {
+    k->fd = open("/sys/kernel/debug/kcov", O_RDWR);
+    if (k->fd < 0) return -1;
+    if (ioctl(k->fd, KCOV_INIT_TRACE, (unsigned long)KCOV_ENTRIES) != 0) {
+        close(k->fd); k->fd = -1; return -1;
+    }
+    k->area = (unsigned long *)mmap(NULL, KCOV_ENTRIES * sizeof(unsigned long),
+                                    PROT_READ | PROT_WRITE, MAP_SHARED, k->fd, 0);
+    if (k->area == MAP_FAILED) { close(k->fd); k->fd = -1; return -1; }
+    return 0;
+}
+/* Coverage is collected for the calling thread between ENABLE and DISABLE; area[0] is the
+   number of PCs recorded, area[1..] the PCs themselves. */
+static void kcov_start(struct kcov_ctx *k) {
+    if (k->fd < 0) return;
+    ioctl(k->fd, KCOV_ENABLE, KCOV_TRACE_PC);
+    __atomic_store_n(&k->area[0], 0, __ATOMIC_RELAXED);
+}
+static unsigned long kcov_stop(struct kcov_ctx *k) {
+    if (k->fd < 0) return 0;
+    unsigned long n = __atomic_load_n(&k->area[0], __ATOMIC_RELAXED);
+    ioctl(k->fd, KCOV_DISABLE, 0);
+    return n < KCOV_ENTRIES ? n : KCOV_ENTRIES - 1;
+}
+
+/* A cheap set of seen PCs: open-addressed table over the low bits, enough for a probe. */
+#define KSEEN_BITS 20
+#define KSEEN_N (1u << KSEEN_BITS)
+static unsigned long *g_kseen;
+static unsigned g_kseen_count;
+static int kseen_add(unsigned long pc) {   /* 1 if new */
+    unsigned h = (unsigned)((pc * 0x9e3779b97f4a7c15ULL) >> (64 - KSEEN_BITS));
+    for (unsigned i = 0; i < 64; i++) {
+        unsigned s = (h + i) & (KSEEN_N - 1);
+        if (g_kseen[s] == 0) { g_kseen[s] = pc; g_kseen_count++; return 1; }
+        if (g_kseen[s] == pc) return 0;
+    }
+    return 0;
+}
+
+static void run_probe_kcov(void) {
+    struct kcov_ctx k;
+    if (kcov_open(&k) != 0) {
+        printf("KCOV unavailable errno=%d (is debugfs mounted and CONFIG_KCOV set?)\n", errno);
+        return;
+    }
+    g_kseen = (unsigned long *)calloc(KSEEN_N, sizeof(unsigned long));
+    if (!g_kseen) { printf("KCOV alloc failed\n"); return; }
+
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 16; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+
+    /* Deliberately DIFFERENT shapes, so "coverage varies" is a claim about the verifier's
+       paths and not about noise: a bare exit, plain ALU, a branch, a spill/reload, a
+       linked pair with a delta, and a rejected program. */
+    /* A LOCAL rng, deliberately. This probe sits above the gen-intent family, and reusing
+       that family's gi_pick() would be the declaration-ordering trap for the fourth time
+       (0045 LOOPR_INPUTS, 0054 BPF_FUNC_dynptr_from_mem, 0056 the coverage tables). The
+       cheapest cure is not to hoist but not to depend. */
+    uint32_t kr = 0x12345678u;
+    #define KPICK(N) ({ kr ^= kr << 13; kr ^= kr >> 17; kr ^= kr << 5; (int)(kr % (unsigned)(N)); })
+    for (int prog = 0; prog < 24; prog++) {
+        struct bpf_insn ins[64];
+        int n = 0;
+        const int kind = prog % 6;
+        ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+        ins[n++] = (struct bpf_insn){0};
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+        const int jnull = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);
+        switch (kind) {
+        case 0: break;
+        case 1: ins[n++] = BPF_ALU64_IMM(BPF_AND, BPF_REG_6, 7 + KPICK(24)); break;
+        case 2: ins[n++] = BPF_JMP_IMM(BPF_JGT, BPF_REG_6, 3 + KPICK(12), 1);
+                ins[n++] = BPF_MOV64_IMM(BPF_REG_6, 0); break;
+        case 3: ins[n++] = BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_6, -16);
+                ins[n++] = BPF_LDX_MEM(BPF_DW, BPF_REG_6, BPF_REG_10, -16); break;
+        case 4: ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_6);
+                ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_7, 4);
+                ins[n++] = BPF_JMP_IMM(BPF_JGT, BPF_REG_7, 12, 1);
+                ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_6, BPF_REG_7); break;
+        case 5: ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_2, BPF_REG_6);
+                ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_2, 0, 1); break;  /* expect reject */
+        }
+        ins[n++] = BPF_MOV64_REG(BPF_REG_0, BPF_REG_6);
+        ins[n++] = BPF_EXIT_INSN();
+        const int e0 = n;
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+        ins[n++] = BPF_EXIT_INSN();
+        ins[jnull].off = e0 - jnull - 1;
+
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+
+        kcov_start(&k);
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        unsigned long cnt = kcov_stop(&k);
+        int lerr = errno;
+        if (fd >= 0) close(fd);
+
+        unsigned fresh = 0;
+        for (unsigned long i = 0; i < cnt; i++)
+            fresh += (unsigned)kseen_add(k.area[i + 1]);
+        printf("KCOV prog=%02d kind=%d verdict=%s errno=%d pcs=%lu new=%u total_seen=%u\n",
+               prog, kind, fd >= 0 ? "accept" : "reject", fd >= 0 ? 0 : lerr,
+               cnt, fresh, g_kseen_count);
+    }
+    close(map_in);
+    free(g_kseen);
+    #undef KPICK
 }
 
 // ---- the aimed closed-form family (--gen-intent) ----------------------------
@@ -7513,6 +7658,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-spill") == 0) {
         run_probe_spill();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-kcov") == 0) {
+        run_probe_kcov();
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--probe-ref") == 0) {

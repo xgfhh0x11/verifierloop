@@ -38,6 +38,10 @@ cat > "$MNT/root/run-harness.sh" <<EOS
 #!/bin/sh
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
+# KCOV lives in debugfs, and coverage-guided generation needs it. Harmless when the
+# kernel has no KCOV: the mount fails and the harness reports the probe as unavailable
+# rather than silently producing no feedback.
+mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null
 echo "===HARNESS-BEGIN==="
 /root/diffharness $HARNESS_ARGS
 echo "===HARNESS-END==="
