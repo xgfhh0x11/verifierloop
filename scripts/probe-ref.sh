@@ -21,6 +21,17 @@ grep -oE 'name=[a-z0-9_]+ .*verdict=[A-Za-z-]+' "$LOG" |
   sed 's/name=//' | awk '{printf "  %-34s %s\n", $1, $NF}'
 echo "  ---"
 grep -oE 'verdict=[A-Za-z-]+' "$LOG" | sort | uniq -c | sed 's/^/  /'
-grep -q 'verdict=DISAGREE' "$LOG" && { echo "  DISAGREEMENT — triage: trap program, then bpfref, then the kernel" >&2; exit 1; }
-grep -q 'verdict=not-run' "$LOG" && { echo "  a trap did not run — it measured nothing" >&2; exit 1; }
-echo "  reference interpreter calibrated"
+# The AUTHORITY is the single counted summary line, not the per-trap greps. The serial
+# console is shared with the kernel's printk, so a line can be split mid-word — it happened
+# on this very probe (`verdict=agre`), and a split `DISAGREE` would slip past a grep. If the
+# kernel manages to split even the summary, no summary is found and this fails loudly
+# instead of passing on an absence.
+SUM=$(grep -m1 '^REFCAL ' "$LOG" || true)
+[ -n "$SUM" ] || { echo "  no REFCAL summary — the capture is damaged, not clean" >&2; exit 1; }
+TOT=${SUM##*total=}; TOT=${TOT%% *}
+AGR=${SUM##*agree=}
+[ "$TOT" = "$AGR" ] && [ "$TOT" -ge 16 ] || {
+  echo "  calibration FAILED: $SUM — triage: the trap program, then bpfref, then the kernel" >&2
+  exit 1
+}
+echo "  reference interpreter calibrated ($SUM)"

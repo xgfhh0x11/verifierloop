@@ -5960,3 +5960,70 @@ satırları basılıyor. Pahalı log yalnız bir bulgu olduğunda, verbose yenid
 ödeniyor — triyajın verifier'ın kendi sözleriyle başlayabilmesi için.
 
 Workspace 335 yeşil.
+
+---
+
+## 0079 — Gramere karar yüzeyi: red oranı %0 → %23, ve tavanın gerçekten tavan olduğunun kanıtı
+
+### 1. 0078'in bıraktığı sınır
+
+456 bin programın hepsi kabul edilmişti. Gramer saf skaler iş üretiyordu — sınırı
+**kanıtlanması gereken** hiçbir bellek erişimi yoktu, dolayısıyla verifier hiç zor karar
+vermiyor, reddetme yolunun tamamı (`check_mem_access`, `adjust_ptr_min_max_vals`, etrafındaki
+sınır arıtması) erişilemez kalıyordu.
+
+### 2. Eklenen: `store` adımı
+
+Prologue artık ikinci bir map değeri de arıyor ve pointer'ı **r8**'de tutuyor (r6/r7/r9
+callee-saved olduğu için ikinci helper çağrısından sağ çıkıyorlar). Adım şunu üretiyor:
+
+```
+r1 = r8            ; pointer'ı kopyala
+r1 += rX           ; aralığını verifier'ın bilmesi gereken bir skalerle kaydır
+*(u8 *)(r1 + K) = -1
+```
+
+r8 hiç değişmiyor, yani şekil tekrarlanabiliyor; r1 prologue'un helper çağrısından sonra ölü,
+scratch olarak kullanılıyor.
+
+### 3. Referans interpreter'ın bellek modeli genişledi
+
+Store'u modellemek şart — modellemeseydi tam da ilginç programlarda oracle susardı. `bpfref`
+artık **adres tabanlı** iki bölge tanıyor (stack ve map değeri), yani programın kopyalayıp
+kaydırdığı bir pointer'ı izleyebiliyor; sabit bir taban register'ı tanımakla yetinmiyor.
+Hiçbir bölgeye düşmeyen erişim tahmin edilmiyor, `BPFREF_OOB` diye bildiriliyor.
+
+Değişiklikten sonra kalibrasyon tekrar koştu: **16/16**.
+
+### 4. Ölçüm
+
+300 saniye:
+
+| | 0078 | 0079 |
+|---|---|---|
+| iterasyon | 456,071 | **514,441** |
+| kabul / red | 456,071 / **0** | 396,618 / **117,823** |
+| oracle karşılaştırması | 3,648,568 | **3,172,944** |
+| kapsama | 4789 PC | **4942 PC** |
+| KCOV taşması | — | **0** |
+| bulgu | 0 | **0** |
+
+### 5. Ve platonun gerçekten plato olduğu
+
+`trunc=0`: hiçbir yükleme KCOV tamponunu doldurmadı, yani kapsama kaybı yok. **Tavan bir
+tampon artefaktı değil, gramerin kendisi.** Bu ayrımı ölçmeden "tavan" demek, kaybedilmiş
+kapsamayı doygunluk sanmak olurdu.
+
+Sıradaki kaldıraç daha fazla program değil, daha fazla **bellek TÜRÜ**: paket
+pointer'ları (data/data_end), stack pointer'ları, farklı map tipleri, helper çağrıları —
+her biri `check_mem_access`'in başka bir dalını açıyor.
+
+### 6. Bir de kırılgan kontrol düzeltildi
+
+Kalibrasyon kontrolü satır-satır grep'e dayanıyordu, ama seri konsol kernel'in printk'siyle
+paylaşılıyor ve bir satır kelime ortasından bölünebiliyor — bu probe'da oldu
+(`verdict=agre`). Bölünmüş bir `DISAGREE` grep'e takılmazdı. Otorite artık tek ve sayılı bir
+özet satırı (`REFCAL total=16 agree=16`); kernel onu da bölerse özet bulunamıyor ve kontrol
+**yokluk üzerinden geçmek yerine gürültüyle düşüyor**.
+
+Workspace 335 yeşil.

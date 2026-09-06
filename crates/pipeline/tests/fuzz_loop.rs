@@ -65,31 +65,43 @@ fn coverage_and_corpus_both_grow() {
     }
 }
 
-/// AND THE LIMIT THIS RUN EXPOSED, recorded rather than glossed.
+/// THE CEILING, RAISED AND RE-MEASURED (devlog 0079).
 ///
-/// Every one of 456k programs was ACCEPTED — the grammar emits pure scalar work with no
-/// memory access whose bound must be proven, so the verifier never has to make a hard
-/// decision and the whole rejection path is unreachable. Coverage plateaus accordingly:
-/// 4509 PCs at two thousand iterations, 4789 at four hundred and fifty thousand.
+/// 0078's version of this test asserted `reject == 0` and said: "if this became non-zero
+/// the grammar gained a decision surface — re-measure the ceiling below, it should have
+/// moved." It did, so this is that re-measurement.
 ///
-/// The loop is not the bottleneck; the grammar's ceiling is. This test pins the ceiling so
-/// that raising it is visible as a change in the number rather than an assertion.
+/// The grammar gained a store through a map value whose bound the verifier must PROVE.
+/// That is the difference between a program the verifier waves through and one it has to
+/// decide about, and it opened check_mem_access and the pointer-bounds refinement around
+/// it. Rejections went from none at all to roughly a quarter of everything emitted, and the
+/// coverage plateau moved 4789 -> 4942 PCs.
+///
+/// The plateau is REAL, not an artefact: `trunc=0` says no load ever filled the KCOV
+/// buffer, so nothing was lost to truncation. What limits coverage now is still the
+/// grammar — fourteen step kinds over three scalar registers, one pointer and one map — and
+/// the next lift is more KINDS of memory, not more programs.
 #[test]
-fn the_grammars_coverage_ceiling_is_the_current_limit() {
+fn the_decision_surface_is_live_and_the_ceiling_moved() {
     let ss = status_lines();
     let last = ss.last().unwrap();
-    assert_eq!(
-        field(last, "reject="),
-        0,
-        "if this became non-zero the grammar gained a decision surface — re-measure the \
-         ceiling below, it should have moved"
-    );
-    let early = field(ss[0], "seen_pcs=");
-    let end = field(last, "seen_pcs=");
+    let acc = field(last, "accept=");
+    let rej = field(last, "reject=");
+    assert!(rej > 0, "the grammar must be able to produce a rejection at all");
     assert!(
-        end - early < 500,
-        "coverage grew by {} after warm-up, which would mean the ceiling moved",
-        end - early
+        rej * 10 > acc && rej < acc,
+        "the decision surface must be genuinely two-sided, not a token minority or a \
+         majority: accept {acc}, reject {rej}"
+    );
+    assert!(
+        field(last, "seen_pcs=") > 4_900,
+        "the ceiling should sit above the pre-store plateau of 4789"
+    );
+    assert_eq!(
+        field(last, "trunc="),
+        0,
+        "a load that filled the KCOV buffer lost coverage, and lost coverage looks exactly \
+         like a plateau — the ceiling claim is only honest while this is zero"
     );
 }
 

@@ -29,6 +29,13 @@
 #include <string.h>
 
 #define BPFREF_STACK 512
+/* Two memory regions, addressed numerically so the interpreter can follow a pointer the
+   program COPIES and offsets rather than only recognising a hardcoded base register. The
+   bases are arbitrary but far apart, so an access that lands in neither is a genuine
+   out-of-range rather than an accident of layout. */
+#define BPFREF_STACK_BASE 0x20000UL
+#define BPFREF_MAP_BASE   0x10000UL
+#define BPFREF_MAP_SIZE   16
 
 enum bpfref_status {
     BPFREF_OK = 0,
@@ -62,9 +69,21 @@ struct bpfref_result {
 #define BR_JMP32 0x06
 #define BR_ALU64 0x07
 
-static inline int bpfref_stack_ok(int64_t off, int size) {
-    return off <= -size && off >= -BPFREF_STACK;
+/* Resolve an address to a region. Returns the byte pointer, or NULL when the access is
+   out of every region — which for a program the verifier ACCEPTED would itself be worth
+   knowing, and is reported as BPFREF_OOB rather than guessed at. */
+static inline unsigned char *bpfref_resolve(unsigned char *stack, unsigned char *map,
+                                            uint64_t addr, int size) {
+    if (addr >= BPFREF_STACK_BASE - BPFREF_STACK && addr + (uint64_t)size <= BPFREF_STACK_BASE)
+        return stack + (addr - (BPFREF_STACK_BASE - BPFREF_STACK));
+    if (addr >= BPFREF_MAP_BASE && addr + (uint64_t)size <= BPFREF_MAP_BASE + BPFREF_MAP_SIZE)
+        return map + (addr - BPFREF_MAP_BASE);
+    return NULL;
 }
+
+static struct bpfref_result bpfref_run_at2(const struct bpf_insn *ins, int n, int start_pc,
+                                           uint64_t ctx, uint64_t s6, uint64_t s7,
+                                           uint64_t s9, int map_in_r8);
 
 /* The general entry point: begin at `start_pc` with r6/r7/r9 preloaded.
  *
@@ -73,17 +92,28 @@ static inline int bpfref_stack_ok(int64_t off, int size) {
 static struct bpfref_result bpfref_run_at(const struct bpf_insn *ins, int n, int start_pc,
                                           uint64_t ctx, uint64_t s6, uint64_t s7,
                                           uint64_t s9) {
+    return bpfref_run_at2(ins, n, start_pc, ctx, s6, s7, s9, 0);
+}
+
+static struct bpfref_result bpfref_run_at2(const struct bpf_insn *ins, int n, int start_pc,
+                                           uint64_t ctx, uint64_t s6, uint64_t s7,
+                                           uint64_t s9, int map_in_r8) {
     struct bpfref_result out;
     memset(&out, 0, sizeof(out));
     uint64_t r[11];
     memset(r, 0, sizeof(r));
     unsigned char stack[BPFREF_STACK];
+    unsigned char map[BPFREF_MAP_SIZE];
     memset(stack, 0, sizeof(stack));
+    memset(map, 0, sizeof(map));
     r[1] = ctx;
     r[6] = s6;
     r[7] = s7;
     r[9] = s9;
-    r[10] = 0;
+    r[10] = BPFREF_STACK_BASE;
+    /* A family that stores through a map value keeps the pointer in r8; the harness says
+       so rather than the interpreter guessing which register is a pointer. */
+    if (map_in_r8) r[8] = BPFREF_MAP_BASE;
 
     long budget = 1L << 22;
     int pc = start_pc;
@@ -228,11 +258,10 @@ static struct bpfref_result bpfref_run_at(const struct bpf_insn *ins, int n, int
         }
 
         case BR_LDX: {
-            if (src != 10) { out.status = BPFREF_UNSUPPORTED; goto fault; }
             const int size = BR_SIZE(code);
             const int w = size == 0x10 ? 1 : size == 0x08 ? 2 : size == 0x00 ? 4 : 8;
-            if (!bpfref_stack_ok(off, w)) { out.status = BPFREF_OOB; goto fault; }
-            const unsigned char *p = stack + (BPFREF_STACK + off);
+            const unsigned char *p = bpfref_resolve(stack, map, r[src] + (uint64_t)off, w);
+            if (!p) { out.status = BPFREF_OOB; goto fault; }
             uint64_t raw = 0;
             memcpy(&raw, p, (size_t)w);
             if (BR_MODE(code) == 0x60) {
@@ -256,11 +285,11 @@ static struct bpfref_result bpfref_run_at(const struct bpf_insn *ins, int n, int
 
         case BR_ST:
         case BR_STX: {
-            if (dst != 10) { out.status = BPFREF_UNSUPPORTED; goto fault; }
             if (BR_MODE(code) != 0x60) { out.status = BPFREF_UNSUPPORTED; goto fault; }
             const int size = BR_SIZE(code);
             const int w = size == 0x10 ? 1 : size == 0x08 ? 2 : size == 0x00 ? 4 : 8;
-            if (!bpfref_stack_ok(off, w)) { out.status = BPFREF_OOB; goto fault; }
+            unsigned char *p = bpfref_resolve(stack, map, r[dst] + (uint64_t)off, w);
+            if (!p) { out.status = BPFREF_OOB; goto fault; }
             uint64_t val;
             if (cls == BR_STX) {
                 val = r[src];
@@ -272,7 +301,7 @@ static struct bpfref_result bpfref_run_at(const struct bpf_insn *ins, int n, int
             } else {
                 val = (uint64_t)(uint32_t)imm;   /* narrowing: raw low-order bytes */
             }
-            memcpy(stack + (BPFREF_STACK + off), &val, (size_t)w);
+            memcpy(p, &val, (size_t)w);
             pc++;
             continue;
         }
@@ -351,7 +380,14 @@ static inline struct bpfref_result bpfref_run(const struct bpf_insn *ins, int n,
 static inline struct bpfref_result bpfref_run_seeded(const struct bpf_insn *ins, int n,
                                                      int start_pc, uint64_t r6, uint64_t r7,
                                                      uint64_t r9) {
-    return bpfref_run_at(ins, n, start_pc, 0, r6, r7, r9);
+    return bpfref_run_at2(ins, n, start_pc, 0, r6, r7, r9, 0);
+}
+
+/* Same, for a family whose prologue also leaves a map-value pointer in r8. */
+static inline struct bpfref_result bpfref_run_seeded_map(const struct bpf_insn *ins, int n,
+                                                         int start_pc, uint64_t r6,
+                                                         uint64_t r7, uint64_t r9) {
+    return bpfref_run_at2(ins, n, start_pc, 0, r6, r7, r9, 1);
 }
 
 static inline const char *bpfref_status_name(enum bpfref_status s) {

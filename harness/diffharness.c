@@ -3660,6 +3660,7 @@ enum gi_step {
     GI_SHIFT,     /* logical or arithmetic shift, both widths                        */
     GI_SCMP,      /* a signed compare, 64- or 32-bit, consuming the above            */
     GI_PAIR,      /* the whole link-then-diverge shape, emitted as one unit           */
+    GI_STORE,     /* a store through a map value — the grammar's DECISION surface      */
     GI_PIN,       /* make the verifier believe it knows the value EXACTLY              */
     GI_SDIV,      /* signed div/mod — the interpreter-level UB shape                   */
     GI_STEP_N
@@ -3673,6 +3674,7 @@ static const char *gi_step_name(enum gi_step s) {
     case GI_SPILL: return "spill"; case GI_W32: return "w32";
     case GI_SHIFT: return "shift"; case GI_SCMP: return "scmp";
     case GI_PAIR: return "pair"; case GI_PIN: return "pin";
+    case GI_STORE: return "store";
     case GI_SDIV: return "sdiv";
     default: return "?";
     }
@@ -3813,6 +3815,20 @@ static int gi_emit_body(const struct gi_genome *G, struct bpf_insn *ins, int n,
                 ins[n++] = BPF_JMP_IMM(BPF_JNE, A, K, 0);
             }
             break;
+        case GI_STORE: {
+            /* THE GRAMMAR'S CEILING, RAISED. 0078 measured 456k programs and not one
+               rejection: with no memory access whose bound must be PROVEN, the verifier
+               never makes a hard decision and its whole rejection path — check_mem_access,
+               adjust_ptr_min_max_vals, the bounds refinement around them — is unreachable.
+               This adds the decision: copy the map-value pointer, offset it by a scalar
+               whose range the verifier has to know, and store one byte.
+               r8 holds the pointer and is never itself modified, so the shape can repeat;
+               r1 is dead after the prologue's helper call and serves as scratch. */
+            ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_8);
+            ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_1, A);
+            ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_1, (short)(K % 8), -1);
+            break;
+        }
         case GI_PAIR: {
             /* The aimed shape as one unit — drawing link, delta and narrow independently
                assembled it in 2 of 305 programs (0074). */
@@ -3847,7 +3863,8 @@ static void run_gen_intent_family(void) {
     m.map_type = BPF_MAP_TYPE_ARRAY;
     m.key_size = 4; m.value_size = 16; m.max_entries = 1;
     int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
-    if (map_in < 0) {
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
         printf("===PROG genintent#err type=socket_filter ===\n"
                "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n",
                errno);
@@ -3874,6 +3891,17 @@ static void run_gen_intent_family(void) {
         ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);
         ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_0, 4);
         ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_9, BPF_REG_0, 8);
+        /* A second value, whose POINTER the body may store through. r6/r7/r9 are
+           callee-saved so they survive this helper call; r8 then holds the pointer for the
+           rest of the program and is never modified, so the store shape can repeat. */
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+        ins[n++] = (struct bpf_insn){0};
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+        const int jnull2 = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_8, BPF_REG_0);
         const int body = n;
 
         /* ---- generated body: closed-form once r6/r7/r9 are known ---- */
@@ -3896,6 +3924,7 @@ static void run_gen_intent_family(void) {
         ins[n++] = BPF_EXIT_INSN();
         for (int i = 0; i < nx; i++) ins[jexit[i]].off = tail - jexit[i] - 1;
         ins[jnull].off = exit_sentinel - jnull - 1;
+        ins[jnull2].off = exit_sentinel - jnull2 - 1;
 
         g_log[0] = '\0';
         union bpf_attr attr;
@@ -3930,7 +3959,7 @@ static void run_gen_intent_family(void) {
                 }
                 /* The reference: bpfref starts at the BODY with the seeds this harness
                    just wrote, and interprets the emitted bytes from there. */
-                struct bpfref_result ref = bpfref_run_seeded(ins, n, body, val[0], val[1], val[2]);
+                struct bpfref_result ref = bpfref_run_seeded_map(ins, n, body, val[0], val[1], val[2]);
 
                 static char pin[64], pout[64];
                 union bpf_attr t;
@@ -3999,6 +4028,7 @@ static void run_gen_intent_family(void) {
         printf("---LOG---\n%s\n---END---\n", g_log);
     }
     close(map_in);
+    close(map_out);
 }
 
 // ---- coverage-guided continuous fuzzing (--fuzz <seconds>) ------------------
@@ -4083,11 +4113,18 @@ static void run_fuzz(int seconds) {
     m.map_type = BPF_MAP_TYPE_ARRAY;
     m.key_size = 4; m.value_size = 16; m.max_entries = 1;
     int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
-    if (map_in < 0) { printf("FUZZ abort reason=map_create errno=%d\n", errno); return; }
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
+        printf("FUZZ abort reason=map_create errno=%d\n", errno); return;
+    }
 
     struct gi_ctx c; c.rng = 0xC0FFEEu;
     const time_t t0 = time(NULL);
     unsigned long iters = 0, accepted = 0, rejected = 0, compared = 0, findings = 0;
+    /* A load whose PC list filled the buffer lost coverage, and lost coverage looks exactly
+       like a plateau. Counted so "the ceiling" is a statement about the grammar rather than
+       about the buffer. */
+    unsigned long truncated = 0;
 
     printf("FUZZ start budget=%ds corpus_max=%d\n", seconds, FZ_CORPUS_MAX);
     while (time(NULL) - t0 < seconds) {
@@ -4110,6 +4147,17 @@ static void run_fuzz(int seconds) {
         ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);
         ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_0, 4);
         ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_9, BPF_REG_0, 8);
+        /* A second value, whose POINTER the body may store through. r6/r7/r9 are
+           callee-saved so they survive this helper call; r8 then holds the pointer for the
+           rest of the program and is never modified, so the store shape can repeat. */
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+        ins[n++] = (struct bpf_insn){0};
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+        const int jnull2 = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_8, BPF_REG_0);
         const int body = n;
         n = gi_emit_body(&G, ins, n, jexit, &nx, NULL, 0);
         const int tail = n;
@@ -4121,6 +4169,7 @@ static void run_fuzz(int seconds) {
         ins[n++] = BPF_EXIT_INSN();
         for (int i = 0; i < nx; i++) ins[jexit[i]].off = tail - jexit[i] - 1;
         ins[jnull].off = sentinel - jnull - 1;
+        ins[jnull2].off = sentinel - jnull2 - 1;
 
         union bpf_attr attr;
         memset(&attr, 0, sizeof(attr));
@@ -4135,6 +4184,7 @@ static void run_fuzz(int seconds) {
         iters++;
         if (fd >= 0) accepted++; else rejected++;
 
+        if (cnt >= KCOV_ENTRIES - 1) truncated++;
         unsigned fresh = 0;
         for (unsigned long i = 0; i < cnt; i++) fresh += (unsigned)kseen_add(k.area[i + 1]);
         if (fresh > 0 && corpus_n < FZ_CORPUS_MAX) {
@@ -4152,7 +4202,7 @@ static void run_fuzz(int seconds) {
                 const uint32_t in = GI_INPUTS[i];
                 uint32_t val[4] = { in, in ^ 0x5a5a5a5au, in + 3, 0 };
                 if (rt_map_set_bytes(map_in, 0, (const unsigned char *)val) < 0) continue;
-                struct bpfref_result ref = bpfref_run_seeded(ins, n, body, val[0], val[1], val[2]);
+                struct bpfref_result ref = bpfref_run_seeded_map(ins, n, body, val[0], val[1], val[2]);
                 if (ref.status != BPFREF_OK) continue;
                 static char pin[64], pout[64];
                 union bpf_attr t;
@@ -4197,17 +4247,18 @@ static void run_fuzz(int seconds) {
 
         if ((iters % 2000) == 0)
             printf("STATUS iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-                   " compared=%lu findings=%lu elapsed=%lds\n",
+                   " compared=%lu findings=%lu trunc=%lu elapsed=%lds\n",
                    iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
-                   (long)(time(NULL) - t0));
+                   truncated, (long)(time(NULL) - t0));
     }
     printf("FUZZ done iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-           " compared=%lu findings=%lu elapsed=%lds\n",
+           " compared=%lu findings=%lu trunc=%lu elapsed=%lds\n",
            iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
-           (long)(time(NULL) - t0));
+           truncated, (long)(time(NULL) - t0));
     free(corpus);
     free(g_kseen);
     close(map_in);
+    close(map_out);
 }
 
 
@@ -4306,6 +4357,13 @@ static void run_probe_ref(void) {
         BPF_MOV64_REG(BPF_REG_0, BPF_REG_1), BPF_EXIT_INSN()}},
     };
 
+    /* A COUNTED summary as well as the per-trap lines. The serial console is shared with
+       the kernel's printk, so a line can be split mid-word (OI-10, and it happened on this
+       very probe: `verdict=agre`). A shell check that greps for DISAGREE would miss a
+       SPLIT disagreement, so the authority is this single short line — and if the kernel
+       manages to split even that, the checker sees no summary and fails loudly instead of
+       passing on absence. */
+    int n_total = 0, n_agree = 0;
     for (unsigned t = 0; t < sizeof(traps) / sizeof(traps[0]); t++) {
         struct ref_trap *T = &traps[t];
         struct bpfref_result ref = bpfref_run(T->ins, T->n, 0);
@@ -4350,7 +4408,10 @@ static void run_probe_ref(void) {
                " ref_status=%s ref=0x%08x kernel=0x%08x verdict=%s\n",
                T->name, fd >= 0 ? "accept" : "reject", fd >= 0 ? 0 : lerr, ran, rerr,
                bpfref_status_name(ref.status), refv, kern, verdict);
+        n_total++;
+        if (strcmp(verdict, "agree") == 0) n_agree++;
     }
+    printf("REFCAL total=%d agree=%d\n", n_total, n_agree);
 }
 
 // ---- calibration probe: the sign-lost stack spill (--probe-spill) -----------
