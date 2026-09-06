@@ -5900,3 +5900,63 @@ ve o hâliyle çift bir üzerinde ikinci kez ateşledi. Testler yakaladı. Kapı
 Yokluğun yanlış okunması: **sekizinci kez.**
 
 Workspace 328 yeşil.
+
+---
+
+## 0078 — Kapsama-yönlendirmeli sürekli fuzzing: 1900 program/saniye, ve gramerin tavanı
+
+### 1. Neden bu
+
+Yedi kalibrasyon çiftinden sonra darboğaz **oracle değil**. Aynı boyutta bir parti daha
+koşmanın bir şey bulma olasılığını dürüstçe %1-3'e koymuştum; fark hacimde ve nişanda.
+0077 KCOV'un gerçek ve doyan bir sinyal verdiğini ölçtü, yani "yeni verifier koduna ulaşan
+programı sakla ve boz" artık mümkün.
+
+### 2. Mutasyon bytecode'a değil, GENOMA
+
+Bayt düzeyinde mutasyon çoğunlukla bozuk program üretir; verifier onları herhangi bir
+oracle görmeden atar — 0041-0050'nin bulduğu payda-sıfır tuzağının bir katman üstü, ve
+0054'ün tipli yürüyüşü kurma sebebi. Gövde artık açık bir **gen dizisi**, ve emitter genom
+verildiğinde **deterministik** — rng içeride yok. Bu üç şeyi birden sağlıyor: her mutant
+gramerin içinde kalıyor, her genom tekrar oynatılabiliyor, ve bulgu bildirildiğinde genom
+raporun içinde.
+
+Refactor'ün zarar vermediği ölçüldü: gen-intent ailesi genom emitter'ıyla yeniden
+koşturuldu — 4096/4096 kabul, 32767 karşılaştırma, 0 uyuşmazlık, 13 adım dengeli.
+
+### 3. Ölçüm
+
+240 saniyelik bütçe:
+
+| | |
+|---|---|
+| iterasyon | **456,071** (~1900 program/sn) |
+| oracle karşılaştırması | **3,648,568** |
+| korpus | 121 genom |
+| kapsama | 3680 → 4789 PC |
+| bulgu | **0** |
+
+Önceki mod koşu başına 4096 programdı. Üç büyüklük mertebesi.
+
+### 4. Ve bu koşunun açığa çıkardığı SINIR
+
+**456 binin hepsi kabul edildi. Tek red yok.** Gramer saf skaler iş üretiyor; sınırı
+kanıtlanması gereken hiçbir bellek erişimi yok, yani verifier hiç zor karar vermiyor ve
+reddetme yolunun tamamı erişilemez. Kapsama da buna göre düzleşiyor: 2 bin iterasyonda
+4509 PC, 456 binde 4789.
+
+**Darboğaz döngü değil, gramerin tavanı.** Test bunu bir iddia olarak değil, bir sayı
+olarak sabitliyor — tavan yükseldiğinde `reject=0` assert'i düşecek ve yeni sayının
+ölçülmesi gerekecek.
+
+### 5. Disiplin
+
+`run-fuzz.sh` önce referans interpreter'ı kalibre ediyor; kalibre değilse koşmuyor. Ve
+KCOV yoksa döngü **reddediyor** — geri besleme olmadan koşmak fuzzing gibi görünüp düz
+rastgele yürüyüş olurdu.
+
+Çıktı bilerek sınırlı: programlar `log_level=0` ile yükleniyor, yalnız STATUS/CORPUS/FINDING
+satırları basılıyor. Pahalı log yalnız bir bulgu olduğunda, verbose yeniden-yükleme ile
+ödeniyor — triyajın verifier'ın kendi sözleriyle başlayabilmesi için.
+
+Workspace 335 yeşil.

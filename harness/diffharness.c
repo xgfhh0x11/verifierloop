@@ -3698,6 +3698,149 @@ static int gi_set_jit(int v) {
     return (w == len && gi_read_jit() == v) ? 0 : -1;
 }
 
+/* THE GENOME. A program body is a short list of genes, each a step plus its parameters,
+   and `gi_emit_body` is DETERMINISTIC given one — no rng inside. That is what makes a body
+   mutable and reproducible: the coverage-guided loop keeps genomes, perturbs them, and can
+   replay any of them exactly. It also keeps every mutant inside the typed grammar, so a
+   mutation cannot produce a malformed program the way byte-level mutation would. */
+#define GI_MAXGENES 12
+struct gi_gene { uint8_t st, a, b, k, opt; };
+struct gi_genome { uint8_t n, hi; struct gi_gene g[GI_MAXGENES]; };
+
+static void gi_gene_random(struct gi_ctx *c, struct gi_gene *g) {
+    g->st  = (uint8_t)gi_pick(c, GI_STEP_N);
+    g->a   = (uint8_t)gi_pick(c, 3);
+    g->b   = (uint8_t)gi_pick(c, 3);
+    g->k   = (uint8_t)(1 + gi_pick(c, 15));
+    g->opt = (uint8_t)gi_pick(c, 64);
+}
+static void gi_genome_random(struct gi_ctx *c, struct gi_genome *G) {
+    G->n = (uint8_t)(3 + gi_pick(c, 6));
+    G->hi = (uint8_t)gi_pick(c, 2);
+    for (int i = 0; i < G->n; i++) gi_gene_random(c, &G->g[i]);
+}
+
+/* Emit one genome. Every choice comes from the gene, never from an rng. */
+static int gi_emit_body(const struct gi_genome *G, struct bpf_insn *ins, int n,
+                        int *jexit, int *nx, char *recipe, size_t rsz) {
+    /* Only r6/r7/r9 are seeded by the prologue; picking r8 read an uninitialised register
+       and cost 207 of an early run's 512 programs a STRUCTURAL rejection (0074). */
+    static const int REGS[3] = { 6, 7, 9 };
+    int stack_next = -8;
+    for (int s = 0; s < G->n && s < GI_MAXGENES; s++) {
+        const struct gi_gene *g = &G->g[s];
+        const enum gi_step st = (enum gi_step)(g->st % GI_STEP_N);
+        const int A = REGS[g->a % 3];
+        int B = REGS[g->b % 3];
+        if (B == A) B = (A == 6 ? 7 : 6);
+        const int K = 1 + (g->k % 15);
+        const unsigned o = g->opt;
+        switch (st) {
+        case GI_LINK:
+            ins[n++] = BPF_MOV64_REG(B, A);
+            break;
+        case GI_DELTA:
+            if (o & 1) ins[n++] = BPF_ALU64_IMM(BPF_ADD, B, K);
+            else       ins[n++] = BPF_ALU32_IMM(BPF_ADD, B, K);
+            break;
+        case GI_SELFOP: {
+            static const int ops[] = { BPF_ADD, BPF_SUB, BPF_XOR, BPF_OR };
+            ins[n++] = BPF_ALU64_REG(ops[o & 3], A, A);
+            break;
+        }
+        case GI_CLEAROP: {
+            static const int ops[] = { BPF_XOR, BPF_OR, BPF_AND, BPF_MUL };
+            ins[n++] = BPF_ALU64_IMM(ops[o & 3], B, K);
+            break;
+        }
+        case GI_NARROW:
+            jexit[(*nx)++] = n;
+            ins[n++] = BPF_JMP_IMM(BPF_JGT, B, K, 0);
+            break;
+        case GI_RELINK:
+            ins[n++] = BPF_MOV64_REG(9, A);
+            break;
+        case GI_SPILL:
+            if (stack_next > -200) stack_next -= 8;
+            ins[n++] = BPF_STX_MEM(BPF_DW, BPF_REG_10, A, stack_next);
+            if ((o % 3) == 0)
+                ins[n++] = (struct bpf_insn){.code = BPF_LDX | BPF_MEMSX | BPF_W,
+                                             .dst_reg = A, .src_reg = BPF_REG_10,
+                                             .off = (short)stack_next, .imm = 0};
+            else
+                ins[n++] = BPF_LDX_MEM(BPF_DW, A, BPF_REG_10, stack_next);
+            break;
+        case GI_W32: {
+            static const int ops[] = { BPF_ADD, BPF_SUB, BPF_MUL, BPF_AND, BPF_OR, BPF_XOR };
+            ins[n++] = BPF_ALU32_IMM(ops[o % 6], A, K);
+            break;
+        }
+        case GI_SHIFT: {
+            const int sh = 1 + (o % 31);
+            switch ((o >> 5) & 3) {
+            case 0: ins[n++] = BPF_ALU64_IMM(BPF_LSH, A, sh); break;
+            case 1: ins[n++] = BPF_ALU64_IMM(BPF_RSH, A, sh); break;
+            case 2: ins[n++] = BPF_ALU64_IMM(BPF_ARSH, A, sh); break;
+            default: ins[n++] = BPF_ALU32_IMM(BPF_ARSH, A, sh); break;
+            }
+            break;
+        }
+        case GI_SCMP:
+            jexit[(*nx)++] = n;
+            if (o & 1) ins[n++] = BPF_JMP_IMM(BPF_JSLT, A, K, 0);
+            else       ins[n++] = BPF_JMP32_IMM(BPF_JSLT, A, K, 0);
+            break;
+        case GI_SDIV: {
+            /* Subclass B: the interpreter/JIT disagreeing with the ISA rather than with the
+               verifier. off=1 selects the signed forms, and the divisor is a register so the
+               verifier must insert its guard rewrites. */
+            const int cls = (o & 1) ? BPF_ALU64 : BPF_ALU;
+            const int op = (o & 2) ? BPF_DIV : BPF_MOD;
+            ins[n++] = (struct bpf_insn){.code = cls | BPF_X | op, .dst_reg = A,
+                                         .src_reg = B, .off = 1, .imm = 0};
+            break;
+        }
+        case GI_PIN:
+            /* Manufacture the state a dead-branch rewrite needs: a value the verifier
+               believes it knows EXACTLY. */
+            if (o & 1) {
+                if (stack_next > -200) stack_next -= 8;
+                const int imm = ((o & 2) ? -1 : 1) * (1 + (int)((o >> 2) % 64));
+                ins[n++] = BPF_ST_MEM(BPF_DW, BPF_REG_10, stack_next, imm);
+                ins[n++] = BPF_LDX_MEM(BPF_DW, A, BPF_REG_10, stack_next);
+            } else {
+                jexit[(*nx)++] = n;
+                ins[n++] = BPF_JMP_IMM(BPF_JNE, A, K, 0);
+            }
+            break;
+        case GI_PAIR: {
+            /* The aimed shape as one unit — drawing link, delta and narrow independently
+               assembled it in 2 of 305 programs (0074). */
+            const int base = A, other = B;
+            ins[n++] = BPF_MOV64_REG(other, base);
+            if (o & 1) ins[n++] = BPF_ALU64_IMM(BPF_ADD, other, K);
+            else       ins[n++] = BPF_ALU32_IMM(BPF_ADD, other, K);
+            switch ((o >> 1) & 3) {
+            case 0: break;
+            case 1: ins[n++] = BPF_ALU64_REG(BPF_ADD, base, base); break;
+            case 2: ins[n++] = BPF_ALU64_IMM(BPF_XOR, other, K); break;
+            case 3: ins[n++] = BPF_MOV64_REG(9, base); break;
+            }
+            jexit[(*nx)++] = n;
+            ins[n++] = BPF_JMP_IMM(BPF_JGT, other, K + 8, 0);
+            ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_6, base);
+            break;
+        }
+        default: break;
+        }
+        if (recipe) {
+            strncat(recipe, gi_step_name(st), rsz - strlen(recipe) - 2);
+            strncat(recipe, ",", rsz - strlen(recipe) - 2);
+        }
+    }
+    return n;
+}
+
 static void run_gen_intent_family(void) {
     union bpf_attr m;
     memset(&m, 0, sizeof(m));
@@ -3734,144 +3877,9 @@ static void run_gen_intent_family(void) {
         const int body = n;
 
         /* ---- generated body: closed-form once r6/r7/r9 are known ---- */
-        const int steps = 3 + gi_pick(&c, 6);
-        int stack_next = -8;
-        for (int s = 0; s < steps; s++) {
-            const enum gi_step st = (enum gi_step)gi_pick(&c, GI_STEP_N);
-            /* Only r6/r7/r9 are seeded by the prologue. Picking r8 read an
-               uninitialised register and cost 207 of the first run's 512 programs a
-               STRUCTURAL rejection — a rejected program teaches the oracle nothing. */
-            static const int REGS[3] = { 6, 7, 9 };
-            const int A = REGS[gi_pick(&c, 3)];
-            int B = REGS[gi_pick(&c, 3)]; if (B == A) B = (A == 6 ? 7 : 6);
-            const int K = 1 + gi_pick(&c, 15);
-            switch (st) {
-            case GI_LINK:
-                ins[n++] = BPF_MOV64_REG(B, A);
-                break;
-            case GI_DELTA:
-                if (gi_pick(&c, 2)) ins[n++] = BPF_ALU64_IMM(BPF_ADD, B, K);
-                else                ins[n++] = BPF_ALU32_IMM(BPF_ADD, B, K);
-                break;
-            case GI_SELFOP: {
-                static const int ops[] = { BPF_ADD, BPF_SUB, BPF_XOR, BPF_OR };
-                ins[n++] = BPF_ALU64_REG(ops[gi_pick(&c, 4)], A, A);
-                break;
-            }
-            case GI_CLEAROP: {
-                static const int ops[] = { BPF_XOR, BPF_OR, BPF_AND, BPF_MUL };
-                ins[n++] = BPF_ALU64_IMM(ops[gi_pick(&c, 4)], B, K);
-                break;
-            }
-            case GI_NARROW:
-                jexit[nx++] = n;
-                ins[n++] = BPF_JMP_IMM(BPF_JGT, B, K, 0);
-                break;
-            case GI_RELINK:
-                ins[n++] = BPF_MOV64_REG(9, A);
-                break;
-            case GI_SPILL: {
-                if (stack_next > -200) stack_next -= 8;
-                ins[n++] = BPF_STX_MEM(BPF_DW, BPF_REG_10, A, stack_next);
-                if (gi_pick(&c, 3) == 0)
-                    /* a sign-extending refill of the same slot: the 2026-07 shape */
-                    ins[n++] = (struct bpf_insn){.code = BPF_LDX | BPF_MEMSX | BPF_W,
-                                                 .dst_reg = A, .src_reg = BPF_REG_10,
-                                                 .off = (short)stack_next, .imm = 0};
-                else
-                    ins[n++] = BPF_LDX_MEM(BPF_DW, A, BPF_REG_10, stack_next);
-                break;
-            }
-            case GI_W32: {
-                static const int ops[] = { BPF_ADD, BPF_SUB, BPF_MUL, BPF_AND, BPF_OR, BPF_XOR };
-                ins[n++] = BPF_ALU32_IMM(ops[gi_pick(&c, 6)], A, K);
-                break;
-            }
-            case GI_SHIFT: {
-                const int sh = 1 + gi_pick(&c, 31);
-                switch (gi_pick(&c, 4)) {
-                case 0: ins[n++] = BPF_ALU64_IMM(BPF_LSH, A, sh); break;
-                case 1: ins[n++] = BPF_ALU64_IMM(BPF_RSH, A, sh); break;
-                case 2: ins[n++] = BPF_ALU64_IMM(BPF_ARSH, A, sh); break;
-                default: ins[n++] = BPF_ALU32_IMM(BPF_ARSH, A, sh); break;
-                }
-                break;
-            }
-            case GI_SCMP: {
-                jexit[nx++] = n;
-                if (gi_pick(&c, 2)) ins[n++] = BPF_JMP_IMM(BPF_JSLT, A, K, 0);
-                else                ins[n++] = BPF_JMP32_IMM(BPF_JSLT, A, K, 0);
-                break;
-            }
-            case GI_SDIV: {
-                /* SUBCLASS B, where the JIT or interpreter disagrees with the ISA rather
-                   than with the verifier. `c77b30bd1dcb` (2026-03) is the live example:
-                   ___bpf_prog_run's sdiv32/smod32 called abs() on an s32, and abs(S32_MIN)
-                   is UB that returns S32_MIN unchanged on x86 and arm64, corrupting the
-                   quotient. The divisor is a register so the verifier must insert its
-                   guard rewrites, and one of the seeds is 0xffffffff — which is -1 in the
-                   32-bit view, exactly the operand that makes the overflow case reachable. */
-                const int cls = gi_pick(&c, 2) ? BPF_ALU64 : BPF_ALU;
-                const int op = gi_pick(&c, 2) ? BPF_DIV : BPF_MOD;
-                ins[n++] = (struct bpf_insn){.code = cls | BPF_X | op, .dst_reg = A,
-                                             .src_reg = B, .off = 1, .imm = 0};
-                break;
-            }
-            case GI_PIN: {
-                /* THE CONDITION SUBCLASS-A NEEDS. A divergence of the 811c363645b3 kind
-                   arises only when the verifier believes a value is a known CONSTANT and
-                   therefore resolves a branch statically — at which point
-                   bpf_opt_hard_wire_dead_code_branches() removes the other side and the
-                   run can no longer contradict the belief. With map-seeded unknowns alone
-                   the verifier never reaches that state, so nothing of that class could
-                   ever appear. This step manufactures it two ways: a 64-bit immediate
-                   spilled and reloaded (811c's own shape), or a value narrowed to a single
-                   point by a pair of branches. */
-                if (gi_pick(&c, 2)) {
-                    if (stack_next > -200) stack_next -= 8;
-                    const int imm = (gi_pick(&c, 2) ? -1 : 1) * (1 + gi_pick(&c, 64));
-                    ins[n++] = BPF_ST_MEM(BPF_DW, BPF_REG_10, stack_next, imm);
-                    ins[n++] = BPF_LDX_MEM(BPF_DW, A, BPF_REG_10, stack_next);
-                } else {
-                    jexit[nx++] = n;
-                    ins[n++] = BPF_JMP_IMM(BPF_JNE, A, K, 0);   /* A is now exactly K */
-                }
-                break;
-            }
-            case GI_PAIR: {
-                /* THE AIMED SHAPE, as one unit. Drawing link, delta and narrow
-                   independently produced the sequence in 2 of 305 accepted programs on the
-                   first run — the same trap `relink` avoided in 0069: which register a
-                   separate narrow step picks is random, so the shape essentially never
-                   assembles. Here one register is threaded through the whole thing.
-                     base  = A            the class base
-                     other = B            takes the shared id, then a constant delta
-                   with an optional operation in between that SHOULD clear the link, and a
-                   second link off the base afterwards — the three axes the 2026 fixes are
-                   clustered on. */
-                const int base = A, other = B;
-                ins[n++] = BPF_MOV64_REG(other, base);
-                if (gi_pick(&c, 2)) ins[n++] = BPF_ALU64_IMM(BPF_ADD, other, K);
-                else                ins[n++] = BPF_ALU32_IMM(BPF_ADD, other, K);
-                switch (gi_pick(&c, 4)) {
-                case 0: break;                                              /* nothing   */
-                case 1: ins[n++] = BPF_ALU64_REG(BPF_ADD, base, base); break; /* self-op */
-                case 2: ins[n++] = BPF_ALU64_IMM(BPF_XOR, other, K); break;   /* clear   */
-                case 3: ins[n++] = BPF_MOV64_REG(9, base); break;             /* relink  */
-                }
-                /* Narrow the OTHER member; the bound must reach the base through the id. */
-                jexit[nx++] = n;
-                ins[n++] = BPF_JMP_IMM(BPF_JGT, other, K + 8, 0);
-                /* ...and USE the base, so a bound that failed to propagate shows up. */
-                ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_6, base);
-                break;
-            }
-            default: break;
-            }
-            strncat(recipe, gi_step_name(st), sizeof(recipe) - strlen(recipe) - 2);
-            strncat(recipe, ",", sizeof(recipe) - strlen(recipe) - 2);
-        }
-
+        struct gi_genome G;
+        gi_genome_random(&c, &G);
+        n = gi_emit_body(&G, ins, n, jexit, &nx, recipe, sizeof(recipe));
         /* ---- tail: return one half of the accumulated value ----
            Every in-body branch lands HERE, not on the sentinel. On the first run 727 of
            1830 samples took a narrowing branch straight to a constant, so they agreed with
@@ -3879,7 +3887,7 @@ static void run_gen_intent_family(void) {
            inflated with samples that could not have disagreed. Only the map-null path,
            which must stay distinguishable from any computed answer, keeps the sentinel. */
         const int tail = n;
-        const int hi = gi_pick(&c, 2);
+        const int hi = G.hi;
         if (hi) ins[n++] = BPF_ALU64_IMM(BPF_RSH, BPF_REG_6, 32);
         ins[n++] = BPF_MOV64_REG(BPF_REG_0, BPF_REG_6);
         ins[n++] = BPF_EXIT_INSN();
@@ -3992,6 +4000,216 @@ static void run_gen_intent_family(void) {
     }
     close(map_in);
 }
+
+// ---- coverage-guided continuous fuzzing (--fuzz <seconds>) ------------------
+//
+// The strategic move behind this mode: after seven calibration pairs the ORACLE is no
+// longer the bottleneck — volume and aim are. 0077 measured that KCOV gives a real,
+// saturating signal across a BPF_PROG_LOAD, so a program that reaches verifier code
+// nothing has reached before can be kept and perturbed.
+//
+// WHAT IS MUTATED IS THE GENOME, NOT THE BYTECODE. Byte-level mutation would produce
+// mostly-malformed programs the verifier throws away before any oracle sees them — the
+// denominator-zero trap one layer up that 0054 solved with a typed walk. Perturbing genes
+// keeps every mutant inside the grammar, so a rejected program is rejected on BOUNDS, not
+// on malformedness.
+//
+// EVERY PROGRAM IS STILL JUDGED BY THE FULL ORACLE. Coverage decides only what is KEPT.
+// The oracle is the one whose reference is not the verifier: bpfref computes what the body
+// must return and the kernel's answer is compared against it.
+//
+// OUTPUT IS BOUNDED ON PURPOSE. Programs load at log_level=0, so a multi-hour run does not
+// produce gigabytes; only STATUS, CORPUS and FINDING lines are printed. A finding triggers
+// a RELOAD at log_level=2 so the full block reaches the pipeline — the one place the
+// expensive log is worth paying for.
+#define FZ_CORPUS_MAX 4096
+
+struct fz_entry { struct gi_genome G; unsigned new_pcs; };
+
+static void fz_mutate(struct gi_ctx *c, const struct gi_genome *src, struct gi_genome *dst) {
+    *dst = *src;
+    const int ops = 1 + gi_pick(c, 2);          /* one or two edits */
+    for (int i = 0; i < ops; i++) {
+        switch (gi_pick(c, 6)) {
+        case 0: if (dst->n < GI_MAXGENES) {     /* insert */
+                    int at = gi_pick(c, dst->n + 1);
+                    for (int j = dst->n; j > at; j--) dst->g[j] = dst->g[j - 1];
+                    gi_gene_random(c, &dst->g[at]);
+                    dst->n++;
+                }
+                break;
+        case 1: if (dst->n > 3) {               /* delete */
+                    int at = gi_pick(c, dst->n);
+                    for (int j = at; j + 1 < dst->n; j++) dst->g[j] = dst->g[j + 1];
+                    dst->n--;
+                }
+                break;
+        case 2: gi_gene_random(c, &dst->g[gi_pick(c, dst->n)]); break;   /* replace */
+        case 3: dst->g[gi_pick(c, dst->n)].st = (uint8_t)gi_pick(c, GI_STEP_N); break;
+        case 4: dst->g[gi_pick(c, dst->n)].opt = (uint8_t)gi_pick(c, 64); break;
+        default: {                              /* nudge a register or a constant */
+            struct gi_gene *g = &dst->g[gi_pick(c, dst->n)];
+            if (gi_pick(c, 2)) g->k = (uint8_t)(1 + gi_pick(c, 15));
+            else { g->a = (uint8_t)gi_pick(c, 3); g->b = (uint8_t)gi_pick(c, 3); }
+            break;
+        }
+        }
+    }
+    if (gi_pick(c, 8) == 0) dst->hi ^= 1;
+}
+
+static void fz_print_genome(const struct gi_genome *G) {
+    printf("genes=%u hi=%u:", G->n, G->hi);
+    for (int i = 0; i < G->n; i++)
+        printf("%s%u.%u.%u.%u.%u", i ? "," : "",
+               G->g[i].st, G->g[i].a, G->g[i].b, G->g[i].k, G->g[i].opt);
+}
+
+static void run_fuzz(int seconds) {
+    struct kcov_ctx k;
+    if (kcov_open(&k) != 0) {
+        /* Running without feedback would still LOOK like fuzzing while being a plain
+           random walk, so refuse rather than degrade silently. */
+        printf("FUZZ abort reason=kcov_unavailable errno=%d\n", errno);
+        return;
+    }
+    g_kseen = (unsigned long *)calloc(KSEEN_N, sizeof(unsigned long));
+    struct fz_entry *corpus = (struct fz_entry *)calloc(FZ_CORPUS_MAX, sizeof(*corpus));
+    if (!g_kseen || !corpus) { printf("FUZZ abort reason=alloc\n"); return; }
+    int corpus_n = 0;
+
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 16; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0) { printf("FUZZ abort reason=map_create errno=%d\n", errno); return; }
+
+    struct gi_ctx c; c.rng = 0xC0FFEEu;
+    const time_t t0 = time(NULL);
+    unsigned long iters = 0, accepted = 0, rejected = 0, compared = 0, findings = 0;
+
+    printf("FUZZ start budget=%ds corpus_max=%d\n", seconds, FZ_CORPUS_MAX);
+    while (time(NULL) - t0 < seconds) {
+        struct gi_genome G;
+        if (corpus_n > 0 && gi_pick(&c, 10) < 8)
+            fz_mutate(&c, &corpus[gi_pick(&c, corpus_n)].G, &G);
+        else
+            gi_genome_random(&c, &G);
+
+        struct bpf_insn ins[192];
+        int n = 0, jexit[2 * GI_MAXGENES + 8], nx = 0;
+        ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+        ins[n++] = (struct bpf_insn){0};
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+        const int jnull = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);
+        ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_0, 4);
+        ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_9, BPF_REG_0, 8);
+        const int body = n;
+        n = gi_emit_body(&G, ins, n, jexit, &nx, NULL, 0);
+        const int tail = n;
+        if (G.hi) ins[n++] = BPF_ALU64_IMM(BPF_RSH, BPF_REG_6, 32);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_0, BPF_REG_6);
+        ins[n++] = BPF_EXIT_INSN();
+        const int sentinel = n;
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, GI_NULL_SENTINEL);
+        ins[n++] = BPF_EXIT_INSN();
+        for (int i = 0; i < nx; i++) ins[jexit[i]].off = tail - jexit[i] - 1;
+        ins[jnull].off = sentinel - jnull - 1;
+
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+
+        kcov_start(&k);
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        unsigned long cnt = kcov_stop(&k);
+        iters++;
+        if (fd >= 0) accepted++; else rejected++;
+
+        unsigned fresh = 0;
+        for (unsigned long i = 0; i < cnt; i++) fresh += (unsigned)kseen_add(k.area[i + 1]);
+        if (fresh > 0 && corpus_n < FZ_CORPUS_MAX) {
+            corpus[corpus_n].G = G;
+            corpus[corpus_n].new_pcs = fresh;
+            corpus_n++;
+            printf("CORPUS n=%d new_pcs=%u seen=%u verdict=%s ",
+                   corpus_n, fresh, g_kseen_count, fd >= 0 ? "accept" : "reject");
+            fz_print_genome(&G);
+            printf("\n");
+        }
+
+        if (fd >= 0) {
+            for (int i = 0; i < GI_INPUTS_N; i++) {
+                const uint32_t in = GI_INPUTS[i];
+                uint32_t val[4] = { in, in ^ 0x5a5a5a5au, in + 3, 0 };
+                if (rt_map_set_bytes(map_in, 0, (const unsigned char *)val) < 0) continue;
+                struct bpfref_result ref = bpfref_run_seeded(ins, n, body, val[0], val[1], val[2]);
+                if (ref.status != BPFREF_OK) continue;
+                static char pin[64], pout[64];
+                union bpf_attr t;
+                memset(&t, 0, sizeof(t));
+                t.test.prog_fd = fd;
+                t.test.data_in = (uint64_t)(unsigned long)pin;
+                t.test.data_out = (uint64_t)(unsigned long)pout;
+                t.test.data_size_in = sizeof(pin);
+                t.test.data_size_out = sizeof(pout);
+                t.test.repeat = 1;
+                if (bpf(BPF_PROG_TEST_RUN, &t, sizeof(t)) < 0) continue;
+                compared++;
+                if (t.test.retval != (uint32_t)ref.retval) {
+                    findings++;
+                    printf("FINDING iter=%lu input=0x%08x kernel=0x%08x reference=0x%08x ",
+                           iters, in, t.test.retval, (unsigned)(uint32_t)ref.retval);
+                    fz_print_genome(&G);
+                    printf("\n");
+                    /* The expensive log, paid for only here: reload verbosely so the full
+                       block reaches the pipeline and the triage can start from the
+                       verifier's own words. */
+                    g_log[0] = '\0';
+                    attr.log_level = 2;
+                    attr.log_size = sizeof(g_log);
+                    attr.log_buf = (uint64_t)(unsigned long)g_log;
+                    int fd2 = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+                    printf("===PROG fuzz#i%lu type=socket_filter ===\n", iters);
+                    printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+                           fd2 >= 0 ? "accept" : "reject", fd2 >= 0 ? 1 : -1,
+                           fd2 >= 0 ? 0 : errno);
+                    printf("EXPECT paths=multi\n");
+                    printf("RUNTIME input=0x%08x retval=0x%08x intended_retval=%u"
+                           " ref_status=ok\n",
+                           in, t.test.retval, (unsigned)(uint32_t)ref.retval);
+                    printf("---LOG---\n%s\n---END---\n", g_log);
+                    if (fd2 >= 0) close(fd2);
+                    attr.log_level = 0; attr.log_size = 0; attr.log_buf = 0;
+                }
+            }
+            close(fd);
+        }
+
+        if ((iters % 2000) == 0)
+            printf("STATUS iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
+                   " compared=%lu findings=%lu elapsed=%lds\n",
+                   iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
+                   (long)(time(NULL) - t0));
+    }
+    printf("FUZZ done iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
+           " compared=%lu findings=%lu elapsed=%lds\n",
+           iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
+           (long)(time(NULL) - t0));
+    free(corpus);
+    free(g_kseen);
+    close(map_in);
+}
+
 
 // ---- reference-interpreter calibration (--probe-ref) ------------------------
 // bpfref.h is a second implementation of the ISA, written so the intent oracle has a
@@ -7658,6 +7876,11 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-spill") == 0) {
         run_probe_spill();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--fuzz") == 0) {
+        report_jit_mode(argc, argv);
+        run_fuzz(argc > 2 ? atoi(argv[2]) : 300);
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--probe-kcov") == 0) {
