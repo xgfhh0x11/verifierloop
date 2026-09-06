@@ -90,6 +90,9 @@ class DiffSummary:
     # MEASURED 0 on every capture ever taken: the verifier-log parser sets
     # jit_interp_diff=None unconditionally, so this invariant has never run (0066).
     jit_interp_checked: int = 0
+    # The generator-intent denominator (0071): runtime samples compared against what the
+    # HARNESS says the program must return, the only reference here outside the verifier.
+    runtime_intent_checked: int = 0
 
 
 @dataclass

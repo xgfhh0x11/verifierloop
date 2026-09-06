@@ -723,22 +723,114 @@ fn the_runtime_follows_the_verifier_because_the_dead_branch_is_removed() {
     assert!(pos(SP_FIXED).contains("retval=0x00000001"));
 }
 
-/// THE BOUNDARY, with a denominator behind it: the runtime check RAN on the buggy capture
-/// and passed. Silence here is not "nothing was looked at" — it is the oracle evaluating
-/// the program and finding it consistent, because the program had been rewritten to be so.
+/// THE BOUNDARY, with a denominator behind it: every VERIFIER-REFERENCED oracle ran on the
+/// buggy capture and was satisfied. Silence here is not "nothing was looked at" — it is
+/// those oracles evaluating the program and finding it consistent, because the program had
+/// been rewritten to be so.
+///
+/// 0071 added an oracle whose reference is NOT the verifier, and it does fire here — so
+/// this test pins the boundary precisely rather than by a total count: the class that
+/// cannot see this bug, and the one that can, on the same capture.
 #[test]
-fn the_runtime_oracle_evaluates_the_buggy_program_and_is_satisfied() {
+fn every_verifier_referenced_oracle_is_satisfied_by_the_buggy_program() {
     let (_, buggy) = run_diff(SP_BUGGY, "sp-buggy");
-    assert_eq!(buggy.summary.finding_count, 0, "{:?}", buggy.findings);
+
+    // The retval check compared both arms against a proven bound and reported nothing.
     assert_eq!(
         buggy.summary.runtime_checked, 2,
-        "both arms must actually be compared against a proven bound — a skipped comparison \
-         would make this test say nothing at all"
+        "a skipped comparison would make this test say nothing at all"
     );
-    // And no parsed-state invariant fires either: `R0_w=4294967252` is a pinned constant
-    // whose tnum and bounds agree. It is wrong, not inconsistent.
+    assert!(!buggy.findings.iter().any(|f| f.kind == "runtime_bound_violation"));
+
+    // No parsed-state invariant fires either: `R0_w=4294967252` is a pinned constant whose
+    // tnum and bounds agree. It is wrong, not inconsistent.
     assert!(buggy.summary.tnum_bounds_checked >= 4, "{}", buggy.summary.tnum_bounds_checked);
+    assert!(
+        buggy.findings.iter().all(|f| f.kind == "runtime_intent_violation"),
+        "the ONLY thing that may fire here is the oracle whose reference is the generator: \
+         {:?}",
+        buggy.findings
+    );
 
     let (_, fixed) = run_diff(SP_FIXED, "sp-fixed");
     assert_eq!(fixed.summary.finding_count, 0, "{:?}", fixed.findings);
+}
+
+// ---------------------------------------------------------------------------
+// THE ORACLE PAIR SIX ASKED FOR (devlog 0071) — and it is the first one here whose
+// reference is not the verifier.
+//
+// 0070's boundary was structural, not incidental: every oracle this project owns compares
+// the verifier against itself, or compares a runtime observation against the verifier's own
+// printed claim. When a bug makes the verifier confidently WRONG in a self-consistent way,
+// and dead-code hard-wiring bakes that belief into the emitted program, the whole family is
+// blind by construction.
+//
+// `EXPECT intended_retval=` breaks the circle. The harness states what the program must
+// return, derived from the program text and nothing else — for this one: store -44, reload
+// it, -44 is less than 10, return 0. `check_runtime_intent` compares the observed return
+// value against that.
+//
+// THE RESULT, on the very capture 0070 showed was invisible:
+//
+//     buggy kernel   runtime_checked = 2  (the old oracle ran and was satisfied)
+//                    runtime_intent_checked = 2, ONE finding: expected 0, observed 1
+//     fixed kernel   runtime_intent_checked = 2, no findings
+//
+// Both denominators are non-zero on the same capture, which is the whole demonstration:
+// this is not a case the old oracle failed to reach, it is one it reached and could not see.
+// ---------------------------------------------------------------------------
+
+/// THE HEADLINE: the generator-intent oracle catches what the verifier-referenced one
+/// cannot, on the same program, on the same kernel, in the same run.
+#[test]
+fn the_generator_intent_oracle_sees_what_the_verifier_referenced_one_cannot() {
+    let (_, buggy) = run_diff(SP_BUGGY, "sp-intent-b");
+
+    let hits: Vec<_> = buggy
+        .findings
+        .iter()
+        .filter(|f| f.kind == "runtime_intent_violation")
+        .collect();
+    assert_eq!(hits.len(), 1, "{:?}", buggy.findings);
+    assert!(hits[0].expected.contains("retval == 0"), "{}", hits[0].expected);
+    assert!(hits[0].observed.contains("retval=1"), "{}", hits[0].observed);
+
+    // The old oracle RAN on this same capture and was satisfied — the two denominators
+    // side by side are the point. A zero here would mean the comparison never happened,
+    // which is a different and much weaker statement.
+    assert_eq!(buggy.summary.runtime_checked, 2);
+    assert_eq!(buggy.summary.runtime_intent_checked, 2);
+    assert!(
+        !buggy.findings.iter().any(|f| f.kind == "runtime_bound_violation"),
+        "the verifier-referenced check must stay silent, or this test is measuring \
+         something other than the gap it claims to measure"
+    );
+}
+
+/// THE SILENT HALF: on the fixed kernel the program returns what its source says, and the
+/// new oracle says nothing — with the same non-zero denominator.
+#[test]
+fn the_intent_oracle_is_silent_when_the_program_does_what_it_says() {
+    let (_, fixed) = run_diff(SP_FIXED, "sp-intent-f");
+    assert_eq!(fixed.summary.finding_count, 0, "{:?}", fixed.findings);
+    assert_eq!(fixed.summary.runtime_intent_checked, 2);
+}
+
+/// The control arm carries its own expectation, and it is a DIFFERENT one — so the oracle
+/// cannot be passing by accident on a constant.
+#[test]
+fn each_arm_states_its_own_expectation() {
+    assert!(SP_BUGGY.contains("EXPECT intended_retval=0"), "the neg arm expects 0");
+    assert!(SP_BUGGY.contains("EXPECT intended_retval=1"), "the pos arm expects 1");
+    // And the pos arm — a positive immediate, unaffected by the (u32) cast — meets its
+    // expectation on BOTH kernels, so the one violation above is specifically the lost sign.
+    for log in [SP_BUGGY, SP_FIXED] {
+        let pos = log
+            .split("===PROG ")
+            .find(|b| b.starts_with("spill#811c363645b3#pos"))
+            .unwrap();
+        assert!(pos.contains("EXPECT intended_retval=1"));
+        assert!(pos.contains("retval=0x00000001"));
+    }
 }

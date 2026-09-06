@@ -1,5 +1,6 @@
 ===PROG spill#811c363645b3#neg type=socket_filter ===
 RESULT decision=accept fd=1 errno=0 load_ns=0
+EXPECT intended_retval=0
 RUNTIME input=0x00000000 retval=0x00000000
 ---LOG---
 func#0 @0
@@ -50,6 +51,7 @@ processed 6 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
 ---END---
 ===PROG spill#811c363645b3#pos type=socket_filter ===
 RESULT decision=accept fd=1 errno=0 load_ns=0
+EXPECT intended_retval=1
 RUNTIME input=0x00000000 retval=0x00000001
 ---LOG---
 func#0 @0

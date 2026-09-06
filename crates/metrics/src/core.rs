@@ -176,6 +176,21 @@ pub struct CoreMetrics {
     /// artifacts stay byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_samples: Vec<RuntimeSample>,
+    /// What the program is SUPPOSED to return, declared by the generator from the
+    /// program's own semantics — never read out of the verifier log.
+    ///
+    /// Every other oracle here uses the verifier's own printed claim as its reference, so
+    /// none of them can see a bug that makes the verifier WRONG in a self-consistent way.
+    /// Devlog 0070 measured the sharpest case: when the verifier resolves a branch on a
+    /// corrupted constant, `bpf_opt_hard_wire_dead_code_branches()` removes the other side
+    /// from the emitted program, so the runtime then agrees with the wrong proof and the
+    /// retval check passes. The reference has to come from outside the verifier, and for a
+    /// closed-form generated program the generator already knows it.
+    ///
+    /// `None` means the generator made no claim — most families cannot, and a fabricated
+    /// expectation would be worse than none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intended_retval: Option<u64>,
     /// Where the program's store instruction is, declared by the GENERATOR that
     /// built the program (not read out of the verifier log). Knowing which
     /// instruction stores, and through which register, is a fact about the program

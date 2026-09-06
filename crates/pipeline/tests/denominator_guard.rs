@@ -70,7 +70,7 @@ fn emitted_kinds() -> Vec<String> {
 fn denominator_registry_covers_every_finding_kind() {
     let kinds = emitted_kinds();
     assert!(
-        kinds.len() >= 19,
+        kinds.len() >= 20,
         "the scan found only {} kinds — it has stopped matching the source, which would \
          make this guard silently vacuous: {kinds:?}",
         kinds.len()

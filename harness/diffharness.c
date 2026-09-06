@@ -3491,6 +3491,11 @@ static void run_probe_spill(void) {
         printf("===PROG spill#811c363645b3#%s type=socket_filter ===\n", ARMS[a].name);
         printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
                fd >= 0 ? "accept" : "reject", fd >= 0 ? 1 : -1, fd >= 0 ? 0 : lerr);
+        /* THE GENERATOR'S OWN CLAIM, derived from the program text and nothing else: the
+           64-bit slot holds the sign-extended immediate, the reload returns it, and
+           `if r0 s< 10` decides the exit value. It does not consult the verifier, which is
+           the entire point — see check_runtime_intent in diff.rs. */
+        printf("EXPECT intended_retval=%d\n", ARMS[a].imm < 10 ? 0 : 1);
 
         /* The runtime half. The program reads nothing external, so the input is a
            formality — one sample is the whole observation. */

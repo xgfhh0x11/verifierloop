@@ -5566,3 +5566,62 @@ retval'i verifier'ın iddiası yerine **jeneratörün beklentisiyle** karşıla�
 görünmezden tek satırlık bir kontrole çeviriyor. Bacağın ileriye dönük çıktısı bu.
 
 Workspace 313 yeşil. Runner: `scripts/probe-spill.sh`.
+
+---
+
+## 0071 — Referansı verifier OLMAYAN ilk oracle: jeneratörün kendi beklentisi
+
+### 1. 0070'in bıraktığı boşluk
+
+0070 yapısal bir sınır ölçtü: bu projedeki **her** oracle ya verifier'ı kendisiyle
+karşılaştırıyor, ya da bir runtime gözlemini **verifier'ın kendi bastığı iddiayla**
+karşılaştırıyor. Bir hata verifier'ı kendi içinde tutarlı biçimde yanıltıyorsa ve dead-code
+hard-wiring o inancı yayılan koda gömüyorsa, bütün aile yapısal olarak kör.
+
+Çemberi kırmanın tek yolu referansı dışarıdan almak. Ve kapalı formda üretilmiş bir program
+için harness cevabı zaten **program metninden** biliyor.
+
+### 2. Ne eklendi
+
+`EXPECT intended_retval=N` — jeneratörün, verifier'a hiç danışmadan, programın ne
+döndürmesi gerektiğine dair kendi iddiası. `check_runtime_intent` gözlenen dönüş değerini
+onunla karşılaştırıyor. Payda: `runtime_intent_checked` (0066 guard'ı zaten bunu zorunlu
+kılıyordu — kayıt defterine girmeden derlenmiyor).
+
+Token bilerek `retval=` diye adlandırılmadı: `parse_runtime_samples` onu her boşlukla
+ayrılmış token'da önek olarak arıyor, ve bu proje iki kez tam bu sınıftan hata yayınladı
+(0041, 0042).
+
+### 3. Sonuç — 0070'in görünmez dediği yakalamanın ta kendisinde
+
+| | hatalı kernel | düzeltilmiş |
+|---|---|---|
+| `runtime_checked` (eski oracle) | **2** | 1 |
+| eski oracle bulgusu | **0** | 0 |
+| `runtime_intent_checked` (yeni) | **2** | 2 |
+| yeni oracle bulgusu | **1** — beklenen 0, gözlenen 1 | 0 |
+
+**İki payda da aynı yakalamada sıfırdan farklı.** Gösterilen şey bu: bu, eski oracle'ın
+*ulaşamadığı* bir vaka değil — **ulaştığı ve göremediği** bir vaka.
+
+Kontrol kolu (`+44`) kendi farklı beklentisini taşıyor (`intended_retval=1`) ve iki
+kernel'da da onu karşılıyor — yani oracle sabit bir değer üzerinden kazara geçmiyor.
+
+### 4. Dürüst maliyet: referans artık bizim kodumuz
+
+Bu oracle'ın referansı jeneratör, yani kendi yazdığımız şey. Yanlış bir beklenti **yanlış
+bir bulgu** üretir — tıpkı yanlış bir `STORE` bildiriminin store-konumu kontrolü için
+yapacağı gibi. Bu yüzden triyaj sırası koda yazıldı: (1) jeneratörün beklentisi yanlış,
+(2) harness tarif ettiğinden başka bir program koşturdu, (3) verifier semantiğini yanlış
+anladığı bir programı kabul etti. **Yalnız üçüncüsü bir kernel bulgusu.**
+
+Ve kapsamı dar tutuldu: `intended_retval` `Option`, çoğu aile bir iddia edemez, ve
+uydurulmuş bir beklenti hiç yoktan kötüdür.
+
+### 5. Sıradaki
+
+Bu oracle şu an yalnız `--probe-spill`'de. Kapalı formda sonuç üretebilen her aile onu
+bedavaya kullanabilir; kompozisyon jeneratörü için ise iddia ancak tarif kapalı-form
+kaldığı sürece kurulabilir — bir sonraki bacağın sorusu bu.
+
+Workspace 316 yeşil.

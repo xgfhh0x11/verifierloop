@@ -84,6 +84,7 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
     let mut in_log = false;
     let mut log: Vec<&str> = Vec::new();
     let mut runtime_lines: Vec<&str> = Vec::new();
+    let mut expect_line: Option<&str> = None;
     let mut store_line: Option<&str> = None;
     let mut prune_line: Option<&str> = None;
 
@@ -92,6 +93,8 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
             result_line = Some(line);
         } else if line.starts_with("RUNTIME ") {
             runtime_lines.push(line);
+        } else if line.starts_with("EXPECT ") {
+            expect_line = Some(line);
         } else if line.starts_with("STORE ") {
             store_line = Some(line);
         } else if line.starts_with("PRUNE ") {
@@ -158,6 +161,7 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
         helper_arg_observations: parse_helper_calls(&log),
         helper_arg_violations: Vec::new(),        // legacy synthetic path
         runtime_samples: parse_runtime_samples(&runtime_lines),
+        intended_retval: expect_line.and_then(parse_intended_retval),
         store_site: store_line.and_then(parse_store_site),
         prune_probe: prune_line.and_then(parse_prune_probe),
     };
@@ -944,6 +948,23 @@ fn parse_const_int(s: &str) -> Option<(u64, i64)> {
 /// Provenance note: these are facts about the program the HARNESS built, emitted by
 /// the harness — never recovered from the verifier's own disassembly. The oracle
 /// must not learn where the store is from the component it is auditing.
+/// Parse `EXPECT intended_retval=<n>` — the generator's own statement of what the program
+/// must return, independent of anything the verifier said.
+///
+/// The token is deliberately not spelled `retval=`: `parse_runtime_samples` prefix-matches
+/// that on every whitespace token, and this project has twice shipped a bug where one
+/// output token was silently matched by another's pattern (devlog 0041, 0042).
+fn parse_intended_retval(line: &str) -> Option<u64> {
+    let tok = line
+        .split_whitespace()
+        .find_map(|t| t.strip_prefix("intended_retval="))?;
+    if let Some(h) = tok.strip_prefix("0x") {
+        u64::from_str_radix(h, 16).ok()
+    } else {
+        tok.parse::<u64>().ok()
+    }
+}
+
 fn parse_store_site(line: &str) -> Option<metrics::core::StoreSite> {
     let mut insn_idx = None;
     let mut base_reg = None;

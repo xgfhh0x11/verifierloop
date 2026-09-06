@@ -189,6 +189,7 @@ impl RecordParser for ReferenceParser {
                     coverage_delta: CoverageDelta::default(),
                     helper_arg_observations: Vec::new(),
                     runtime_samples: Vec::new(),
+                    intended_retval: None,
                     store_site: None,
                     prune_probe: None,
                     helper_arg_violations: if buggy {
@@ -349,6 +350,7 @@ mod tests {
                         coverage_delta: CoverageDelta::default(),
                         helper_arg_observations: Vec::new(),
                         runtime_samples: Vec::new(),
+                        intended_retval: None,
                         store_site: None,
                         prune_probe: None,
                         helper_arg_violations: Vec::new(),

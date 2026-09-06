@@ -86,6 +86,11 @@ fn main() {
          programs: {}",
         dif.summary.tnum_wellformed_checked, dif.summary.reg_invariants_checked
     );
+    // The only denominator here whose reference is not the verifier (0071).
+    println!(
+        "         runtime samples checked against the GENERATOR's intent: {}",
+        dif.summary.runtime_intent_checked
+    );
     // The gap the registry guard exposed (0066): this invariant has never examined a
     // record, because the parser sets jit_interp_diff to None unconditionally.
     if dif.summary.jit_interp_checked == 0 {

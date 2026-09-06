@@ -207,6 +207,11 @@ pub struct DiffSummary {
     /// reading like the other legs' zeros.
     #[serde(default)]
     pub jit_interp_checked: u64,
+    /// Runtime samples compared against the GENERATOR's stated intent rather than the
+    /// verifier's claim — the denominator for the only oracle here whose reference lives
+    /// outside the verifier entirely (devlog 0071).
+    #[serde(default)]
+    pub runtime_intent_checked: u64,
     /// Runtime ground-truth samples (BPF_PROG_TEST_RUN retvals) actually compared
     /// against the verifier's proven bound on the return register. The denominator
     /// for the runtime oracle — the ONLY leg that does not trust the verifier log
@@ -255,6 +260,7 @@ impl DiffSummary {
             "tnum_wellformed_checked" => self.tnum_wellformed_checked,
             "reg_invariants_checked" => self.reg_invariants_checked,
             "jit_interp_checked" => self.jit_interp_checked,
+            "runtime_intent_checked" => self.runtime_intent_checked,
             "runtime_checked" => self.runtime_checked,
             "runtime_writes_checked" => self.runtime_writes_checked,
             "store_locations_checked" => self.store_locations_checked,
@@ -336,6 +342,7 @@ pub fn run(
     let mut tnum_wellformed_checked = 0u64;
     let mut reg_invariants_checked = 0u64;
     let mut jit_interp_checked = 0u64;
+    let mut runtime_intent_checked = 0u64;
     let mut runtime_checked = 0u64;
     let mut runtime_writes_checked = 0u64;
     let mut store_locations_checked = 0u64;
@@ -361,6 +368,7 @@ pub fn run(
             &mut bounds_order_checked,
         );
         check_runtime_ground_truth(idx, record, &mut findings, &mut runtime_checked);
+        check_runtime_intent(idx, record, &mut findings, &mut runtime_intent_checked);
         check_runtime_write_safety(idx, record, &mut findings, &mut runtime_writes_checked);
         check_store_location(idx, record, &mut findings, &mut store_locations_checked);
         check_prune_differential(
@@ -402,6 +410,7 @@ pub fn run(
         tnum_wellformed_checked,
         reg_invariants_checked,
         jit_interp_checked,
+        runtime_intent_checked,
         runtime_checked,
         runtime_writes_checked,
         store_locations_checked,
@@ -762,6 +771,7 @@ pub const INVARIANT_DENOMINATORS: &[(&str, &str)] = &[
     ("reg32_reg64_inconsistent", "reg32_checked"),
     ("reg_invariants_violation", "reg_invariants_checked"),
     ("runtime_bound_violation", "runtime_checked"),
+    ("runtime_intent_violation", "runtime_intent_checked"),
     ("runtime_oob_write", "runtime_writes_checked"),
     ("s32_bounds_inverted", "bounds_order_checked"),
     ("signed_bounds_inverted", "bounds_order_checked"),
@@ -1402,6 +1412,7 @@ mod tests {
                 coverage_delta: CoverageDelta::default(),
                 helper_arg_observations: Vec::new(),
                 runtime_samples: Vec::new(),
+                intended_retval: None,
                 store_site: None,
                 prune_probe: None,
                 helper_arg_violations: Vec::new(),
@@ -1546,5 +1557,63 @@ mod tests {
         assert_eq!(art.payload.summary.finding_count, out_gt.summary.finding_count);
 
         std::fs::remove_dir_all(&base).ok();
+    }
+}
+
+/// THE ONLY ORACLE HERE WHOSE REFERENCE IS NOT THE VERIFIER (devlog 0071).
+///
+/// Every other check in this stage compares the verifier against itself, or compares a
+/// runtime observation against the verifier's own printed claim. That whole family shares a
+/// structural blind spot, and 0070 measured its sharpest case: commit 811c363645b3 made the
+/// verifier track a spilled `-44` as `4294967252`, so it resolved `if r0 s< 0xa`
+/// statically, never walked the other side, and `bpf_opt_hard_wire_dead_code_branches()`
+/// (kernel/bpf/fixups.c) then REMOVED that branch from the emitted program. The runtime
+/// returned exactly what the wrong proof predicted; the retval check ran — denominator 2 —
+/// and passed.
+///
+/// The reference has to come from outside the verifier. For a closed-form generated program
+/// the harness already knows the answer from the program text alone: store -44, reload it,
+/// -44 is less than 10, return 0. `EXPECT intended_retval=` carries that, and this compares
+/// the OBSERVED return value against it.
+///
+/// TRIAGE NOTE, not optional. The reference here is the generator — our own code — so a
+/// wrong expectation produces a false finding, exactly as a wrong `STORE` declaration would
+/// for the store-location check. A finding means one of three things, in this order: the
+/// generator's expectation is wrong; the harness ran a different program than it described;
+/// or the verifier accepted a program whose semantics it got wrong. Only the third is a
+/// kernel finding.
+fn check_runtime_intent(
+    idx: u64,
+    record: &MetricRecord,
+    out: &mut Vec<DivergenceFinding>,
+    checked: &mut u64,
+) {
+    let intended = match record.core.intended_retval {
+        Some(v) => v,
+        None => return,
+    };
+    // A rejected program never ran, so there is nothing to compare it against.
+    if !matches!(record.core.verifier_decision, VerifierDecision::Accept) {
+        return;
+    }
+    for s in &record.core.runtime_samples {
+        // An errored test_run observed nothing, and a run that never reached the store
+        // (the 0041 witness) says nothing about the return path either.
+        if s.error || s.executed == Some(false) {
+            continue;
+        }
+        *checked += 1;
+        if s.retval != intended {
+            out.push(DivergenceFinding {
+                record_index: Some(idx),
+                source: GroundTruthSource::LogicalInvariant,
+                kind: "runtime_intent_violation".to_string(),
+                aspect: "runtime".to_string(),
+                expected: format!("retval == {intended} (the program's own semantics)"),
+                observed: format!("retval={} on input 0x{:x}", s.retval, s.input),
+                detail: "an accepted program returned something its source cannot produce"
+                    .to_string(),
+            });
+        }
     }
 }
