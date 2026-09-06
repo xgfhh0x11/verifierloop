@@ -31,6 +31,14 @@ cd "$SRC"
 make -j"$JOBS" defconfig
 make -j"$JOBS" kvm_guest.config
 ./scripts/kconfig/merge_config.sh -m .config "$FRAG"
+# EXTRA_FRAG lets a caller build a VARIANT of the same tree — e.g. one without
+# CONFIG_BPF_JIT_ALWAYS_ON, which is what makes the kernel's own interpreter reachable and
+# therefore what a JIT-vs-interpreter differential needs. Applied after the lab fragment so
+# it wins, and reported below like every other key symbol.
+if [ -n "${EXTRA_FRAG:-}" ]; then
+  echo "[build] extra fragment -> $EXTRA_FRAG"
+  ./scripts/kconfig/merge_config.sh -m .config "$EXTRA_FRAG"
+fi
 make -j"$JOBS" olddefconfig
 
 # 2. Sanity: the symbols we depend on actually survived olddefconfig.
@@ -48,8 +56,14 @@ BZ="arch/x86/boot/bzImage"
 
 mkdir -p "$LAB/build"
 mkdir -p "$(dirname "$OUT")"; cp "$BZ" "$OUT"
-[ -f vmlinux ] && cp vmlinux "$LAB/build/vmlinux" || true
-cp .config "$LAB/build/kernel.config"
+if [ -n "${EXTRA_FRAG:-}" ]; then
+  # A variant must not overwrite the main kernel's vmlinux/config: those are what every
+  # other script reads, and a silently swapped config is the worst kind of stale artifact.
+  cp .config "${OUT}.config"
+else
+  [ -f vmlinux ] && cp vmlinux "$LAB/build/vmlinux" || true
+  cp .config "$LAB/build/kernel.config"
+fi
 
 # 4. Verify BTF is embedded in the FINAL artifact (the point of the pahole
 #    prerequisite). Authoritative confirmation is in-VM (/sys/kernel/btf/vmlinux,
@@ -61,5 +75,9 @@ else
 fi
 echo "[build] bzImage  -> $OUT ($(du -h "$BZ" | cut -f1))"
 echo "[build] vmlinux  -> $LAB/build/vmlinux"
-echo "[build] config   -> $LAB/build/kernel.config"
+if [ -n "${EXTRA_FRAG:-}" ]; then
+  echo "[build] config   -> ${OUT}.config  (variant; the shared config was left alone)"
+else
+  echo "[build] config   -> $LAB/build/kernel.config"
+fi
 echo "[build] revision -> $(cat "$LAB/kernel.rev" 2>/dev/null || echo unknown)"

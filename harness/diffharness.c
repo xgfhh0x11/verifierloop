@@ -35,6 +35,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
 #include <time.h>
 #include <unistd.h>
 #include <sys/syscall.h>
@@ -3438,6 +3439,29 @@ static void run_probe_idlink(void) {
     }
 }
 
+/* Report — and optionally change — which implementation will execute the programs.
+ *
+ * A capture that does not say whether the JIT was on is ambiguous about the most important
+ * thing in a JIT-vs-interpreter differential, so this prints the mode unconditionally.
+ * `--nojit` asks for the interpreter; on a kernel built with CONFIG_BPF_JIT_ALWAYS_ON the
+ * write is refused and the read-back says so rather than the run silently proceeding under
+ * the JIT and being labelled as interpreted. */
+static void report_jit_mode(int argc, char **argv) {
+    int want_off = 0;
+    for (int i = 1; i < argc; i++)
+        if (strcmp(argv[i], "--nojit") == 0) want_off = 1;
+    const char *path = "/proc/sys/net/core/bpf_jit_enable";
+    if (want_off) {
+        int fd = open(path, O_WRONLY);
+        if (fd >= 0) { ssize_t w = write(fd, "0\n", 2); (void)w; close(fd); }
+    }
+    char buf[16] = {0};
+    int actual = -1;
+    int fd = open(path, O_RDONLY);
+    if (fd >= 0) { ssize_t r = read(fd, buf, sizeof(buf) - 1); (void)r; close(fd); actual = atoi(buf); }
+    printf("JITMODE requested=%s actual=%d\n", want_off ? "interp" : "default", actual);
+}
+
 // ---- the aimed closed-form family (--gen-intent) ----------------------------
 // THE HUNT. This is the first family whose oracle does not consult the verifier at all.
 // Each program's return value is computed by bpfref.h — an independent implementation of
@@ -3507,6 +3531,26 @@ static const char *gi_step_name(enum gi_step s) {
     case GI_SDIV: return "sdiv";
     default: return "?";
     }
+}
+
+/* Read and write net.core.bpf_jit_enable. A kernel built with
+   CONFIG_BPF_JIT_ALWAYS_ON refuses the write, which is reported rather than assumed. */
+static int gi_read_jit(void) {
+    char buf[16] = {0};
+    int fd = open("/proc/sys/net/core/bpf_jit_enable", O_RDONLY);
+    if (fd < 0) return -1;
+    ssize_t r = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    return r > 0 ? atoi(buf) : -1;
+}
+static int gi_set_jit(int v) {
+    char buf[8];
+    int len = snprintf(buf, sizeof(buf), "%d\n", v);
+    int fd = open("/proc/sys/net/core/bpf_jit_enable", O_WRONLY);
+    if (fd < 0) return -1;
+    ssize_t w = write(fd, buf, (size_t)len);
+    close(fd);
+    return (w == len && gi_read_jit() == v) ? 0 : -1;
 }
 
 static void run_gen_intent_family(void) {
@@ -3759,6 +3803,45 @@ static void run_gen_intent_family(void) {
                            in, t.test.retval, bpfref_status_name(ref.status), ref.fault_pc);
             }
             close(fd);
+
+            /* THE JIT-vs-INTERPRETER DIFFERENTIAL, per program.
+               `bpf_jit_enable` is consulted at LOAD time (bpf_prog_select_runtime), so
+               flipping it under an already-loaded program changes nothing — the program
+               has to be loaded a SECOND time with the JIT off. Doing both in one process
+               is what lets the two results be attributed to one record, which is what the
+               jit_interp_divergence invariant has been waiting for since it was written:
+               0066 measured that it had never examined a single record, because
+               CONFIG_BPF_JIT_ALWAYS_ON compiles the interpreter out and the parser had
+               been hardcoding `jit_interp_diff: None` ever since.
+               On a kernel that still forces the JIT on, the write below fails, the reload
+               is JITted too, and the comparison is between two identical runs — so the
+               mode is reported rather than assumed. */
+            int jit_was = gi_read_jit();
+            if (jit_was == 1 && gi_set_jit(0) == 0) {
+                int fd2 = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+                if (fd2 >= 0) {
+                    for (int i = 0; i < GI_INPUTS_N; i++) {
+                        const uint32_t in = GI_INPUTS[i];
+                        uint32_t val[4] = { in, in ^ 0x5a5a5a5au, in + 3, 0 };
+                        if (rt_map_set_bytes(map_in, 0, (const unsigned char *)val) < 0)
+                            continue;
+                        static char pin2[64], pout2[64];
+                        union bpf_attr t2;
+                        memset(&t2, 0, sizeof(t2));
+                        t2.test.prog_fd = fd2;
+                        t2.test.data_in = (uint64_t)(unsigned long)pin2;
+                        t2.test.data_out = (uint64_t)(unsigned long)pout2;
+                        t2.test.data_size_in = sizeof(pin2);
+                        t2.test.data_size_out = sizeof(pout2);
+                        t2.test.repeat = 1;
+                        if (bpf(BPF_PROG_TEST_RUN, &t2, sizeof(t2)) == 0)
+                            printf("JITDIFF input=0x%08x retval_interp=0x%08x\n",
+                                   in, t2.test.retval);
+                    }
+                    close(fd2);
+                }
+                gi_set_jit(jit_was);
+            }
         }
         printf("---LOG---\n%s\n---END---\n", g_log);
     }
@@ -7437,6 +7520,7 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--gen-intent") == 0) {
+        report_jit_mode(argc, argv);
         run_gen_intent_family();
         return 0;
     }

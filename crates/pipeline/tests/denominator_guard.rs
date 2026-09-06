@@ -154,30 +154,47 @@ fn the_newly_counted_invariants_report_what_the_corpus_really_reaches() {
     );
 }
 
-/// THE ONE THE GUARD CAUGHT, and it is worth a test of its own.
+/// THE ONE THE GUARD CAUGHT — and the gap it named is now CLOSED (0075).
 ///
-/// `jit_interp_divergence` has never examined a single record. The verifier-log parser
-/// sets `jit_interp_diff: None` unconditionally — "v0: ALWAYS_ON kernel, no interp" — so
-/// this invariant's silence across every capture the project has ever taken is an absence
-/// of evidence, exactly the shape 0025 was written to expose, hiding in plain sight for
-/// forty legs because nothing counted it.
+/// When this test was written, `jit_interp_divergence` had never examined a single record:
+/// the lab kernel is built `CONFIG_BPF_JIT_ALWAYS_ON`, which compiles the interpreter out,
+/// so the parser hardcoded `jit_interp_diff: None` and the invariant's silence across every
+/// capture the project had ever taken was pure absence of evidence — the shape 0025 exists
+/// to expose, hiding for forty legs because nothing counted it.
 ///
-/// The test pins the honest state: the denominator is ZERO, and this must stay a known
-/// gap rather than quietly counting as one of the clean legs. When an interpreter channel
-/// is eventually built, this assertion flips and the test should be rewritten to demand a
-/// real denominator.
+/// The original test pinned that zero and said: "when an interpreter channel is eventually
+/// built, this assertion flips and the test should be rewritten to demand a real
+/// denominator." A kernel variant without that symbol was built, the harness now loads each
+/// program twice — once JITted, once with `net.core.bpf_jit_enable=0` — and this is that
+/// rewrite.
+///
+/// Both halves are asserted, because the gap is closed only where a family MEASURES it: the
+/// composition corpus does not do the double load and still scores zero, and reading its
+/// zero as a clean result would be the original mistake all over again.
 #[test]
-fn the_jit_interpreter_invariant_has_never_run_and_says_so() {
-    let out = run(COMP, "jit");
+fn the_jit_interpreter_invariant_finally_has_a_denominator() {
+    const INTENT: &str = include_str!("fixtures/volume/gen-intent-64.log");
+    let intent = run(INTENT, "jit-live");
     assert_eq!(
-        out.summary.jit_interp_checked, 0,
-        "an interpreter channel now exists — rewrite this test to require a real \
-         denominator instead of pinning the gap"
+        intent.summary.jit_interp_checked, 64,
+        "every program in the intent corpus is loaded twice and both results compared"
     );
     assert_eq!(
-        out.summary.denominator_for_kind("jit_interp_divergence"),
-        Some(0),
-        "the registry must route this kind to the counter that reports the gap"
+        intent.summary.denominator_for_kind("jit_interp_divergence"),
+        Some(64)
+    );
+    assert!(
+        !intent.findings.iter().any(|f| f.kind == "jit_interp_divergence"),
+        "{:?}", intent.findings
+    );
+
+    // And the gap PERSISTS where nothing measures it. A family that never performs the
+    // second load has nothing to compare, and its zero is still an absence of evidence.
+    let comp = run(COMP, "jit-gap");
+    assert_eq!(
+        comp.summary.jit_interp_checked, 0,
+        "the composition family does not do the double load — if this became non-zero it \
+         started to, and the claim above needs re-measuring"
     );
 }
 

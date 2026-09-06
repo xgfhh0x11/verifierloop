@@ -5762,3 +5762,71 @@ ediyor** — kalibre olmamış bir enstrümanla avlanmak avlanmamaktan kötüdü
 
 Bulgu yok. Ama bu "temiz" sayılı: bağımsız bir ISA uygulamasına karşı, tarihsel olarak en
 verimli şekle nişanlı 4096 programda 32768 yürütme, sıfır boşa örnek. Workspace 325 yeşil.
+
+---
+
+## 0075 — Üçüncü uygulama: kernel'in kendi interpreter'ı, ve kırk bacaktır ölü olan invariant
+
+### 1. Engel gerçekti
+
+`CONFIG_BPF_JIT_ALWAYS_ON=y` — kernel'in kendi `___bpf_prog_run`'ı **derlemeden
+çıkarılmış**. 0066'da `jit_interp_divergence` invariant'ının projenin bütün tarihinde tek
+bir kayıt incelemediğini bulmuştum; sebebi buymuş. Parser'da yıllardır duran
+`jit_interp_diff: None, // v0: ALWAYS_ON kernel, no interp` yorumu tam bunu söylüyormuş —
+ama kimse onu bir **eksiklik** olarak okumamıştı.
+
+`build-kernel.sh` artık `EXTRA_FRAG` alıyor; `config/kernel/nojit.config` o simgeyi
+kapatıyor. Variant **paylaşılan artefaktları ezmiyor** — kendi `.config`'ini yanına yazıyor,
+çünkü sessizce takas edilmiş bir config en kötü bayat artefakt türüdür. (Özet satırı da
+yalan söylüyordu; düzeltildi.)
+
+### 2. Üç bağımsız uygulama
+
+| uygulama | notu |
+|---|---|
+| x86-64 JIT | varsayılan |
+| kernel interpreter | `bpf_jit_enable=0`, ancak yeni variant'ta mümkün |
+| `bpfref.h` | bizim, 16 tuzakta kalibre (0073) |
+
+Ve önemli ayrıntı: `bpf_jit_enable` **yükleme zamanında** okunuyor
+(`bpf_prog_select_runtime`), yani zaten yüklenmiş bir programın altında bayrağı çevirmek
+hiçbir şey değiştirmiyor. Program **ikinci kez yüklenmek** zorunda. Bunu tek bir süreçte
+yapmak, iki sonucun **tek bir kayda** atfedilmesini sağlıyor — invariant'ın yazıldığından
+beri beklediği şey buydu.
+
+### 3. Sonuç
+
+Tam koşu, 4096 program × 8 girdi:
+
+| karşılaştırma | sonuç |
+|---|---|
+| kernel-JIT vs kernel-INTERPRETER | 32768 karşılaştırma, **0 uyuşmazlık** |
+| kernel-JIT vs `bpfref` | 32768, **0** |
+| kernel-INTERPRETER vs `bpfref` | 32760, **0** |
+
+`jit_interp_checked` ilk kez sıfırdan farklı.
+
+### 4. Bir sahte alarm, ve neden sahte olduğu
+
+İlk analizim "bir program iki modda farklı verdict aldı" dedi. Değil: log satırı bir RCU
+stall mesajıyla bölünmüş —
+
+```
+===PROG genintent#s7d2ee64d#2778 type=sock[  123.324686] rcu: INFO: rcu_preempt detected stalls...
+```
+
+— ve benim ad-hoc python analizim, pipeline'ın 0027'den beri yaptığı konsol-onarımını
+yapmıyordu. Program kabul edilmişti. **OI-10 (paylaşılan yakalama kanalı) bu bacakta ilk
+kez ısırdı**: 4096 program × 8 test_run yükü altında kernel seri hatta konuşuyor. Pipeline
+onarıyor ve not düşüyor; yardımcı scriptler onarmıyor — yakalamayı elle ayrıştıran her
+analiz bunu hesaba katmalı.
+
+### 5. Testin kendi eskimesini önceden söylemesi
+
+0066'daki test şunu yazmıştı: *"bir interpreter kanalı kurulduğunda bu assert ters döner ve
+test gerçek bir payda istemek üzere yeniden yazılmalı."* Aynen o yapıldı — ve iki yarısı
+birden sabitlendi: intent korpusunda payda **64**, kompozisyon korpusunda hâlâ **0**, çünkü
+o aile çift yüklemeyi yapmıyor. **Boşluk yalnız onu ÖLÇEN yerde kapandı**; ölçmeyen bir
+ailenin sıfırını temiz sanmak ilk hatanın tekrarı olurdu.
+
+Workspace 326 yeşil.

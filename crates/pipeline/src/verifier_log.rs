@@ -85,6 +85,7 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
     let mut log: Vec<&str> = Vec::new();
     let mut runtime_lines: Vec<&str> = Vec::new();
     let mut expect_line: Option<&str> = None;
+    let mut jitdiff_lines: Vec<&str> = Vec::new();
     let mut store_line: Option<&str> = None;
     let mut prune_line: Option<&str> = None;
 
@@ -93,6 +94,8 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
             result_line = Some(line);
         } else if line.starts_with("RUNTIME ") {
             runtime_lines.push(line);
+        } else if line.starts_with("JITDIFF ") {
+            jitdiff_lines.push(line);
         } else if line.starts_with("EXPECT ") {
             expect_line = Some(line);
         } else if line.starts_with("STORE ") {
@@ -156,7 +159,13 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
         verifier_decision: decision,
         register_evolution: parse_register_evolution(&log),
         processed: parse_processed(&log),
-        jit_interp_diff: None,                    // v0: ALWAYS_ON kernel, no interp
+        // Set when the harness loaded the SAME program twice — once JITted, once with
+        // net.core.bpf_jit_enable=0 — and ran both. It stayed None for the project's whole
+        // history because the lab kernel is built CONFIG_BPF_JIT_ALWAYS_ON, which compiles
+        // the interpreter out; 0066 measured that the jit_interp_divergence invariant had
+        // therefore never examined a single record. A kernel variant without that symbol
+        // (0075) makes the comparison possible, and this is where it arrives.
+        jit_interp_diff: parse_jit_interp(&runtime_lines, &jitdiff_lines),
         coverage_delta: CoverageDelta::default(), // exec_n stamped by normalize
         helper_arg_observations: parse_helper_calls(&log),
         helper_arg_violations: Vec::new(),        // legacy synthetic path
@@ -967,6 +976,58 @@ fn parse_const_int(s: &str) -> Option<(u64, i64)> {
 /// The token is deliberately not spelled `retval=`: `parse_runtime_samples` prefix-matches
 /// that on every whitespace token, and this project has twice shipped a bug where one
 /// output token was silently matched by another's pattern (devlog 0041, 0042).
+/// Pair each `JITDIFF input=... retval_interp=...` with the JITted `RUNTIME` sample for the
+/// same input.
+///
+/// One `JitInterpDiff` per record, so a disagreement on ANY input is reported — and the
+/// pair carried is the FIRST one that differs, because that is the one worth triaging. With
+/// no disagreement the first common input is carried, so the record still counts toward the
+/// denominator instead of vanishing from it.
+fn parse_jit_interp(
+    runtime: &[&str],
+    jitdiff: &[&str],
+) -> Option<metrics::core::JitInterpDiff> {
+    fn tok(l: &str, k: &str) -> Option<u64> {
+        let v = l.split_whitespace().find_map(|t| t.strip_prefix(k))?;
+        if let Some(h) = v.strip_prefix("0x") {
+            u64::from_str_radix(h, 16).ok()
+        } else {
+            v.parse::<u64>().ok()
+        }
+    }
+    if jitdiff.is_empty() {
+        return None;
+    }
+    let mut first: Option<(u64, u64)> = None;
+    for j in jitdiff {
+        let input = tok(j, "input=")?;
+        let interp = tok(j, "retval_interp=")?;
+        let jit = runtime
+            .iter()
+            .find(|r| tok(r, "input=") == Some(input))
+            .and_then(|r| tok(r, "retval="));
+        let jit = match jit {
+            Some(v) => v,
+            None => continue,
+        };
+        if jit != interp {
+            return Some(metrics::core::JitInterpDiff {
+                retval_jit: jit as i64,
+                retval_interp: interp as i64,
+                data_out_equal: true,
+            });
+        }
+        if first.is_none() {
+            first = Some((jit, interp));
+        }
+    }
+    first.map(|(jit, interp)| metrics::core::JitInterpDiff {
+        retval_jit: jit as i64,
+        retval_interp: interp as i64,
+        data_out_equal: true,
+    })
+}
+
 fn parse_intended_retval(line: &str) -> Option<u64> {
     let tok = line
         .split_whitespace()

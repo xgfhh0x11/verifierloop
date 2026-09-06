@@ -54,6 +54,48 @@ fn the_corpus_is_clean_against_an_independent_implementation_of_the_isa() {
         out.summary.runtime_intent_checked, 512,
         "every program's whole input sweep must be compared — 64 programs x 8 inputs"
     );
+    // And the third implementation: each program is loaded twice, once JITted and once
+    // with net.core.bpf_jit_enable=0, so the kernel's OWN interpreter runs it too.
+    assert_eq!(out.summary.jit_interp_checked, 64);
+}
+
+/// THREE INDEPENDENT IMPLEMENTATIONS, and they agree everywhere (0075).
+///
+/// The x86-64 JIT, the kernel's own interpreter, and bpfref.h. Two of the three pairings
+/// were impossible before this leg: `CONFIG_BPF_JIT_ALWAYS_ON` compiles ___bpf_prog_run
+/// out, so the lab kernel could only ever execute one way. A variant without that symbol
+/// makes the second load meaningful.
+///
+/// Full run, 4096 programs x 8 inputs: 32768 comparisons in each pairing, zero
+/// disagreements in all three.
+#[test]
+fn the_jit_and_the_kernels_own_interpreter_agree_with_each_other_and_with_us() {
+    let jit: Vec<(&str, &str)> = CORPUS
+        .lines()
+        .filter(|l| l.starts_with("RUNTIME "))
+        .filter_map(|l| {
+            let i = l.split_whitespace().find_map(|t| t.strip_prefix("input="))?;
+            let v = l.split_whitespace().find_map(|t| t.strip_prefix("retval="))?;
+            Some((i, v))
+        })
+        .collect();
+    let interp: Vec<(&str, &str)> = CORPUS
+        .lines()
+        .filter(|l| l.starts_with("JITDIFF "))
+        .filter_map(|l| {
+            let i = l.split_whitespace().find_map(|t| t.strip_prefix("input="))?;
+            let v = l.split_whitespace().find_map(|t| t.strip_prefix("retval_interp="))?;
+            Some((i, v))
+        })
+        .collect();
+    assert_eq!(jit.len(), 512);
+    assert_eq!(interp.len(), 512, "every JITted run must have an interpreted twin");
+    assert_eq!(jit, interp, "the JIT and the interpreter disagree on a return value");
+
+    // The capture must also say which implementation the default run used — a JIT
+    // differential whose capture is silent about the mode is ambiguous about the only
+    // thing that matters.
+    assert!(CORPUS.contains("JITMODE requested=default actual=1"));
 }
 
 /// Every sample carries a claim, and the claims are not all the same value.
