@@ -65,37 +65,39 @@ fn coverage_and_corpus_both_grow() {
     }
 }
 
-/// THE CEILING, RAISED AND RE-MEASURED (devlog 0079).
+/// THE CEILING, AND WHAT MOVES IT (devlog 0079, 0080).
 ///
-/// 0078's version of this test asserted `reject == 0` and said: "if this became non-zero
-/// the grammar gained a decision surface — re-measure the ceiling below, it should have
-/// moved." It did, so this is that re-measurement.
+/// 0078's version asserted `reject == 0` and said that if it ever became non-zero the
+/// grammar had gained a decision surface and the ceiling should be re-measured. It has now
+/// been re-measured twice, and the pattern is the point:
 ///
-/// The grammar gained a store through a map value whose bound the verifier must PROVE.
-/// That is the difference between a program the verifier waves through and one it has to
-/// decide about, and it opened check_mem_access and the pointer-bounds refinement around
-/// it. Rejections went from none at all to roughly a quarter of everything emitted, and the
-/// coverage plateau moved 4789 -> 4942 PCs.
+///     grammar                       coverage   rejections
+///     scalar only (0078)             4789        0%
+///     + map-value store (0079)       4942       23%
+///     + var-offset stack (0080)      5188       39%
 ///
-/// The plateau is REAL, not an artefact: `trunc=0` says no load ever filled the KCOV
-/// buffer, so nothing was lost to truncation. What limits coverage now is still the
-/// grammar — fourteen step kinds over three scalar registers, one pointer and one map — and
-/// the next lift is more KINDS of memory, not more programs.
+/// Each new KIND of memory adds roughly 150-250 PCs; more programs add none. The limit is
+/// the number of distinct memory kinds the grammar can express, not the number of programs
+/// it emits — which is why the next lift is packet pointers rather than a longer run.
+///
+/// The plateau is real rather than an artefact: `trunc=0` says no load ever filled the KCOV
+/// buffer, so nothing was lost to truncation. Without that check "we plateaued" and "we
+/// overflowed" would look identical.
+///
+/// NOTE the cost, recorded rather than hidden: rejections buy coverage and spend
+/// throughput, because a rejected program never reaches the oracle. Comparisons fell from
+/// 3.17M to 2.36M as rejections rose from 23% to 39%. There is a point past which more
+/// decision surface stops paying, and this is the number that will show it.
 #[test]
-fn the_decision_surface_is_live_and_the_ceiling_moved() {
+fn the_ceiling_is_set_by_memory_kinds_not_by_program_count() {
     let ss = status_lines();
     let last = ss.last().unwrap();
     let acc = field(last, "accept=");
     let rej = field(last, "reject=");
-    assert!(rej > 0, "the grammar must be able to produce a rejection at all");
+    assert!(rej > 0 && rej < acc, "two-sided decision surface: accept {acc}, reject {rej}");
     assert!(
-        rej * 10 > acc && rej < acc,
-        "the decision surface must be genuinely two-sided, not a token minority or a \
-         majority: accept {acc}, reject {rej}"
-    );
-    assert!(
-        field(last, "seen_pcs=") > 4_900,
-        "the ceiling should sit above the pre-store plateau of 4789"
+        field(last, "seen_pcs=") > 5_100,
+        "the ceiling should sit above the 4942 of the map-store grammar"
     );
     assert_eq!(
         field(last, "trunc="),
@@ -103,6 +105,9 @@ fn the_decision_surface_is_live_and_the_ceiling_moved() {
         "a load that filled the KCOV buffer lost coverage, and lost coverage looks exactly \
          like a plateau — the ceiling claim is only honest while this is zero"
     );
+    // The corpus must keep growing too: a ceiling that rose without new keeps would mean
+    // the coverage came from noise rather than from programs worth mutating.
+    assert!(field(last, "corpus=") > 120, "corpus {}", field(last, "corpus="));
 }
 
 /// The run must refuse rather than degrade. Without KCOV this would still LOOK like

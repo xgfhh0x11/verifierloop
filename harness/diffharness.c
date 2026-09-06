@@ -3661,6 +3661,7 @@ enum gi_step {
     GI_SCMP,      /* a signed compare, 64- or 32-bit, consuming the above            */
     GI_PAIR,      /* the whole link-then-diverge shape, emitted as one unit           */
     GI_STORE,     /* a store through a map value — the grammar's DECISION surface      */
+    GI_STACKVAR,  /* VARIABLE-offset stack access, stored and read back                 */
     GI_PIN,       /* make the verifier believe it knows the value EXACTLY              */
     GI_SDIV,      /* signed div/mod — the interpreter-level UB shape                   */
     GI_STEP_N
@@ -3675,6 +3676,7 @@ static const char *gi_step_name(enum gi_step s) {
     case GI_SHIFT: return "shift"; case GI_SCMP: return "scmp";
     case GI_PAIR: return "pair"; case GI_PIN: return "pin";
     case GI_STORE: return "store";
+    case GI_STACKVAR: return "stackvar";
     case GI_SDIV: return "sdiv";
     default: return "?";
     }
@@ -3827,6 +3829,22 @@ static int gi_emit_body(const struct gi_genome *G, struct bpf_insn *ins, int n,
             ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_8);
             ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_1, A);
             ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_1, (short)(K % 8), -1);
+            break;
+        }
+        case GI_STACKVAR: {
+            /* A DIFFERENT branch of check_mem_access from the map store: the stack, and at
+               a VARIABLE offset, which goes through check_stack_access_within_bounds and
+               the var_off handling around it. Commit 107c26a70ca8 lived exactly here — the
+               maximum end of a variable-offset indirect stack access was computed as
+               `umax_value + off` with no magnitude check.
+               The value is written and READ BACK into the same register, so the address the
+               access actually uses reaches the return value: a disagreement about WHERE the
+               access lands becomes a disagreement about WHAT the program returns, which is
+               the only channel whose reference is not the verifier. */
+            ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_10);
+            ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_1, A);
+            ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_1, -64, (int)(o & 0x7f));
+            ins[n++] = BPF_LDX_MEM(BPF_B, A, BPF_REG_1, -64);
             break;
         }
         case GI_PAIR: {
