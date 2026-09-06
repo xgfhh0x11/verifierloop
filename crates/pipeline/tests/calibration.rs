@@ -66,6 +66,11 @@ const SX_FIXED: &str = include_str!("fixtures/calibration/sx-ae67b9fb8c4e-fixed.
 const IL_BUGGY: &str = include_str!("fixtures/calibration/idlink-af9e89d8dd39-buggy.log");
 const IL_FIXED: &str = include_str!("fixtures/calibration/idlink-af9e89d8dd39-fixed.log");
 
+/// The sixth pair (devlog 0070): commit 811c363645b3, aimed at the RUNTIME channel — and
+/// the measurement contradicted the prediction. Both halves are real captures.
+const SP_BUGGY: &str = include_str!("fixtures/calibration/spill-811c363645b3-buggy.log");
+const SP_FIXED: &str = include_str!("fixtures/calibration/spill-811c363645b3-fixed.log");
+
 fn run_diff(text: &str, tag: &str) -> (normalize::NormalizedMetrics, diff::DiffFindings) {
     let dir = std::env::temp_dir().join(format!("vl-cal-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -638,5 +643,102 @@ fn the_broken_link_is_visible_as_a_difference_but_not_as_a_contradiction() {
     // Both states are internally consistent, which is why the pipeline reports nothing on
     // either — already asserted above, restated here as the reason this test exists.
     let (_, fixed) = run_diff(IL_FIXED, "il-f-diff");
+    assert_eq!(fixed.summary.finding_count, 0, "{:?}", fixed.findings);
+}
+
+// ---------------------------------------------------------------------------
+// PAIR SIX (devlog 0070) — commit 811c363645b3, "bpf: Fix check_stack_write_fixed_off() to
+// correctly spill imm" (2023-11-01, Hao Sun). Aimed at the RUNTIME channel, which no pair
+// had reached. THE PREDICTION WAS WRONG, and the correction is the result.
+//
+// THE BUG, one cast. `check_stack_write_fixed_off()` tracked a 64-bit `BPF_ST_MEM`'s
+// immediate as `__mark_reg_known(&fake_reg, (u32)insn->imm)`. `insn->imm` is an s32, so the
+// cast drops the sign: `-44` is tracked as `4294967252`.
+//
+//     buggy:  1: (7a) *(u64 *)(r2 -40) = -44   ; fp-40_w=4294967252
+//             2: (79) r0 = *(u64 *)(r2 -40)    ; R0_w=4294967252
+//     fixed:  1: (7a) *(u64 *)(r2 -40) = -44   ; fp-40=-44
+//             2: (79) r0 = *(u64 *)(r2 -40)    ; R0=-44
+//
+// THE PREDICTION, made independently by me and by a screening pass, and WRONG in the same
+// way: since `r0` looks like a large positive constant, `if r0 s< 0xa` looks false, the
+// verifier proves the program returns 1 — while the value really is -44, so the branch is
+// really taken and the program really returns 0. Verifier says 1, runtime says 0: a clean
+// hit for the retval oracle.
+//
+// WHAT ACTUALLY HAPPENS. On the buggy kernel the observed return value is 1, matching the
+// wrong proof exactly. Because the verifier resolved the branch STATICALLY, it never walked
+// the other side, and `bpf_opt_hard_wire_dead_code_branches()` (kernel/bpf/fixups.c:564)
+// then rewrites every conditional jump whose one side was never `seen` into a `JA` — so the
+// branch is REMOVED from the program that actually runs.
+//
+//     THE RUNTIME ORACLE'S REFERENCE IS THE PROGRAM THE VERIFIER PRODUCED, NOT THE PROGRAM
+//     THAT WAS SUBMITTED. Any bug whose effect is a wrong STATIC BRANCH RESOLUTION is
+//     invisible to it by construction: the wrong belief is baked into the emitted code, and
+//     the observation then agrees with the wrong proof.
+//
+// This is a second and sharper boundary than pair five's. Pair five could not be seen
+// because the state was merely wider than the truth. This one cannot be seen because the
+// instrument's own ground truth has been rewritten to agree with the error.
+//
+// It also invalidates a whole shape of reasoning about candidates: every historical fix
+// whose consequence is described as "dead-code rewrite of reachable code" is in this class,
+// however cleanly its commit message quotes the corrupted state.
+//
+// WHAT WOULD CATCH IT is a different REFERENCE. For a generated program the harness knows
+// the intended result independently of the verifier — this one is closed-form: store -44,
+// reload, -44 < 10, return 0. Comparing the observed retval against the GENERATOR's
+// expectation rather than the verifier's claim turns this from invisible into a one-line
+// check. That is the leg's forward-looking output.
+// ---------------------------------------------------------------------------
+
+/// THE MEASUREMENT that corrected the prediction: the buggy kernel returns 1, agreeing
+/// with its own wrong proof. The control arm — a POSITIVE immediate, which survives the
+/// cast unchanged — agrees on both kernels, so the difference is specifically the lost sign.
+#[test]
+fn the_runtime_follows_the_verifier_because_the_dead_branch_is_removed() {
+    // The corrupted state, and its correct counterpart.
+    assert!(SP_BUGGY.contains("*(u64 *)(r2 -40) = -44        ; R2_w=fp0 fp-40_w=4294967252"));
+    assert!(SP_FIXED.contains("*(u64 *)(r2 -40) = -44        ; R2=fp0 fp-40=-44"));
+
+    // The verifier proves 1 on the buggy kernel and 0 on the fixed one...
+    assert!(SP_BUGGY.contains("4: (b7) r0 = 1"));
+    assert!(SP_FIXED.contains("6: (b7) r0 = 0"));
+
+    // ...and the OBSERVED return value follows the proof on each, rather than diverging
+    // from it on either. This is the whole finding.
+    let neg = |log: &str| -> String {
+        let block = log.split("===PROG ").find(|b| b.starts_with("spill#811c363645b3#neg")).unwrap();
+        block.lines().find(|l| l.starts_with("RUNTIME ")).unwrap().to_string()
+    };
+    assert!(neg(SP_BUGGY).contains("retval=0x00000001"), "{}", neg(SP_BUGGY));
+    assert!(neg(SP_FIXED).contains("retval=0x00000000"), "{}", neg(SP_FIXED));
+
+    // Control: a positive immediate is unaffected by the (u32) cast, so both kernels agree.
+    let pos = |log: &str| -> String {
+        let block = log.split("===PROG ").find(|b| b.starts_with("spill#811c363645b3#pos")).unwrap();
+        block.lines().find(|l| l.starts_with("RUNTIME ")).unwrap().to_string()
+    };
+    assert!(pos(SP_BUGGY).contains("retval=0x00000001"));
+    assert!(pos(SP_FIXED).contains("retval=0x00000001"));
+}
+
+/// THE BOUNDARY, with a denominator behind it: the runtime check RAN on the buggy capture
+/// and passed. Silence here is not "nothing was looked at" — it is the oracle evaluating
+/// the program and finding it consistent, because the program had been rewritten to be so.
+#[test]
+fn the_runtime_oracle_evaluates_the_buggy_program_and_is_satisfied() {
+    let (_, buggy) = run_diff(SP_BUGGY, "sp-buggy");
+    assert_eq!(buggy.summary.finding_count, 0, "{:?}", buggy.findings);
+    assert_eq!(
+        buggy.summary.runtime_checked, 2,
+        "both arms must actually be compared against a proven bound — a skipped comparison \
+         would make this test say nothing at all"
+    );
+    // And no parsed-state invariant fires either: `R0_w=4294967252` is a pinned constant
+    // whose tnum and bounds agree. It is wrong, not inconsistent.
+    assert!(buggy.summary.tnum_bounds_checked >= 4, "{}", buggy.summary.tnum_bounds_checked);
+
+    let (_, fixed) = run_diff(SP_FIXED, "sp-fixed");
     assert_eq!(fixed.summary.finding_count, 0, "{:?}", fixed.findings);
 }

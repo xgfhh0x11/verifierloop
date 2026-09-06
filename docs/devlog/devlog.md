@@ -5467,3 +5467,102 @@ commit'lenmedi — çevrilen 7 program her iki kernel'dan ayrı bir fixture olar
 (200KB).
 
 Workspace 307 yeşil. Runner: `scripts/run-comp-diff.sh`.
+
+---
+
+## 0070 — Parser üç sessiz körlük daha; ve altıncı kalibrasyon çifti tahminimi çürüttü
+
+Bu bacak iki parçadan oluşuyor ve ikisi de aynı dersin farklı yüzü: **enstrümanın neye
+baktığını sandığın ile gerçekte neye baktığı arasındaki fark.**
+
+### BÖLÜM 1 — Parser denetimi: üç sessiz kayıp
+
+Parser'ı kernel'in `log.c`'sine karşı sistematik denetledim. Üç gerçek kayıp çıktı, üçü de
+**sessiz** — hiçbir hata, sadece eksik payda.
+
+**(1) `to caller at N:` — subprogram dönüş durumu.** `print_verifier_state()` her
+register'ı bir **boşlukla** başlatıyor (`verbose(env, " R%d", i)`), yani başlığı newline ile
+biten her durum dökümü girintili bir satıra düşüyor. Parser'ın ilk satırı
+`if line.starts_with(' ') { continue; }` — liveness gürültüsünü atmak için. Bütün sınıfı
+atıyordu. **Bir çağrı sınırındaki register transferi YALNIZCA orada basılıyor.**
+Kompozisyon korpusunda 1962 satır.
+
+İndeksi olan alınıyor, olmayan alınmıyor: `to caller at %d:` indeksi söylüyor; `caller:`,
+`callee:`, `returning from callee:` söylemiyor ve onlara indeks uydurmak, store-konumu
+kontrolüne verifier'ın hiç yapmadığı bir iddiayı beslemek olurdu.
+
+**(2) `from A to B:` — budama noktası dökümleri.** `verbose(env, "\nfrom %d to %d%s:",
+env->prev_insn_idx, env->insn_idx, ...)` ardından `print_verifier_state(print_all=true)`.
+**B tam olarak `env->insn_idx`** — durumun ait olduğu instruction, yani atıf çıkarım değil,
+log'un kendi söylediği şey. Ve `print_all=true` olduğu için sadece scratched olanları değil
+**bütün canlı register'ları** taşıyor: satır-başı düzeyinde log'daki en zengin anlık
+görüntü. Başlık (`from 33 to 15`) hepsi-rakam olmadığı için düşüyordu. Korpuslarda
+**5851 satır**.
+
+Ve bu yalnız kayıp payda değil, **yanlış-bulgu riskiydi**: store-konumu kontrolü store'u
+verifier'ın gerçekte yaptığı iddiaların bir **alt kümesiyle** karşılaştırıyordu.
+
+**(3) `rdonly_mem` ve akrabaları.** `log.c:435-443` set edilmiş her tip bayrağını isim
+önüne yapıştırıyor (`rdonly_ ringbuf_ user_ percpu_ rcu_ untrusted_ trusted_`), ve
+PTR_TO_BTF_ID'nin tabanı `ptr_` + struct adı — hiç `btf_id` diye basılmıyor.
+`base_family` bunların hiçbirini soymuyordu, dolayısıyla sıradan bir salt-okunur dynptr
+slice'ı **896 kaydın 634'ünde** "bilinmeyen aile" notu üretiyordu. Bu hacimde kalıcı bir
+not, notsuzluktan kötüdür: gerçekten yeni bir şeklin içinde aranması gereken gürültü tam
+olarak budur.
+
+**Ölçülmüş etki** (`gen-comp-896`): `tnum_bounds_checked` 22650 → **25955**,
+`bounds_order_checked` 40214 → **45668**, "unrecognized" notu 634 → **0**, bulgu 0.
+Bütün ailelerde paydalar arttı ya da aynı kaldı; hiçbirinde düşmedi.
+
+### BÖLÜM 2 — Altıncı çift: `811c363645b3`, ve yanlış çıkan tahmin
+
+`check_stack_write_fixed_off()` 64-bit `BPF_ST_MEM`'in immediate'ini
+`__mark_reg_known(&fake_reg, (u32)insn->imm)` ile izliyordu. `insn->imm` bir s32 — cast
+**işareti düşürüyor**: `-44` → `4294967252`.
+
+```
+buggy  1: *(u64 *)(r2 -40) = -44 ; fp-40_w=4294967252
+       2: r0 = *(u64 *)(r2 -40)  ; R0_w=4294967252
+fixed  1: *(u64 *)(r2 -40) = -44 ; fp-40=-44
+       2: r0 = *(u64 *)(r2 -40)  ; R0=-44
+```
+
+**Tahmin** (benim ve bağımsız bir tarama geçişinin, aynı biçimde): `r0` büyük pozitif bir
+sabit gibi göründüğü için `if r0 s< 0xa` yanlış görünür, verifier programın 1 döndürdüğünü
+kanıtlar — oysa değer gerçekte -44, dal gerçekte alınır, program gerçekte 0 döner. Retval
+oracle'ı için temiz bir isabet.
+
+**Gerçekte olan:** hatalı kernel'da gözlenen dönüş değeri **1** — yanlış kanıtla birebir
+uyumlu.
+
+Sebep: verifier dalı **statik** çözdüğü için öbür tarafı hiç yürümüyor, ve
+`bpf_opt_hard_wire_dead_code_branches()` (`kernel/bpf/fixups.c:564`) bir tarafı hiç
+`seen` olmayan her koşullu atlamayı `JA`'ya çeviriyor — yani dal **çalışan programdan
+çıkarılıyor**.
+
+> **Runtime oracle'ının referansı, verifier'ın ÜRETTİĞİ programdır; gönderilen program
+> değil.** Etkisi yanlış bir STATİK DAL ÇÖZÜMÜ olan her hata ona yapısal olarak
+> görünmezdir: yanlış inanç yayılan koda gömülür, gözlem de yanlış kanıtla uyuşur.
+
+Bu, 0068'inkinden **daha keskin** bir sınır. Orada durum yalnızca gerçekten genişti.
+Burada enstrümanın kendi yer gerçeği, hatayla uyuşacak şekilde yeniden yazılmış.
+
+Ve bir muhakeme kalıbını da geçersiz kılıyor: sonucu "erişilebilir kodun dead-code
+rewrite'ı" diye tarif edilen her tarihsel düzeltme bu sınıfta — commit mesajı bozuk durumu
+ne kadar temiz alıntılarsa alıntılasın.
+
+**Payda ile birlikte ölçüldü:** hatalı yakalamada `runtime_checked=2`, `finding_count=0`.
+Yani kontrol **koştu ve geçti**. Sessizlik "kimse bakmadı" değil; oracle programı
+değerlendirdi ve tutarlı buldu — çünkü program tutarlı olacak şekilde yeniden yazılmıştı.
+
+**Kontrol kolu** (`+44`, cast'ten etkilenmeyen pozitif immediate) iki kernel'da da 1
+döndürüyor. Fark özellikle kaybolan işarete ait.
+
+### Ne yakalardı
+
+Farklı bir **referans**. Üretilen bir program için harness sonucu verifier'dan bağımsız
+biliyor — bu program kapalı formda: -44 yaz, geri oku, -44 < 10, 0 döndür. Gözlenen
+retval'i verifier'ın iddiası yerine **jeneratörün beklentisiyle** karşılaştırmak bunu
+görünmezden tek satırlık bir kontrole çeviriyor. Bacağın ileriye dönük çıktısı bu.
+
+Workspace 313 yeşil. Runner: `scripts/probe-spill.sh`.

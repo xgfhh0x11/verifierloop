@@ -275,7 +275,7 @@ fn unrecognized_reg_families(core: &CoreMetrics) -> Vec<String> {
     const KNOWN: &[&str] = &[
         "scalar", "map_ptr", "map_value", "map_value_or_null", "ctx", "fp", "pkt",
         "pkt_meta", "pkt_end", "flow_keys", "sock", "sock_common", "tcp_sock",
-        "func", "stack", "ringbuf_mem", "buf", "mem", "btf_id", "trusted_ptr",
+        "func", "stack", "buf", "mem", "ptr",
     ];
     let mut out = std::collections::BTreeSet::new();
     for snap in &core.register_evolution {
@@ -289,10 +289,40 @@ fn unrecognized_reg_families(core: &CoreMetrics) -> Vec<String> {
     out.into_iter().collect()
 }
 
-/// Collapse a verifier reg-type to its base family: any `fp<off>` is `fp`, and the
-/// `_or_null` nullability suffix is not a distinct family.
+/// Collapse a verifier reg-type to its base family.
+///
+/// `log.c:reg_type_str()` builds the printed name as PREFIX + base + POSTFIX, where the
+/// prefix is a concatenation of every set type flag —
+/// `rdonly_ ringbuf_ user_ percpu_ rcu_ untrusted_ trusted_` (log.c:435-443) — and the
+/// postfix is either `_or_null` or, for PTR_TO_BTF_ID, the infix `or_null_` placed BEFORE
+/// the struct name. PTR_TO_BTF_ID's base is `ptr_` with the BTF type name glued straight on
+/// (log.c:418 and :650-651), so it prints as `ptr_sk_buff`, `trusted_ptr_task_struct`,
+/// `ptr_or_null_sk_buff` — never as a bare `btf_id`.
+///
+/// None of that was stripped, which made `rdonly_mem` — an ordinary read-only dynptr slice
+/// — report as an unknown family on 634 of the composition corpus's 896 records. A
+/// permanent note at that volume is worse than no note: it is exactly the noise a genuinely
+/// novel shape would have to be spotted inside.
 fn base_family(reg_type: &str) -> String {
-    let t = if reg_type.starts_with("fp") { "fp" } else { reg_type };
+    if reg_type.starts_with("fp") {
+        return "fp".to_string();
+    }
+    let mut t = reg_type;
+    loop {
+        let stripped = ["rdonly_", "ringbuf_", "user_", "percpu_", "rcu_", "untrusted_",
+                        "trusted_"]
+            .iter()
+            .find_map(|p| t.strip_prefix(p));
+        match stripped {
+            Some(rest) => t = rest,
+            None => break,
+        }
+    }
+    // PTR_TO_BTF_ID: `ptr_` (+ `or_null_`) + the BTF struct name, which is unbounded.
+    if let Some(rest) = t.strip_prefix("ptr_") {
+        let _ = rest;
+        return "ptr".to_string();
+    }
     t.strip_suffix("_or_null").unwrap_or(t).to_string()
 }
 
@@ -491,14 +521,107 @@ fn parse_processed(log: &[&str]) -> Processed {
 }
 
 /// Build the per-insn register-state snapshots from the verifier log.
+/// Strip a `frameN:` call-depth prefix from a state string.
+///
+/// A program with subprograms prefixes every state with its call depth, and the prefix
+/// sits AHEAD of the register tokens (`33: frame1: R3=map_value(...)`). It has to come off
+/// before the full-state / instruction-line decision, because `frame1: R3=...` does not
+/// look like a register token and would otherwise be dropped SILENTLY — an empty register
+/// evolution, not an unrecognized line, so the only symptom is a denominator of zero.
+fn strip_frame(st: &str) -> &str {
+    let after = match st.strip_prefix("frame") {
+        Some(a) => a,
+        None => return st,
+    };
+    let digits = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if digits == 0 || !after[digits..].starts_with(':') {
+        return st;
+    }
+    after[digits + 1..].trim_start()
+}
+
+/// Parse a `from <prev> to <idx>[ (speculative execution)]: <state>` dump.
+///
+/// Returns the DESTINATION index — `env->insn_idx`, the instruction the state belongs to —
+/// and the state text with any `frameN:` prefix already removed.
+fn parse_from_to(t: &str) -> Option<(u32, &str)> {
+    let rest = t.strip_prefix("from ")?;
+    let (_prev, rest) = rest.split_once(" to ")?;
+    let colon = rest.find(':')?;
+    let (head, state) = rest.split_at(colon);
+    // `head` is the destination index, optionally followed by the speculative marker.
+    let digits: String = head.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let tail = head[digits.len()..].trim();
+    if !tail.is_empty() && tail != "(speculative execution)" {
+        return None;
+    }
+    let idx: u32 = digits.parse().ok()?;
+    Some((idx, strip_frame(state[1..].trim_start())))
+}
+
 fn parse_register_evolution(log: &[&str]) -> Vec<RegSnapshot> {
     let mut snaps = Vec::new();
+    // Set by a `to caller at N:` header and consumed by the indented full-state dump on
+    // the very next line. See the comment on that branch below.
+    let mut pending_idx: Option<u32> = None;
     for line in log {
-        // Liveness lines are indented ("      0: ..."); skip them.
         if line.starts_with(' ') {
+            // MOSTLY liveness lines ("      0: .........."), which are noise — but NOT
+            // always. `print_verifier_state()` starts every register with a leading space
+            // (log.c: `verbose(env, " R%d", i)`), so any state dump whose header ended in a
+            // newline lands here too. Dropping the whole class cost the richest snapshots
+            // in the log: the caller/callee transfer at a subprogram boundary is printed
+            // ONLY here, and nowhere else.
+            //
+            // Only a dump with a printed instruction index is taken. `to caller at %d:`
+            // (verifier.c, prepare_func_exit) states the index; `caller:`, `callee:` and
+            // `returning from callee:` do not, and inventing one for them would feed a
+            // claim the log never made into the store-location check.
+            if let Some(idx) = pending_idx.take() {
+                let t = strip_frame(line.trim_start());
+                if looks_like_reg_token_start(t) {
+                    let regs = parse_reg_tokens(t);
+                    if !regs.is_empty() {
+                        snaps.push(RegSnapshot { insn_idx: idx, regs });
+                    }
+                }
+            }
             continue;
         }
+        pending_idx = None;
         let t = line.trim();
+
+        // `to caller at 15:` — the next line carries the caller's restored state.
+        if let Some(rest) = t.strip_prefix("to caller at ") {
+            if let Some(n) = rest.strip_suffix(':').and_then(|d| d.parse::<u32>().ok()) {
+                pending_idx = Some(n);
+            }
+            continue;
+        }
+
+        // `from 33 to 15:` / `from 33 to 15 (speculative execution):` — a full state dump
+        // at a prune point or back-edge, printed at BPF_LOG_LEVEL2 with print_all=true, so
+        // it carries EVERY live register rather than only the scratched ones. The trailing
+        // number is `env->insn_idx` (verifier.c: `verbose(env, "\nfrom %d to %d%s:",
+        // env->prev_insn_idx, env->insn_idx, ...)`) — the instruction this state belongs
+        // to, exactly as for an ordinary `15: R1=ctx()` line. Attribution here is what the
+        // log says, not an inference.
+        //
+        // These were dropped because the head is `from 33 to 15`, which is not all digits.
+        // 5851 of them sit in the committed corpora, and they are the freshest merged claim
+        // at precisely the loop and prune points the store-location check cares about —
+        // so missing them was not only a lost denominator but a FALSE-FINDING risk: the
+        // check compared a store against a SUBSET of the claims the verifier actually made.
+        if let Some((idx, state)) = parse_from_to(t) {
+            let regs = parse_reg_tokens(state);
+            if !regs.is_empty() {
+                snaps.push(RegSnapshot { insn_idx: idx, regs });
+            }
+            continue;
+        }
         let colon = match t.find(':') {
             Some(c) => c,
             None => continue,
@@ -529,17 +652,6 @@ fn parse_register_evolution(log: &[&str]) -> Vec<RegSnapshot> {
         // exactly one subprogram; and if a future family ever reaches one instruction at
         // two call depths, the claims merge — which since 0047 the store-location check
         // treats as a UNION, the conservative direction.
-        fn strip_frame(st: &str) -> &str {
-            let after = match st.strip_prefix("frame") {
-                Some(a) => a,
-                None => return st,
-            };
-            let digits = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-            if digits == 0 || !after[digits..].starts_with(':') {
-                return st;
-            }
-            after[digits + 1..].trim_start()
-        }
         let rest = strip_frame(rest);
 
         // (a) full-state line: "R1=ctx() R10=fp0"  (starts with a reg token)
@@ -1285,6 +1397,95 @@ processed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
         assert_eq!(r.s32_min, Some(-2_147_483_632));
         // The 64-bit fields keep two's-complement semantics on the full width.
         assert_eq!(r.smax, 0x1_000_000_ff);
+    }
+
+    #[test]
+    fn a_prune_point_state_dump_is_attributed_to_the_instruction_it_names() {
+        // `verbose(env, "\nfrom %d to %d%s:", env->prev_insn_idx, env->insn_idx, ...)`
+        // followed by print_verifier_state(print_all=true). The SECOND number is the
+        // instruction the state belongs to; the head is not all digits, so the ordinary
+        // digit-head test dropped the whole line.
+        let snaps = parse_register_evolution(&[
+            "from 33 to 15: R0=scalar(umin=1,umax=7) R10=fp0",
+        ]);
+        assert_eq!(snaps.len(), 1);
+        assert_eq!(snaps[0].insn_idx, 15, "the DESTINATION index, not the source");
+        assert_eq!(snaps[0].regs.len(), 2);
+        assert_eq!((snaps[0].regs[0].umin, snaps[0].regs[0].umax), (1, 7));
+
+        // The speculative-execution marker sits between the index and the colon.
+        let spec = parse_register_evolution(&[
+            "from 8 to 10 (speculative execution): R1=ctx() R10=fp0",
+        ]);
+        assert_eq!(spec.len(), 1);
+        assert_eq!(spec[0].insn_idx, 10);
+
+        // A `frameN:` prefix still comes off first.
+        let framed = parse_register_evolution(&["from 21 to 32: frame1: R10=fp0"]);
+        assert_eq!(framed.len(), 1);
+        assert_eq!(framed[0].insn_idx, 32);
+
+        // The pruned-state variant carries no register state and must add nothing.
+        assert!(parse_register_evolution(&["from 33 to 15: safe"]).is_empty());
+    }
+
+    #[test]
+    fn the_caller_state_at_a_subprogram_return_is_read_from_its_indented_dump() {
+        // `to caller at %d:` states the index; print_verifier_state then emits the state on
+        // the NEXT line, starting with a space (log.c: `verbose(env, " R%d", i)`). Every
+        // space-prefixed line used to be discarded as liveness noise, so this — the only
+        // place the register transfer at a call boundary is ever printed — vanished.
+        let snaps = parse_register_evolution(&[
+            "33: (95) exit",
+            "returning from callee:",
+            " frame1: R0=0 R10=fp0",
+            "to caller at 15:",
+            " R0=0 R10=fp0",
+        ]);
+        // Exactly one dump is taken: the one whose index the log states. `returning from
+        // callee:` names no instruction, and inventing one would feed the store-location
+        // check a claim the verifier never made at that site.
+        let taken: Vec<_> = snaps.iter().filter(|s| s.insn_idx == 15).collect();
+        assert_eq!(taken.len(), 1, "{snaps:?}");
+        assert_eq!(taken[0].regs.len(), 2);
+        assert_eq!(taken[0].regs[0].reg, 0);
+        assert_eq!(taken[0].regs[0].umax, 0);
+        assert!(
+            snaps.iter().all(|s| s.insn_idx == 15 || s.insn_idx == 33),
+            "no snapshot may be invented for an unindexed dump: {snaps:?}"
+        );
+    }
+
+    #[test]
+    fn indented_liveness_lines_are_still_discarded() {
+        // The reason the space-prefixed class was blanket-dropped in the first place. A
+        // liveness line has a digit head and no register tokens; it must not become a
+        // snapshot, and must not consume a pending caller index either.
+        let snaps = parse_register_evolution(&[
+            "Live regs before insn:",
+            "      0: .......... (85) call bpf_get_prandom_u32#7",
+            "      1: 0......... (57) r0 &= 1",
+        ]);
+        assert!(snaps.is_empty(), "{snaps:?}");
+    }
+
+    #[test]
+    fn flag_prefixed_and_btf_id_pointer_types_are_known_families() {
+        // log.c:435-443 glues the set type flags in front of the base name, and
+        // PTR_TO_BTF_ID's base is `ptr_` with the struct name appended (log.c:418, :650).
+        // `rdonly_mem` is an ordinary read-only dynptr slice and was reported as an unknown
+        // family on 634 of the composition corpus's 896 records.
+        assert_eq!(base_family("rdonly_mem"), "mem");
+        assert_eq!(base_family("ringbuf_mem"), "mem");
+        assert_eq!(base_family("rcu_untrusted_mem"), "mem");
+        assert_eq!(base_family("ptr_sk_buff"), "ptr");
+        assert_eq!(base_family("trusted_ptr_task_struct"), "ptr");
+        assert_eq!(base_family("ptr_or_null_sk_buff"), "ptr");
+        assert_eq!(base_family("map_value_or_null"), "map_value");
+        assert_eq!(base_family("fp-16"), "fp");
+        // And a genuinely unknown family must still come through as unknown, or the
+        // whitelist has stopped doing its job.
+        assert_eq!(base_family("something_new"), "something_new");
     }
 
     #[test]

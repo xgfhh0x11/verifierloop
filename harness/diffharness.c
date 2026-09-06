@@ -3430,6 +3430,91 @@ static void run_probe_idlink(void) {
     }
 }
 
+// ---- calibration probe: the sign-lost stack spill (--probe-spill) -----------
+// Calibration pair six (811c363645b3, "bpf: Fix check_stack_write_fixed_off() to correctly
+// spill imm", 2023-11-01, found by Hao Sun) — and the first target for the RUNTIME channel.
+//
+// THE BUG, one cast. `check_stack_write_fixed_off()` tracked the immediate of a 64-bit
+// `BPF_ST_MEM` as `__mark_reg_known(&fake_reg, (u32)insn->imm)`. `insn->imm` is an s32, so
+// the cast DROPS THE SIGN: storing -44 is tracked as 4294967252. Reloading the slot then
+// gives the verifier a register it believes is a large positive constant.
+//
+// WHY THE RUNTIME CHANNEL IS THE ONE THAT SEES IT. The corrupted state is a single pinned
+// constant — `R0_w=4294967252`, tnum const, bounds pinned to it — with NO internal
+// contradiction, so every consistency invariant is silent and `reg_bounds_sanity_check`
+// has nothing to flag (and would not exist on that kernel anyway: it arrived 2023-11-11,
+// ten days after this fix). What the bug DOES do is make `if r0 s< 0xa` look permanently
+// false, so the verifier explores only the fall-through and proves the program returns 1.
+// At runtime the stored value really is sign-extended -44, the branch really is taken, and
+// the program returns 0. Verifier-proved retval 1, observed retval 0: exactly the
+// invariant the 0036 oracle checks.
+//
+// THE PROGRAM is the commit's own, transcribed verbatim:
+//     r2 = r10; *(u64 *)(r2 -40) = -44; r0 = *(u64 *)(r2 -40)
+//     if r0 s< 0xa goto +2; r0 = 1; exit; r0 = 0; exit
+//
+// A CONTROL arm stores +44 instead. A positive immediate survives the cast unchanged, so
+// the verifier's tracking is correct there and both kernels must agree — if the control
+// diverges too, the divergence is not about the lost sign.
+static void run_probe_spill(void) {
+    static const struct { const char *name; int imm; } ARMS[] = {
+        {"neg", -44},   /* the commit's trigger: sign dropped by the (u32) cast */
+        {"pos",  44},   /* control: unaffected by the cast                      */
+    };
+    for (unsigned a = 0; a < sizeof(ARMS) / sizeof(ARMS[0]); a++) {
+        struct bpf_insn ins[12];
+        int n = 0;
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ST_MEM(BPF_DW, BPF_REG_2, -40, ARMS[a].imm);
+        ins[n++] = BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_2, -40);
+        const int jlt = n;
+        ins[n++] = BPF_JMP_IMM(BPF_JSLT, BPF_REG_0, 10, 0);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);
+        ins[n++] = BPF_EXIT_INSN();
+        ins[jlt].off = n - jlt - 1;
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+        ins[n++] = BPF_EXIT_INSN();
+
+        g_log[0] = '\0';
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 2;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        int lerr = errno;
+
+        printf("===PROG spill#811c363645b3#%s type=socket_filter ===\n", ARMS[a].name);
+        printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+               fd >= 0 ? "accept" : "reject", fd >= 0 ? 1 : -1, fd >= 0 ? 0 : lerr);
+
+        /* The runtime half. The program reads nothing external, so the input is a
+           formality — one sample is the whole observation. */
+        if (fd >= 0) {
+            static char pkt_in[64], pkt_out[64];
+            union bpf_attr r;
+            memset(&r, 0, sizeof(r));
+            r.test.prog_fd = fd;
+            r.test.data_in = (uint64_t)(unsigned long)pkt_in;
+            r.test.data_out = (uint64_t)(unsigned long)pkt_out;
+            r.test.data_size_in = sizeof(pkt_in);
+            r.test.data_size_out = sizeof(pkt_out);
+            r.test.repeat = 1;
+            int rc = bpf(BPF_PROG_TEST_RUN, &r, sizeof(r));
+            if (rc < 0)
+                printf("RUNTIME input=0x00000000 error=1 testrun_errno=%d\n", errno);
+            else
+                printf("RUNTIME input=0x00000000 retval=0x%08x\n", r.test.retval);
+            close(fd);
+        }
+        printf("---LOG---\n%s\n---END---\n", g_log);
+    }
+}
+
 // ---- calibration probe: the fake_reg corruption (--probe-fakereg) -----------
 // The SECOND kind of calibration. 0061 tested the oracle against a bug whose inconsistent
 // state the commit message printed, so no kernel had to be built. This one cannot work
@@ -6859,6 +6944,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-idlink") == 0) {
         run_probe_idlink();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-spill") == 0) {
+        run_probe_spill();
         return 0;
     }
 
