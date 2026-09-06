@@ -1,0 +1,888 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>html{color-scheme:light dark}body{margin:0}img{max-width:100%}</style>
+<title>Sıfırın Paydası</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+  :root {
+    --paper:      #F2F3F0;
+    --surface:    #EAEBE6;
+    --ink:        #171A1E;
+    --ink-soft:   #4C545C;
+    --ink-faint:  #7C848B;
+    --rule:       #CDD0C9;
+    --rule-soft:  #DEE0DA;
+    --signal:     #16706B;
+    --signal-dim: #16706B26;
+    --gap:        #9C4A2C;
+    --gap-dim:    #9C4A2C1F;
+    --brass:      #7E6A22;
+
+    --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+    --body: "Source Serif 4", Georgia, "Times New Roman", serif;
+    --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+    --col: 68ch;
+    --wide: 1000px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #101317;
+      --surface:    #171B21;
+      --ink:        #E3E6E1;
+      --ink-soft:   #A2ABB2;
+      --ink-faint:  #6E777E;
+      --rule:       #2A3037;
+      --rule-soft:  #21262C;
+      --signal:     #57B9B1;
+      --signal-dim: #57B9B12E;
+      --gap:        #DC8A63;
+      --gap-dim:    #DC8A6326;
+      --brass:      #C4AC57;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:      #101317;
+    --surface:    #171B21;
+    --ink:        #E3E6E1;
+    --ink-soft:   #A2ABB2;
+    --ink-faint:  #6E777E;
+    --rule:       #2A3037;
+    --rule-soft:  #21262C;
+    --signal:     #57B9B1;
+    --signal-dim: #57B9B12E;
+    --gap:        #DC8A63;
+    --gap-dim:    #DC8A6326;
+    --brass:      #C4AC57;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: var(--wide);
+    margin: 0 auto;
+    padding: 0 28px 96px;
+  }
+
+  /* ---- the reading column, with an ordinal gutter on wide screens ---- */
+  .col { max-width: var(--col); }
+
+  section {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+    padding: 44px 0 8px;
+    border-top: 1px solid var(--rule);
+  }
+  section > .marker {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.09em;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+    padding-bottom: 14px;
+  }
+  @media (min-width: 900px) {
+    section {
+      grid-template-columns: 118px minmax(0, 1fr);
+      column-gap: 40px;
+    }
+    section > .marker { padding-top: 8px; padding-bottom: 0; text-align: right; }
+    section > .body { grid-column: 2; }
+  }
+
+  h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; }
+
+  h2 {
+    font-size: 27px;
+    font-weight: 700;
+    letter-spacing: -0.018em;
+    line-height: 1.18;
+    margin-bottom: 6px;
+  }
+  h3 {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.005em;
+    margin: 30px 0 8px;
+  }
+  .body > p, .body > ul, .body > ol { max-width: var(--col); }
+  p { margin: 0 0 15px; }
+  ul, ol { margin: 0 0 15px; padding-left: 20px; }
+  li { margin-bottom: 7px; }
+  li::marker { color: var(--ink-faint); }
+
+  a { color: var(--signal); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--signal); outline-offset: 3px; border-radius: 2px;
+  }
+
+  code, .m { font-family: var(--mono); font-size: 0.86em; }
+  code {
+    background: var(--surface);
+    padding: 0.1em 0.34em;
+    border-radius: 2px;
+    color: var(--ink);
+  }
+  em { font-style: italic; }
+  strong { font-weight: 600; }
+
+  .lede {
+    font-size: 20px;
+    line-height: 1.5;
+    color: var(--ink-soft);
+    max-width: 62ch;
+  }
+
+  /* ---- masthead ---- */
+  header.masthead { padding: 56px 0 34px; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    margin-bottom: 26px;
+  }
+  h1 {
+    font-size: clamp(44px, 8vw, 76px);
+    font-weight: 700;
+    letter-spacing: -0.035em;
+    line-height: 0.98;
+    margin-bottom: 20px;
+  }
+  h1 .sub {
+    display: block;
+    font-size: clamp(15px, 2.2vw, 19px);
+    font-weight: 500;
+    letter-spacing: 0.005em;
+    color: var(--ink-faint);
+    margin-top: 16px;
+    max-width: 46ch;
+    line-height: 1.42;
+  }
+
+  /* ---- stat strip ---- */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    margin-top: 36px;
+  }
+  .stat { background: var(--paper); padding: 15px 16px 14px; }
+  .stat .n {
+    font-family: var(--mono);
+    font-size: 25px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    display: block;
+    line-height: 1.1;
+  }
+  .stat .k {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    display: block;
+    margin-top: 7px;
+  }
+  .stat.zero .n { color: var(--gap); }
+
+  /* ---- measurement block: breaks the column ---- */
+  .measure {
+    margin: 26px 0 30px;
+    max-width: 100%;
+  }
+  .measure-cap {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-bottom: 12px;
+  }
+
+  /* ---- proportion bar: the page's motif ---- */
+  .propbar {
+    display: flex;
+    height: 34px;
+    border: 1px solid var(--ink);
+    overflow: hidden;
+  }
+  .propbar > div { display: flex; align-items: center; justify-content: center; }
+  .seg-hit { background: var(--signal); }
+  .seg-partial { background: var(--signal-dim); }
+  .seg-never {
+    background-image: repeating-linear-gradient(
+      -45deg, var(--gap-dim) 0 5px, transparent 5px 10px);
+  }
+  .propbar .lbl {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+  }
+  .seg-hit .lbl { color: var(--paper); }
+  .proplegend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 26px;
+    margin-top: 12px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-soft);
+  }
+  .proplegend > div { display: flex; align-items: baseline; gap: 8px; }
+  .swatch {
+    width: 13px; height: 13px; flex: none;
+    border: 1px solid var(--ink);
+    transform: translateY(2px);
+  }
+  .swatch.hit { background: var(--signal); }
+  .swatch.partial { background: var(--signal-dim); }
+  .swatch.never {
+    background-image: repeating-linear-gradient(
+      -45deg, var(--gap-dim) 0 4px, transparent 4px 8px);
+  }
+
+  /* ---- ranked bar rows ---- */
+  .rows { display: grid; gap: 7px; }
+  .row {
+    display: grid;
+    grid-template-columns: minmax(130px, 168px) minmax(0, 1fr) 72px;
+    align-items: center;
+    gap: 14px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .row .name { color: var(--ink-soft); overflow-wrap: anywhere; }
+  .row .track { height: 15px; background: var(--rule-soft); position: relative; }
+  .row .fill { height: 100%; background: var(--signal); }
+  .row .fill.warn { background: var(--gap); }
+  .row .val { text-align: right; color: var(--ink); }
+  .row.lead .name { color: var(--ink); font-weight: 500; }
+
+  /* ---- tables ---- */
+  .tablewrap { overflow-x: auto; margin: 22px 0 26px; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; }
+  th, td {
+    text-align: left;
+    padding: 10px 14px 10px 0;
+    border-bottom: 1px solid var(--rule-soft);
+    vertical-align: top;
+    font-size: 14.5px;
+  }
+  th {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    border-bottom: 1px solid var(--rule);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  td.m, th.m { font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  td:last-child, th:last-child { padding-right: 0; }
+  tbody tr:last-child td { border-bottom: none; }
+
+  .tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border: 1px solid var(--rule);
+    color: var(--ink-soft);
+    white-space: nowrap;
+    display: inline-block;
+  }
+  .tag.fix { border-color: var(--signal); color: var(--signal); }
+  .tag.limit { border-color: var(--gap); color: var(--gap); }
+  .tag.clean { border-color: var(--brass); color: var(--brass); }
+
+  /* ---- callout: the standing rule ---- */
+  .rule-note {
+    border-left: 3px solid var(--gap);
+    padding: 4px 0 4px 18px;
+    margin: 26px 0;
+    max-width: var(--col);
+  }
+  .rule-note .h {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--gap);
+    margin-bottom: 6px;
+  }
+  .rule-note p:last-child { margin-bottom: 0; }
+
+  pre {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.62;
+    background: var(--surface);
+    border: 1px solid var(--rule-soft);
+    padding: 14px 16px;
+    overflow-x: auto;
+    margin: 18px 0 22px;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  /* ---- asks ---- */
+  .asks { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin-top: 8px; }
+  .ask { background: var(--paper); padding: 18px 20px; }
+  .ask .q {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 16.5px;
+    margin-bottom: 7px;
+    display: flex;
+    gap: 11px;
+    align-items: baseline;
+  }
+  .ask .q .idx {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--gap);
+    flex: none;
+    letter-spacing: 0.05em;
+  }
+  .ask p { margin: 0; font-size: 15.5px; color: var(--ink-soft); max-width: 62ch; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    margin-top: 52px;
+    padding-top: 22px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    line-height: 1.75;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .propbar > div, .row .fill { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+
+<div class="page">
+
+  <header class="masthead">
+    <div class="eyebrow">
+      <span>reviewer devir teslimi</span>
+      <span>verifierloop</span>
+      <span>bpf-next · 7.2.0-gdffc1150e2cc</span>
+      <span>2026-09-06</span>
+    </div>
+    <h1>Sıfırın Paydası
+      <span class="sub">86 bacak, yedi kalibrasyon çifti, dört oracle ve tek bir verifier
+        mantık hatası bulunamadı. Bu belge o sıfırın ne kadar şey ölçtüğünü söylüyor —
+        ve ilk kez bunun bir sayısı var.</span>
+    </h1>
+
+    <div class="stats">
+      <div class="stat"><span class="n">86</span><span class="k">devlog bacağı</span></div>
+      <div class="stat"><span class="n">93</span><span class="k">commit</span></div>
+      <div class="stat"><span class="n">7</span><span class="k">kalibrasyon çifti</span></div>
+      <div class="stat"><span class="n">345</span><span class="k">test yeşil</span></div>
+      <div class="stat"><span class="n">%30.3</span><span class="k">verifier kapsaması</span></div>
+      <div class="stat zero"><span class="n">0</span><span class="k">kernel bulgusu</span></div>
+    </div>
+  </header>
+
+  <section>
+    <div class="marker">01 · durum</div>
+    <div class="body">
+      <h2>Tek paragrafta nerede olduğumuz</h2>
+      <p class="lede">Enstrüman çalışıyor ve bunun kanıtı var: yedi gerçek verifier hatasının
+        yedisi de ya yakalandı ya da <em>neden</em> yakalanamadığı ölçüldü. Ama enstrüman
+        çözülmüş bir yüzeye nişanlı.</p>
+      <p>Avın hedefi bpf-next'teki eBPF verifier'ında mantık/sağlamlık hatası. Bugüne kadar
+        <strong>bir tane</strong> gerçek upstream hatası çıktı — <code>print_bpf_insn</code>
+        içinde bir OOB — ama o disassembly/log yolunda, verifier sağlamlığı değil. Yamalandı,
+        Kumar Kartikeya ile konuşuldu, upstream'e girdi. Aracın tek operasyonel kanıtı bu.</p>
+      <p>Geri kalan 86 bacak sıfır bulgu üretti. Bu belgenin asıl işi o sıfırı savunmak değil,
+        <strong>ölçmek</strong>: sıfır kaç sorunun cevabı, hangi soruları hiç sormadık, ve
+        sormadıklarımızın adı ne.</p>
+
+      <div class="rule-note">
+        <div class="h">Projenin duran kuralı</div>
+        <p>Paydası olmayan bir pay kanıt değildir. “0 uyuşmazlık”, 0/0 olabilir ve tam olarak
+          0/16000 gibi okunur. Bu kural 0025'te bir hatadan doğdu, 0066'da bir CI guard'ına
+          çevrildi, ve o günden beri <strong>dört kez daha</strong> kendi enstrümanımızda
+          ihlal edilmiş halde bulundu — sonuncusu 0086'da, kapsama sayısının kendisinde.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker">02 · enstrüman</div>
+    <div class="body">
+      <h2>Ne kurulu</h2>
+      <ul>
+        <li><strong>Harness</strong> (<code>harness/diffharness.c</code>, ~8000 satır C, libbpf yok,
+          çıplak <code>bpf()</code> syscall'ları). Program üretiyor, yüklüyor, koşturuyor,
+          hem verifier log'unu hem çalışma zamanı gözlemini yapılandırılmış satırlar olarak
+          basıyor.</li>
+        <li><strong>Bağımsız referans interpreter</strong> (<code>harness/bpfref.h</code>) —
+          eBPF ISA'sının ikinci bir uygulaması. ALU/ALU64, MOVSX, JMP32, LD_IMM64,
+          stack/map/packet erişimleri, <code>BPF_ATOMIC</code>'in tamamı. Kernel'e hiç sormuyor.</li>
+        <li><strong>Rust pipeline</strong> (<code>crates/pipeline</code>) — log'u ayrıştırıyor,
+          invariant'ları koşturuyor, her invariant'ın paydasını sayıyor.</li>
+        <li><strong>Dört kernel</strong>: bpf-next tip, üç <em>buggy</em> worktree
+          (<code>~1</code>'de, aynı config ile) ve JIT'siz bir varyant
+          (<code>CONFIG_BPF_JIT_ALWAYS_ON=n</code>) — kernel'in kendi interpreter'ını
+          üçüncü uygulama olarak koşturmak için.</li>
+        <li><strong>Sürekli fuzzer</strong> — KCOV geri beslemeli, genom mutasyonlu,
+          saniyede ~800-1900 program.</li>
+      </ul>
+      <p>Üç bağımsız uygulama — x86-64 JIT, kernel interpreter, <code>bpfref.h</code> —
+        her eşleşmede <strong>32768 karşılaştırma, 0 uyuşmazlık</strong>. Referans
+        interpreter'ın kendisi 20 tuzakla kalibre ediliyor ve fuzz koşusu bu kalibrasyon
+        geçmeden <em>başlamayı reddediyor</em>.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker">03 · oracle'lar</div>
+    <div class="body">
+      <h2>Her oracle bir karşılaştırmadır, ve karşılaştırmanın bir referansı vardır</h2>
+      <p>Bu projenin oracle'larını <em>neye karşı</em> ölçtüklerine göre sıralamak, kör
+        noktalarını başka her eksenden daha iyi açıklıyor. Bu tabloya tasarımla değil,
+        ölçümle varıldı — ve dördü de verifier'ın kendisine bakıyor.</p>
+
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr><th>referans</th><th>oracle</th><th>kör olduğu şey</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>verifier kendisine karşı</td>
+              <td>tnum↔bounds tutarlılığı, sıralama, sabit-sınırı-çivileme, 32↔64</td>
+              <td>kendi içinde tutarlı ama <strong>yanlış</strong> olan her şey</td>
+            </tr>
+            <tr>
+              <td>verifier'ın bastığı iddia</td>
+              <td>retval sınırı, store konumu, store genişliği</td>
+              <td>aynısı, artı iddia doğru olup kodun yanlış olduğu durum</td>
+            </tr>
+            <tr>
+              <td>kernel'in kendi assert'i</td>
+              <td><code>reg_bounds_sanity_check</code>, <code>BPF_F_TEST_REG_INVARIANTS</code> altında</td>
+              <td>aynı sınıf; ayrıca <strong>2023-11-11 öncesi hiç yok</strong></td>
+            </tr>
+            <tr>
+              <td>aynı kernel, farklı bayrak</td>
+              <td><code>BPF_F_TEST_STATE_FREQ</code> budama farkı</td>
+              <td>budamaya duyarlı olmayan her şey</td>
+            </tr>
+            <tr>
+              <td><strong>üretecin kendi semantiği</strong></td>
+              <td><code>runtime_intent_violation</code> — <code>EXPECT intended_retval=N</code></td>
+              <td>bu ailede yok; verifier'a hiç danışmıyor</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>Son satır tek kaçış yolu ve 0071'de doğdu — bir tahminin <em>yanlış çıkmasından</em>.
+        Bedeli gerçek: referans artık kendi kodumuz, yani yanlış bir beklenti yanlış bir bulgu
+        demek. Bu yüzden her bulguya zorunlu üçlü triyaj uygulanıyor: (a) beklentiyi elle
+        yeniden türet, (b) harness'in tarif ettiği programı gerçekten koştuğunu doğrula,
+        (c) ancak o zaman verifier bulgusu de.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker">04 · kalibrasyon</div>
+    <div class="body">
+      <h2>Yedi gerçek hata, yedi farklı <em>limit türü</em></h2>
+      <p>On sekiz bacak, oracle'ların <em>bizim yerleştirdiğimiz</em> ihlallerde ateşlendiğini
+        kanıtlamıştı. Hiçbiri kernel'in <em>gerçekten sahip olduğu</em> bir hatada
+        ateşlendiğini kanıtlamamıştı — yani “temiz”, “sağlam yüzey” ile “kör oracle”
+        arasında ayrım yapmıyordu. Kalibrasyon bu belirsizliği hata sınıfı başına kaldırıyor.</p>
+
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr><th class="m">commit</th><th>bacak</th><th>ne buldu</th><th>sonuç</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="m">3844d153a41a</td><td class="m">0061</td>
+              <td>Oracle <strong>özelliği eksikti</strong> — sabit bir tnum'un sınırları
+                <em>çivilemesi</em> gerektiğini kontrol etmiyorduk. Ayrıca parser eski
+                <code>R&lt;n&gt;_w=</code> formunu okuyamıyordu.</td>
+              <td><span class="tag fix">iki kör nokta kapatıldı</span></td>
+            </tr>
+            <tr>
+              <td class="m">92424801261d</td><td class="m">0064</td>
+              <td>Bozulan register'lar <strong>hiç basılmıyor</strong> — hiçbir parsed-state
+                invariant'ı göremez. Farklı bir <em>kanal</em> gerekti.</td>
+              <td><span class="tag fix">verdict kanalı uçtan uca doğrulandı</span></td>
+            </tr>
+            <tr>
+              <td class="m">049c4e13714e</td><td class="m">0065</td>
+              <td>Özellik doğruydu; oracle <strong>log'u okuyamıyordu</strong>. 2021 kernel'i
+                SCALAR_VALUE'yu <code>inv</code>/<code>invP</code> diye yazıyor.</td>
+              <td><span class="tag fix">legacy format + 4 sayılmayan payda</span></td>
+            </tr>
+            <tr>
+              <td class="m">ae67b9fb8c4e</td><td class="m">0067</td>
+              <td>Hiçbir şey — tamiratsız temiz teyit. Ve 32-bitlik bir hatayı
+                <em>32-bit invariant'ların göremediği</em> ölçüldü: budama iki görünümü
+                birbirine eşitliyor, kanıtı 64-bit tnum tutuyor.</td>
+              <td><span class="tag clean">temiz teyit</span></td>
+            </tr>
+            <tr>
+              <td class="m">af9e89d8dd39</td><td class="m">0068</td>
+              <td><strong>Sınır.</strong> Durum sadece gerçekten daha <em>geniş</em> —
+                aşırı-yaklaşım, yani hata bir aşırı-<em>red</em>. Hiçbir tutarlılık kontrolü
+                ateşlenemez.</td>
+              <td><span class="tag limit">enstrümanın dışında</span></td>
+            </tr>
+            <tr>
+              <td class="m">811c363645b3</td><td class="m">0070</td>
+              <td><strong>Tahmin çürütüldü.</strong> Buggy kernel <em>kendi yanlış kanıtına
+                uyan</em> değeri döndürdü, çünkü ölü dal donanımsal olarak siliniyor
+                (<code>bpf_opt_hard_wire_dead_code_branches</code>).</td>
+              <td><span class="tag fix">yeni oracle sınıfı doğdu</span></td>
+            </tr>
+            <tr>
+              <td class="m">3cf2b61eb067</td><td class="m">0076</td>
+              <td>Eksik <strong>işaretli yarı</strong>: <code>zext_32_to_64</code> arıtma
+                üçlüsünü çağırmıyor. Ve sabit bir skalerin 2017'den beri <em>çıplak sayı</em>
+                olarak basıldığı ölçüldü.</td>
+              <td><span class="tag fix">bir payda 357 → 0'a düzeltildi</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p><strong>Sentetik bir “diş testi” bunların hiçbirini bulamazdı</strong>, çünkü oracle'a
+        zaten bildiğiniz formatta veri verir. Gerçek bir hata hiç üretmediğiniz formatları
+        getiriyor. Kalibrasyonun ikinci getirisi de bu: bir hata sadece oracle'ın sınıfı
+        görüp göremediğini değil, <em>hangi girdi şeklinin</em> onu ürettiğini de söylüyor.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker">05 · sınırlar</div>
+    <div class="body">
+      <h2>Üç ölçülmüş sınır, keskinleşme sırasıyla</h2>
+      <ol>
+        <li><strong>Aşırı-yaklaşım.</strong> Gerçekten daha geniş bir durum hiçbir şeyle
+          çelişmez. Hata bir aşırı-red olur ve tutarlılık kontrolleri yapısı gereği susar.</li>
+        <li><strong>Durumlar-arası kararlar.</strong> 2023 öncesi verifier hatalarının çoğu
+          yanlış budama / <code>states_equal</code> / precision-bookkeeping kararları.
+          <em>Her tekil durum iyi biçimli</em>; yanlış olan iki durum arasındaki
+          <strong>ilişki</strong>. İki bağımsız tarama bu noktada birleşti.
+          Enstrümanımız durumları kontrol ediyor, kararları değil.</li>
+        <li><strong>Yanlış statik dal çözümü.</strong> En keskini. Verifier bozuk bir sabit
+          üzerinde bir dalı çözünce diğer tarafa hiç yürümüyor, ve fixup geçişi o dalı
+          <em>üretilen programdan siliyor</em>. Çalışma zamanı oracle'ının referansı
+          <strong>verifier'ın ÜRETTİĞİ program</strong>, gönderdiğimiz değil — yani gözlem
+          yanlış kanıta uyuyor.</li>
+      </ol>
+      <p>Üçüncüsünün tarama sonucu için pratik karşılığı sert: “çalışma zamanı kanalı bunu
+        yakalar” verdiği <strong>etkisi ölü-kod yeniden yazımı olan her hata için yanlış</strong>,
+        commit mesajı bozuk durumu ne kadar temiz alıntılarsa alıntılasın.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker">06 · fuzzer</div>
+    <div class="body">
+      <h2>Sürekli koşan kurulum, ve tavanının nereden geldiği</h2>
+      <p>Mutasyon <strong>bytecode'da değil genomda</strong>: gövde açık bir gen listesi ve
+        emitter genom verildiğinde deterministik. Bayt seviyesinde mutasyon çoğunlukla
+        bozuk program üretirdi — verifier onları herhangi bir oracle görmeden atardı, yani
+        payda-sıfır tuzağının bir kat üstü.</p>
+
+      <div class="measure">
+        <div class="measure-cap">Kapsama tavanı, beş gramer üzerinden ölçüldü</div>
+        <div class="rows">
+          <div class="row"><span class="name">yalnız skaler</span><span class="track"><span class="fill" style="width:88.0%"></span></span><span class="val">4789</span></div>
+          <div class="row"><span class="name">+ map-value store</span><span class="track"><span class="fill" style="width:90.8%"></span></span><span class="val">4942</span></div>
+          <div class="row"><span class="name">+ değişken-offset stack</span><span class="track"><span class="fill" style="width:95.3%"></span></span><span class="val">5188</span></div>
+          <div class="row"><span class="name">+ atomic RMW</span><span class="track"><span class="fill" style="width:96.5%"></span></span><span class="val">5251</span></div>
+          <div class="row"><span class="name">+ diamond / back-edge</span><span class="track"><span class="fill" style="width:99.3%"></span></span><span class="val">5406</span></div>
+          <div class="row lead"><span class="name">+ 6–20 genlik genom</span><span class="track"><span class="fill" style="width:100%"></span></span><span class="val">5443</span></div>
+        </div>
+      </div>
+
+      <p>Her yeni <strong>bellek TÜRÜ</strong> 150–250 PC ekliyor; yarım milyon program daha
+        hiç eklemiyor. <code>trunc=0</code> sayacı olmasa “platoya oturdu” ile “KCOV tamponu
+        doldu” birbirinden ayırt edilemezdi — nitekim genomlar uzayınca
+        <code>trunc=41</code> çıktı ve tampon 1&lt;&lt;18'den 1&lt;&lt;20'ye alındı.</p>
+
+      <h3>Derinlik ayrı bir kaldıraç</h3>
+      <p><code>states.c</code> ancak <em>hem</em> <code>jmps_processed − prev ≥ 2</code>
+        <em>hem</em> <code>insn_processed − prev ≥ 8</code> iken checkpoint atıyor. 12 genlik
+        genomlar eşiğe hiç ulaşmıyordu, yani <code>avgstates=1</code> ve budama farkının
+        43 bin “çifti” <strong>önemsiz</strong> karşılaştırmalardı. 24 gen ile
+        <code>avgstates=3</code>, <code>maxstates</code> 17/61. Kuralı okumak tahmin
+        etmekten ucuzdu: tur sayısını kısmak iki kez denendi ve iki kez işe yaramadı.</p>
+
+      <h3>Fuzzer'ın kendi kalibrasyonu</h3>
+      <p>Yeniden kurulabilir 21 tarihsel verifier düzeltmesinin taraması:
+        <strong>tetiklenebilir 17/21, tespit edilebilir 16/21, ikisi birden 14/21</strong>.
+        17 ile 14 arasındaki fark asıl nokta — üçü <em>bugün tetiklenebiliyor ve hâlâ
+        görünmez</em>, çünkü tekil-durum kontrollerinin göremeyeceği durumlar-arası budama
+        kusurları. Kalan tavan bir <strong>oracle</strong> boşluğu, gramer boşluğu değil.</p>
+      <p>Bunlar için önerilen çare — kernel <em>sürümleri</em> arası verdict farkı —
+        <strong>reddedildi</strong>: beşinci kalibrasyon çifti iki sürümün bir verdict'te
+        meşru olarak ayrışabileceğini gösterdi, yani böyle bir fark kalibre eder, avlayamaz.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker">07 · yeni sonuç</div>
+    <div class="body">
+      <h2>Kapsama sayısı sekiz bacaktır paydasızdı</h2>
+      <p>0078'den beri döngü bir kapsama sayısı bildiriyordu: 4789 → 5443. Her biri
+        <em>çıplak bir sayı</em>. Arttığını söylüyor; ne kadar kaldığını asla söylemiyor.
+        Kendi kuralımızın ihlali, ve bu sefer paydası eksik olan kendi metriğimizdi.</p>
+      <p>Payda statik olarak sayılabilir: KCOV <code>__sanitizer_cov_trace_pc</code>'nin
+        <code>_RET_IP_</code>'sini kaydeder — yani call'dan <em>sonraki</em> instruction'ın
+        adresi. Öyleyse ulaşılabilir noktalar kümesi tam olarak o call'ların dönüş adresleri,
+        ve <code>objdump -d vmlinux</code> hepsini sayabilir. Tüm kernel'de
+        <strong>763 788</strong> nokta.</p>
+
+      <h3>Önce ölçümün kendisi doğrulandı</h3>
+      <p>Kaydedilen 5370 PC'nin <strong>5234'ü (%97.5)</strong> statik bulunmuş bir noktaya
+        <em>tam olarak</em> oturuyor. Yanlış bir imaj — KASLR kayması ya da bayat bir
+        <code>vmlinux</code> — ~%0 örtüşme verir, %97 değil. Rapordaki her yüzde bunun
+        altında duruyor, o yüzden test dosyasının ilk assert'i bu.</p>
+
+      <div class="measure">
+        <div class="measure-cap">Doğrulama geçişi — 10 244 kapsama noktası</div>
+        <div class="propbar" role="img" aria-label="Doğrulama geçişinin 10244 kapsama noktasından 3104'ü ulaşıldı, 3743'ü girilen fonksiyonların girilmeyen blokları, 3397'si hiç girilmeyen fonksiyonlarda.">
+          <div class="seg-hit" style="flex:3104"><span class="lbl">3104 · %30.3</span></div>
+          <div class="seg-partial" style="flex:3743"><span class="lbl">3743 · %36.5</span></div>
+          <div class="seg-never" style="flex:3397"><span class="lbl">3397 · %33.2</span></div>
+        </div>
+        <div class="proplegend">
+          <div><span class="swatch hit"></span><span>ulaşıldı</span></div>
+          <div><span class="swatch partial"></span><span>girdiğimiz fonksiyonların girmediğimiz blokları</span></div>
+          <div><span class="swatch never"></span><span>hiç girmediğimiz fonksiyonlar</span></div>
+        </div>
+      </div>
+
+      <p>Ulaşılmayan %70 <strong>iki farklı sorun</strong>, ve tek bir “%70 ulaşılmadı” bunu
+        gizlerdi. İkinci dilim bir <em>dal</em> sorunu; üçüncüsü gramerin
+        <strong>ifade edemediği bir özellik</strong>.</p>
+      <p>Kapsamamızın <strong>%59'u</strong> verifier'ın kendisinde — yani KCOV kılavuzluğu
+        <code>bpf_prog_load</code>'un sürüklediği vmalloc / per-cpu / JIT gürültüsünü
+        ödüllendirmiyor.</p>
+
+      <div class="measure">
+        <div class="measure-cap">Hiç girilmemiş 3397 noktanın teması</div>
+        <div class="rows">
+          <div class="row lead"><span class="name">kfunc / BTF çağrıları</span><span class="track"><span class="fill warn" style="width:100%"></span></span><span class="val">1318</span></div>
+          <div class="row"><span class="name">geri kalan</span><span class="track"><span class="fill" style="width:63.7%"></span></span><span class="val">873</span></div>
+          <div class="row"><span class="name">log + disasm yazdırma</span><span class="track"><span class="fill" style="width:27.5%"></span></span><span class="val">362</span></div>
+          <div class="row"><span class="name">reference / spin lock</span><span class="track"><span class="fill" style="width:25.6%"></span></span><span class="val">338</span></div>
+          <div class="row"><span class="name">attach target / trampoline</span><span class="track"><span class="fill" style="width:12.4%"></span></span><span class="val">163</span></div>
+          <div class="row"><span class="name">callback / subprog</span><span class="track"><span class="fill" style="width:12.1%"></span></span><span class="val">160</span></div>
+          <div class="row"><span class="name">dynptr / iterator</span><span class="track"><span class="fill" style="width:7.1%"></span></span><span class="val">94</span></div>
+          <div class="row"><span class="name">packet pointer</span><span class="track"><span class="fill" style="width:6.8%"></span></span><span class="val">89</span></div>
+          <div class="row"><span class="name">arena / map special</span><span class="track"><span class="fill" style="width:2.5%"></span></span><span class="val">33</span></div>
+        </div>
+      </div>
+
+      <p>Tek bir özellik — kfunc çağrıları — <strong>tüm doğrulama geçişinin %13'ünü</strong>
+        tutuyor ve gramer onu hiç üretmedi. Sonraki en büyüğünün dört katı.</p>
+
+      <div class="rule-note">
+        <div class="h">Ölçüm hatası: paydanın üçte biri hayaletti</div>
+        <p>İlk hesapta payda 15 241 çıktı. İçinde <code>_sub_I_65535_1</code> ve
+          <code>_sub_D_65535_0</code> vardı, her biri 2698 noktayla — bunlar GCC'nin
+          <em>her</em> derleme biriminde bulunan ctor/dtor stub'ları, ve sembol adıyla
+          anahtarlanan bir sözlük hepsini tek dosyaya vermişti. Kural:
+          <strong>birden fazla object'in tanımladığı bir ad bir PC'yi atfedemez.</strong>
+          Payda 10 244. Bu, “bir payda ateşlenemeyen karşılaştırmalarla şişebilir”
+          dersinin üçüncü örneği.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker">08 · sentez</div>
+    <div class="body">
+      <h2>Ve sıfırın en dürüst açıklaması</h2>
+      <p>Ters taraf daha çok şey söylüyor. Doğrulama geçişini dosya dosya ayırınca oracle'ların
+        gücü ile kapsamanın doygunluğu <strong>aynı yere</strong> düşüyor:</p>
+
+      <div class="measure">
+        <div class="measure-cap">Doğrulama geçişi, dosya başına ulaşılan kapsama</div>
+        <div class="rows">
+          <div class="row lead"><span class="name">cnum.o</span><span class="track"><span class="fill" style="width:95.8%"></span></span><span class="val">%95.8</span></div>
+          <div class="row lead"><span class="name">tnum.o</span><span class="track"><span class="fill" style="width:65.5%"></span></span><span class="val">%65.5</span></div>
+          <div class="row"><span class="name">states.o</span><span class="track"><span class="fill" style="width:59.5%"></span></span><span class="val">%59.5</span></div>
+          <div class="row"><span class="name">const_fold.o</span><span class="track"><span class="fill" style="width:56.5%"></span></span><span class="val">%56.5</span></div>
+          <div class="row"><span class="name">cfg.o</span><span class="track"><span class="fill" style="width:52.0%"></span></span><span class="val">%52.0</span></div>
+          <div class="row"><span class="name">liveness.o</span><span class="track"><span class="fill" style="width:50.6%"></span></span><span class="val">%50.6</span></div>
+          <div class="row"><span class="name">backtrack.o</span><span class="track"><span class="fill" style="width:45.3%"></span></span><span class="val">%45.3</span></div>
+          <div class="row"><span class="name">fixups.o</span><span class="track"><span class="fill" style="width:33.7%"></span></span><span class="val">%33.7</span></div>
+          <div class="row"><span class="name">verifier.o</span><span class="track"><span class="fill" style="width:24.1%"></span></span><span class="val">%24.1</span></div>
+          <div class="row"><span class="name">log.o</span><span class="track"><span class="fill" style="width:11.4%"></span></span><span class="val">%11.4</span></div>
+          <div class="row"><span class="name">check_btf.o</span><span class="track"><span class="fill warn" style="width:5.1%"></span></span><span class="val">%5.1</span></div>
+          <div class="row"><span class="name">disasm.o</span><span class="track"><span class="fill warn" style="width:3.1%"></span></span><span class="val">%3.1</span></div>
+        </div>
+      </div>
+
+      <p class="lede">Oracle'larımız <strong>skaler aritmetikte</strong> en güçlü. Kapsama tam
+        orada doymuş. İnce olan bölgeler — tipler, referanslar, kfunc'lar — oracle'ların en az
+        şey söylediği yerler.</p>
+      <p>Yani enstrüman program açlığı çekmiyor ve oracle açlığı da çekmiyor.
+        <strong>Çözülmüş bir yüzeye nişanlı.</strong> 86 bacaklık sıfırın açıklaması bu, ve
+        ilk kez bir sayı olarak duruyor. Büyütülecek eksen ne oracle ne hacim —
+        <strong>yüzey</strong>.</p>
+      <p>Bir nüans: kfunc'lara açılmak dört oracle'dan üçünü kaybettirmiyor. Referans
+        interpreter susar (kernel fonksiyonlarını modelleyemez), ama verdict,
+        <code>BPF_F_TEST_STATE_FREQ</code> budama farkı ve <code>BPF_F_TEST_REG_INVARIANTS</code>
+        semantik modelleme gerektirmediği için o %13'lük bölgede çalışmaya devam eder.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker">09 · tekrar eden hata</div>
+    <div class="body">
+      <h2>Kendi kendime kurduğum tuzak, sekiz kez</h2>
+      <p>Reviewer'ın en çok bakması gereken yer bu, çünkü tek bir kalıbın sekiz tekrarı:
+        <strong>bir YOKLUĞU gözlenmiş bir DEĞER gibi okumak.</strong></p>
+      <ul>
+        <li>Log bir sınırı <em>ekstremindeyken atlıyor</em> — eksik <code>umax=</code>'ı 0
+          saymak sahte bulgu üretti.</li>
+        <li><code>retval=</code> yalnızca iki satır şeklinde var; yokluğunu gözlenmiş sıfır
+          okumak bir oracle'ı yanılttı.</li>
+        <li>32-bit görünümü basılmamış bir yol <em>atlanıyordu</em>; oysa birleşimi
+          <em>genişletmesi</em> gerekiyordu — 13 sahte bulgu.</li>
+        <li>Basılan durumlar kanıtlanan durumların <em>alt kümesi</em>; 26 sahte bulgu,
+          üretecin <code>EXPECT paths=multi</code> beyanıyla kapandı.</li>
+        <li>Eksik <code>smin</code>'i sıfır okumak — aynı dersin sekizincisi.</li>
+        <li>Sabit bir skalerin sınırları <em>türetilmiş</em>; onları tnum ile karşılaştırmak
+          değeri kendisiyle karşılaştırmak. Bir paydayı 357'den 0'a düşürdü ve
+          <strong>0025'in orijinal sıfırını haklı çıkardı</strong>.</li>
+      </ul>
+      <p>Ve iki operasyonel yakalama, çünkü ikisi de <em>sessizce</em> yanlış sonuç
+        üretiyordu: atomics 3347 sahte uyuşmazlık verdi (atomic RMW ilklendirilmemiş stack
+        okuyor) — tek bir <strong>kontrol kolu</strong> tek ölçümde çözdü; ve
+        <code>.lab/build/vmlinux</code> aylardır 2023 tarihli yanlış ağacındı, çünkü guard
+        gözlenen sebebe (bir config fragment'ı) anahtarlanmıştı, korunacak şeye (çıktı yolu)
+        değil.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker">10 · reviewer'a</div>
+    <div class="body">
+      <h2>Senden istediğim beş şey</h2>
+      <div class="asks">
+        <div class="ask">
+          <div class="q"><span class="idx">01</span><span>Yüzey kararı doğru mu?</span></div>
+          <p>Ölçüm “kfunc'lara git” diyor: 1318 nokta, geçişin %13'ü, sonrakinin dört katı.
+            Ama kfunc yüzeyinde referans interpreter susuyor. Üç oracle'la %13'lük bir bölgeye
+            açılmak mı, yoksa durumlar-arası kararlar için (14/21'in eksik üçü) yeni bir
+            oracle mı daha yüksek getirili?</p>
+        </div>
+        <div class="ask">
+          <div class="q"><span class="idx">02</span><span>Kapsama paydası çok mu geniş çizildi?</span></div>
+          <p>“Doğrulama geçişi”ni 12 object dosyası olarak tanımladım
+            (<code>verifier states liveness cnum tnum backtrack const_fold cfg check_btf
+            fixups log disasm</code>). <code>log.o</code> ve <code>disasm.o</code> mantık
+            değil yazdırma; onları çıkarmak %30.3'ü ~%31.5 yapar. Sence hangi tanım
+            savunulabilir?</p>
+        </div>
+        <div class="ask">
+          <div class="q"><span class="idx">03</span><span>%97.5 eşleşme yeterli bir garanti mi?</span></div>
+          <p>Eşleşmeyen 136 PC'yi jump-table kaynaklı objdump kaymasına bağladım ve hatanın
+            oranın <em>iki tarafında</em> olduğunu, yani tek yönlü olmadığını iddia ettim.
+            Bu iddia elle doğrulanmadı — kaymanın paydada da aynı oranda nokta kaybettiğini
+            varsaydım.</p>
+        </div>
+        <div class="ask">
+          <div class="q"><span class="idx">04</span><span>Kalibrasyon kapsamı dengesiz</span></div>
+          <p>Yedi çift: parsed-state ×3, verdict ×1, temiz teyit ×1, sınır ×1, runtime ×1.
+            <strong>Store-konumu oracle'ı</strong> — “asıl av” diye adlandırdığımız şey —
+            gerçek bir hataya karşı hiç kalibre edilmedi. Sıradaki aday
+            <code>22c7fa171a02</code>, commit'i gerçek bir page-fault oops'u alıntılıyor.
+            Bunu kfunc'ların önüne almalı mıyız?</p>
+        </div>
+        <div class="ask">
+          <div class="q"><span class="idx">05</span><span>Durma kriteri ne?</span></div>
+          <p>Şahsi tahminim: batch tarzı bir oturumda %1–3, sürekli kurulumla aylar
+            ölçeğinde %20–40. Kapsama kesiri artık bir ilerleme metriği veriyor
+            (%30.3 → ?). Hangi sayı “enstrüman bitti, yayınla” demek için yeterli?</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker">11 · tekrar üretim</div>
+    <div class="body">
+      <h2>Her sayı yeniden koşturulabilir</h2>
+      <p>Hiçbir rakam yalnızca bu belgede yaşamıyor: her biri ya bir fixture'a çivili ya da
+        tek komutla yeniden ölçülüyor. 345 test bunları taşıyor ve bir ölçüm anlamsızlaşırsa
+        <em>gürültülü şekilde</em> düşüyor.</p>
+<pre><code>cargo test --workspace                 # 345 test — her invariant + her payda
+
+# kapsama kesiri (bu belgenin 07/08. bölümleri)
+just coverage-fraction                 # objdump vmlinux ∩ PCSET, dosya başına
+python3 scripts/coverage-fraction.py \
+        .lab/build/vmlinux .lab/fuzz-pcset.log .lab/bpf-next/kernel/bpf
+
+# sürekli fuzzer (referans interpreter kalibrasyonu geçmeden başlamaz)
+scripts/run-fuzz.sh 180 .lab/fuzz.log
+
+# kalibrasyon çiftleri — buggy worktree + aynı config'li fixed kontrol
+scripts/run-calibration.sh
+scripts/probe-sx.sh  scripts/probe-idlink.sh  scripts/probe-spill.sh</code></pre>
+      <p>Anlatının tamamı <code>docs/devlog/devlog.md</code> içinde, bacak bacak — bu belge
+        harita, arazi değil.</p>
+    </div>
+  </section>
+
+  <footer>
+    verifierloop · reviewer devir teslimi · 2026-09-06<br>
+    son ölçüm: <span class="m">iters=140000 seen_pcs=5443 compared=676912 findings=0 trunc=0
+    invchecked=16144 invfault=0 avgstates=3</span><br>
+    kernel: bpf-next <span class="m">7.2.0-gdffc1150e2cc</span> · commit
+    <span class="m">cccb6eb</span> (0086)
+  </footer>
+
+</div>
+
+</body>
+</html>
