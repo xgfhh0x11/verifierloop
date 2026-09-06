@@ -5830,3 +5830,73 @@ o aile çift yüklemeyi yapmıyor. **Boşluk yalnız onu ÖLÇEN yerde kapandı*
 ailenin sıfırını temiz sanmak ilk hatanın tekrarı olurdu.
 
 Workspace 326 yeşil.
+
+---
+
+## 0076 — Yedinci çift, eksik olan işaretli yarı — ve 0061'in manşet kontrolünün gerçek yakalamalarda ateşlenemediğinin ölçülmesi
+
+### 1. Çift: `3cf2b61eb067`
+
+"bpf: Fix signed bounds propagation after mov32" (2021-12, bildiren Kuee K1r0a — **çift
+bir**'in de bildireni). `zext_32_to_64()` mov32 yolunda
+`__update_reg_bounds` / `__reg_deduce_bounds` / `__reg_bound_offset` üçlüsünü çağırmıyor,
+yani tnum'dan hiçbir arıtma olmuyor. `w0 = -1; w0 = w0` sonrası register hâlâ `0xffffffff`
+sabiti, tnum'u ve **işaretsiz** sınırları ona sabitli — **işaretli** çifti ise
+`[0, 4294967295]`'e kötümserleşmiş.
+
+Commit özelliği kendi kelimeleriyle adlandırıyor: *"const scalar'lar hakkındaki
+`smin_value == smax_value` ve `umin_value == umax_value` varsayımlarını kırıyorlar."*
+Çift bir ikinci cümleyi kalibre etmişti. Bu, **birincisi** — ve 0061'de o yarı **yoktu**.
+
+Sonuç: buggy → 1 bulgu, fixed → 0, payda ikisinde de 2.
+
+### 2. Ama asıl bulgu çiftin kendisinden büyük
+
+Kontrolü eklerken şunu ölçtüm: **2017'den beri sabit bir skaler çıplak sayı olarak
+basılıyor.** `print_reg_state` (`kernel/bpf/log.c`):
+
+```c
+if (t == SCALAR_VALUE && tnum_is_const(reg->var_off)) {
+        verbose_snum(env, reg->var_off.value);
+        return;
+}
+```
+
+Yani parser umin/umax/smin/smax'ı **o tek token'dan türetiyor**, ve onları tnum'la
+karşılaştırmak değeri kendisiyle karşılaştırmak demek — bir **totoloji**.
+`tnum_bounds_checkable` bunu kesişim kontrolü için zaten dışarıda bırakıyordu ("bir sabit
+bir kontrol değil, bir totolojidir"), ama 0061'de eklenen const-pins-bounds kontrolü
+bırakmıyordu.
+
+Ölçüm: modern korpuslarda basılı sınırı olan sabit-tnum durumu **sıfır**.
+
+| korpus | `tnum_bounds_checked` önce | sonra |
+|---|---|---|
+| `gen-comp-896` | 25955 | **16060** |
+| `gen-intent-64` | 1062 | **805** |
+| `gen-targeted-242` | 1749 | **1620** |
+| `syz-replay-184` | 357 | **0** |
+
+### 3. Ve bu, 0065'in bir revizyonunu geri alıyor
+
+0065, syzkaller korpusunun paydasını 0'dan **357**'ye çıkarmış ve *"syzkaller intrinsic
+kontrolün bir yarısına ulaşıyormuş"* sonucuna varmıştı. **Ulaşmıyor.** 357'nin hepsi
+totolojiydi; **0025 baştan haklıymış.** `targeted_generation.rs`'teki test bunu artık
+tersine yazıyor — ve o test tam da bunun için kesin eşitlikle yazılmıştı: guard **iki
+yönde de** ateşledi.
+
+### 4. Dürüst kapsam notu — çift bir için de geçerli
+
+Gerçek bir yakalamada bu kontrol **hiç ateşlenemez**, çünkü sabit skalerin sınırları hiç
+basılmıyor. Her iki çiftin fixture'ı da commit mesajı dökümü — alanların göründüğü tek yer.
+Yani 0061'in manşet sonucu *"oracle gerçek bir verifier hatasını yakalıyor"* şu şartla
+doğru: **o kernel o durumu bastıysa.** Bugünkü kernel basmıyor.
+
+### 5. Ve bir kez daha aynı ders, bu sefer benden
+
+İşaretli yarıyı ilk yazışımda basılmamış bir `smin`'i **ekstremumda değil, sıfır** saydım —
+ve o hâliyle çift bir üzerinde ikinci kez ateşledi. Testler yakaladı. Kapı artık
+`order_checkable`'ın kullandığı yüklemin aynısı: iki uç da ekstremumdan uzak olmalı.
+Yokluğun yanlış okunması: **sekizinci kez.**
+
+Workspace 328 yeşil.

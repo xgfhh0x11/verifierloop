@@ -71,6 +71,11 @@ const IL_FIXED: &str = include_str!("fixtures/calibration/idlink-af9e89d8dd39-fi
 const SP_BUGGY: &str = include_str!("fixtures/calibration/spill-811c363645b3-buggy.log");
 const SP_FIXED: &str = include_str!("fixtures/calibration/spill-811c363645b3-fixed.log");
 
+/// The seventh pair (devlog 0076): commit 3cf2b61eb067 — the SIGNED half of the property
+/// pair one calibrated, which 0061 did not have.
+const MV_BUGGY: &str = include_str!("fixtures/calibration/mov32-3cf2b61eb067-buggy.log");
+const MV_FIXED: &str = include_str!("fixtures/calibration/mov32-3cf2b61eb067-fixed.log");
+
 fn run_diff(text: &str, tag: &str) -> (normalize::NormalizedMetrics, diff::DiffFindings) {
     let dir = std::env::temp_dir().join(format!("vl-cal-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -358,8 +363,12 @@ fn the_pre_2022_log_format_parses_instead_of_silently_vanishing() {
         );
         // The denominators are the real evidence: a format that does not parse scores
         // zero on every one of them while looking perfectly clean.
+        // The tnum denominator here is 3, not more: 0076 stopped counting constant
+        // scalars whose bounds the parser synthesized from the value itself, and this
+        // era's `inv1337` / `inv4294967298` are exactly that. The number that matters for
+        // THIS pair is reg32_checked, which is what the bug is about.
         assert!(
-            out.summary.reg32_checked >= 2 && out.summary.tnum_bounds_checked >= 4,
+            out.summary.reg32_checked >= 2 && out.summary.tnum_bounds_checked >= 3,
             "{tag}: denominators too small to mean anything: reg32={} tnum={}",
             out.summary.reg32_checked,
             out.summary.tnum_bounds_checked
@@ -743,8 +752,16 @@ fn every_verifier_referenced_oracle_is_satisfied_by_the_buggy_program() {
     assert!(!buggy.findings.iter().any(|f| f.kind == "runtime_bound_violation"));
 
     // No parsed-state invariant fires either: `R0_w=4294967252` is a pinned constant whose
-    // tnum and bounds agree. It is wrong, not inconsistent.
-    assert!(buggy.summary.tnum_bounds_checked >= 4, "{}", buggy.summary.tnum_bounds_checked);
+    // tnum and bounds agree. It is wrong, not inconsistent — and since 0076 it is not even
+    // COUNTED, because a bare-number constant's bounds are synthesized by the parser from
+    // the value itself and comparing them cannot fail. A denominator of zero here is a
+    // SHARPER statement of the boundary than a number that could never have moved: the
+    // parsed-state channel does not merely stay silent on this bug, it has nothing to say.
+    assert_eq!(
+        buggy.summary.tnum_bounds_checked, 0,
+        "a constant scalar prints as a bare number, so there is no independent bound to \
+         compare the tnum against"
+    );
     assert!(
         buggy.findings.iter().all(|f| f.kind == "runtime_intent_violation"),
         "the ONLY thing that may fire here is the oracle whose reference is the generator: \
@@ -862,4 +879,93 @@ fn a_sample_with_no_observed_retval_is_not_compared_against_the_expectation() {
     assert!(!smp.retval_observed, "no retval= token was printed");
     assert_eq!(smp.retval, 0, "the default, which must NOT be read as an observation");
     assert_eq!(rec.core.intended_retval, Some(1));
+}
+
+// ---------------------------------------------------------------------------
+// PAIR SEVEN (devlog 0076) — commit 3cf2b61eb067, "bpf: Fix signed bounds propagation
+// after mov32" (2021-12, reported by Kuee K1r0a — the same reporter as pair one).
+//
+// THE BUG. `zext_32_to_64()` on the mov32 path calls `__reg_assign_32_into_64()` without
+// the `__update_reg_bounds` / `__reg_deduce_bounds` / `__reg_bound_offset` triplet that
+// every other path runs, so no refinement from the tnum takes place. After `w0 = -1;
+// w0 = w0` the register is still the constant 0xffffffff, its tnum and its UNSIGNED bounds
+// still pinned to it — and its SIGNED pair pessimised to [0, 4294967295].
+//
+// The commit names the property in its own words: "they break assumptions about const
+// scalars that smin_value == smax_value and umin_value == umax_value". Pair one calibrated
+// the second clause. This is the first — and 0061 did not have it, so this fires only
+// because the check gained its signed half here.
+//
+// THE SCOPE NOTE MATTERS MORE THAN THE PAIR, and it applies to pair one too: on a REAL
+// capture from any kernel since 2017 this check cannot fire at all. `print_reg_state` does
+// `verbose_snum(value); return;` for a constant scalar, so its bounds are never printed and
+// the parser derives all four from that single number — a comparison of the value with
+// itself. Both fixtures here are commit-message dumps, which is the only place the fields
+// appear. Measured: the composition, intent and store-location corpora contain ZERO
+// const-tnum states with a printed bound.
+// ---------------------------------------------------------------------------
+
+/// The signed half fires, and only on the buggy state.
+#[test]
+fn the_signed_half_of_const_pins_bounds_catches_the_mov32_bug() {
+    let (_, buggy) = run_diff(MV_BUGGY, "mv-buggy");
+    let hits: Vec<_> = buggy
+        .findings
+        .iter()
+        .filter(|f| f.kind == "const_tnum_range_mismatch")
+        .collect();
+    assert_eq!(hits.len(), 1, "{:?}", buggy.findings);
+    assert!(hits[0].expected.contains("smin == smax == value"), "{}", hits[0].expected);
+    assert!(hits[0].observed.contains("smin=0 smax=4294967295"), "{}", hits[0].observed);
+
+    let (_, fixed) = run_diff(MV_FIXED, "mv-fixed");
+    assert_eq!(fixed.summary.finding_count, 0, "{:?}", fixed.findings);
+    // Silence with a denominator: the fixed state is evaluated, not skipped.
+    assert_eq!(fixed.summary.tnum_bounds_checked, 2);
+}
+
+/// THE MEASUREMENT THAT MATTERS MORE — and it corrects a claim this project made in 0065.
+///
+/// A constant scalar has printed as a BARE NUMBER since 2017 (`print_reg_state`:
+/// `tnum_is_const` -> `verbose_snum`, return). The parser then derives umin, umax, smin and
+/// smax from that one token, so the const-pins-bounds check compares the value with itself
+/// — a tautology, exactly what `tnum_bounds_checkable` already excludes for the
+/// intersection check. 0061 added the check without that exclusion, and its denominator
+/// filled with comparisons that could not fail.
+///
+/// The correction runs backwards through the record: 0065 revised the syzkaller corpus from
+/// "0 checkable observations" up to 357 and concluded it reached one half of the intrinsic
+/// check after all. It does not. All 357 were tautologies, and 0025's original zero was
+/// right. That revision is now undone in `targeted_generation.rs`.
+#[test]
+fn a_constant_scalars_bounds_are_synthesized_and_must_not_be_counted() {
+    // Asserted on REAL captures rather than synthetic text, because the claim is about
+    // what kernels actually print.
+    const MODERN: &str = include_str!("fixtures/volume/gen-intent-64.log");
+    let (modern, _) = run_diff(MODERN, "taut-modern");
+    let const_states: Vec<_> = modern
+        .records
+        .iter()
+        .flat_map(|r| r.core.register_evolution.iter())
+        .flat_map(|s| s.regs.iter())
+        .filter(|r| r.reg_type == "scalar" && r.tnum.mask == 0)
+        .collect();
+    assert!(!const_states.is_empty(), "the corpus must contain constants at all");
+    assert!(
+        const_states.iter().all(|r| !r.bounds_from_log),
+        "a modern kernel prints a constant scalar as a bare number, so NONE of its bounds \
+         can have been read from the log — if this fails the kernel changed and the \
+         denominator correction needs re-measuring"
+    );
+
+    // The 2022-era pair-one fixture, where a bound really was printed independently.
+    let (old, _) = run_diff(BUGGY, "taut-2022");
+    assert!(
+        old.records
+            .iter()
+            .flat_map(|r| r.core.register_evolution.iter())
+            .flat_map(|s| s.regs.iter())
+            .any(|r| r.reg_type == "scalar" && r.tnum.mask == 0 && r.bounds_from_log),
+        "that era printed `scalar(imm=0,umax=1,var_off=(0x0; 0x0))` — an independent umax"
+    );
 }

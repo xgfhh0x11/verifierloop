@@ -55,32 +55,32 @@ fn the_targeted_corpus_gives_the_intrinsic_leg_a_real_denominator() {
 }
 
 #[test]
-fn the_syzkaller_volume_reaches_only_the_constant_half_of_the_check() {
-    // 0025's measurement, RE-MEASURED after 0061 added const_tnum_range_mismatch — the
-    // guard below fired exactly as it was written to, and the answer changed in a way
-    // worth recording rather than papering over.
+fn the_syzkaller_volume_reaches_nothing_of_the_intrinsic_check() {
+    // 0025's measurement, MEASURED THREE TIMES, and the guard below fired in BOTH
+    // directions — which is the whole reason it is written as an exact equality.
     //
-    // The original claim was that syzkaller's programs are syscall sequences whose
-    // scalars are either fully known or fully unknown, never PARTIALLY known, so a tnum
-    // tracker is never exercised. That is still true of the intersection check, which is
-    // gated on `mask != 0` and still gets nothing here.
+    // 0025: zero. syzkaller's programs are syscall sequences whose scalars are either
+    //   fully known or fully unknown, never PARTIALLY known, so the intersection check —
+    //   gated on `mask != 0` — gets nothing.
+    // 0065: 357. Adding const_tnum_range_mismatch appeared to open a second half:
+    //   `mask == 0` with stated bounds is exactly the fully-known scalar this corpus is
+    //   full of, so the revision read as "syzkaller reaches one half after all".
+    // 0076: zero again, and 0025 was right. A constant scalar prints as a BARE NUMBER —
+    //   `print_reg_state` does `verbose_snum(value); return;` — so the parser derives
+    //   umin, umax, smin and smax from that one token and comparing them with the tnum
+    //   compares the value with itself. All 357 were tautologies. The check now requires
+    //   a bound that was actually PRINTED, and this corpus prints none.
     //
-    // But the constant half is a different reachability question: `mask == 0` with stated
-    // bounds is exactly the fully-known scalar this corpus is full of, and 357 of them
-    // are now evaluated. So syzkaller does exercise one half of the intrinsic check after
-    // all — and comes back clean on it, which is a stronger statement about the corpus
-    // than "it reaches nothing".
+    // The lesson is not about syzkaller. It is that a denominator can be inflated by
+    // comparisons that cannot fail, and that "0 out of 357" read exactly like evidence.
     let (norm, out) = run_diff(SYZ, "syz");
     assert_eq!(norm.records.len(), 151);
     assert_eq!(
-        out.summary.tnum_bounds_checked, 357,
+        out.summary.tnum_bounds_checked, 0,
         "if this changes the corpus or the parser changed — re-measure before trusting \
          any 'clean' period from it"
     );
-    assert_eq!(
-        out.summary.finding_count, 0,
-        "and with a real denominator, clean means something: {:?}", out.findings
-    );
+    assert_eq!(out.summary.finding_count, 0, "{:?}", out.findings);
 }
 
 #[test]

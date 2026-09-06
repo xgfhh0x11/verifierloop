@@ -520,8 +520,48 @@ fn check_logical_invariants(
             // The gate requires a STATED upper bound: an absent `umax=` means U64_MAX by
             // the log's convention, and treating that as a real bound would fire on every
             // constant-var_off register whose bounds simply were not printed.
-            if reg.tnum.mask == 0 && reg.umax != u64::MAX {
+            // GATED ON PROVENANCE, not just on shape. A constant scalar prints as a bare
+            // number and nothing else (kernel/bpf/log.c print_reg_state: `tnum_is_const` ->
+            // verbose_snum, return), so its bounds are SYNTHESIZED by the parser from that
+            // same number and comparing them with the tnum compares the value with itself.
+            // Counting those inflates the denominator with comparisons that cannot fail —
+            // the 0025 trap inside the very check added to close it. Measured (0076): the
+            // modern corpora contain ZERO const-tnum states with a printed bound.
+            if reg.tnum.mask == 0 && reg.umax != u64::MAX && reg.bounds_from_log {
                 *checkable += 1;
+                // THE SIGNED HALF, which 0061 did not have. Commit 3cf2b61eb067 ("bpf: Fix
+                // signed bounds propagation after mov32", 2021-12) is exactly and only
+                // this: after `w0 = -1; w0 = w0` the tnum stayed the constant 0xffffffff
+                // and the unsigned bounds stayed pinned to it, while the signed pair
+                // pessimised to [0, 4294967295]. The commit names the property itself —
+                // "they break assumptions about const scalars that smin_value ==
+                // smax_value and umin_value == umax_value" — and the kernel's own
+                // reg_bounds_sanity_check tests both halves under one name.
+                let sval = reg.tnum.value as i64;
+                // AND THE ABSENCE CONVENTION AGAIN — eighth time, this one mine. An
+                // unprinted signed bound sits at its EXTREME, so `smin == i64::MIN` means
+                // "the verifier said nothing", not "the verifier said zero". Requiring
+                // both endpoints away from their extremes is the same predicate
+                // `order_checkable` uses, and without it this fired a second time on
+                // calibration pair one, whose state prints `umax=` and no signed bound at
+                // all.
+                let signed_printed = reg.smin != i64::MIN && reg.smax != i64::MAX;
+                if signed_printed && (reg.smin != sval || reg.smax != sval) {
+                    out.push(DivergenceFinding {
+                        record_index: Some(idx),
+                        source: GroundTruthSource::LogicalInvariant,
+                        kind: "const_tnum_range_mismatch".to_string(),
+                        aspect: "bounds".to_string(),
+                        expected: "a constant tnum pins smin == smax == value".to_string(),
+                        observed: format!(
+                            "var_off=(0x{:x}; 0x0) smin={} smax={}",
+                            reg.tnum.value, reg.smin, reg.smax
+                        ),
+                        detail: format!(
+                            "{where_}: tnum is constant but the SIGNED bounds are not"
+                        ),
+                    });
+                }
                 if reg.umin != reg.tnum.value || reg.umax != reg.tnum.value {
                     out.push(DivergenceFinding {
                         record_index: Some(idx),

@@ -78,6 +78,20 @@ pub struct RegState {
     /// (which means a constant part of exactly zero, not an unknown one).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ptr_off: Option<i64>,
+    /// Whether ANY bound in this state was read from the log rather than synthesized.
+    ///
+    /// A constant scalar prints as a bare number and nothing else — `print_reg_state`
+    /// (kernel/bpf/log.c) does `verbose_snum(value); return;` when `tnum_is_const`, in the
+    /// CURRENT tree as much as in 2021. The parser then derives umin, umax, smin and smax
+    /// from that single token, so comparing them against the tnum compares the value with
+    /// itself. `tnum_bounds_checkable` already excludes exactly that for the intersection
+    /// check — "a constant is not a check, it is a tautology" — but the const-pins-bounds
+    /// check added in 0061 did not, and counted a denominator of comparisons that cannot
+    /// fail. Measured (0076): the composition, intent and store-location corpora contain
+    /// ZERO const-tnum states with a printed bound, so that check's honest denominator on
+    /// a modern capture is nil.
+    #[serde(default)]
+    pub bounds_from_log: bool,
 }
 
 /// Registers of interest at one instruction index — a snapshot in the evolution.

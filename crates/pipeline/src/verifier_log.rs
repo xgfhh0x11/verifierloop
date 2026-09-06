@@ -807,9 +807,22 @@ fn strip_legacy_scalar_prefix(expr: &str) -> Option<&str> {
                 || rest.starts_with('(')
                 || rest.starts_with('-')
                 || rest.starts_with(|c: char| c.is_ascii_digit());
-            if ok {
-                return Some(rest);
+            if !ok {
+                continue;
             }
+            // `invP4294967295(id=0,imm=...,smin_value=...)` — the constant AND the field
+            // list together. The kernel's ordinary per-insn line never emits this (a
+            // constant scalar prints the bare number and returns, and has since 2017), but
+            // a full-state dump does and commit messages quote it. The fields are explicit
+            // while the leading number merely repeats var_off, so the field list is the
+            // more informative parse — and taking it stops the whole token falling through
+            // to the pointer branch and acquiring a reg_type of "4294967295".
+            let digits = rest.len()
+                - rest.trim_start_matches(|c: char| c.is_ascii_digit() || c == '-').len();
+            if digits > 0 && rest[digits..].starts_with('(') {
+                return Some(&rest[digits..]);
+            }
+            return Some(rest);
         }
     }
     None
@@ -891,6 +904,12 @@ fn build_regstate(reg: u8, expr: &str) -> RegState {
             u32_max: field_u64(expr, "umax32="),
             s32_min: field_s32(expr, "smin32="),
             s32_max: field_s32(expr, "smax32="),
+            bounds_from_log: ["umin=", "umax=", "smin=", "smax="].iter().any(|k| {
+                value_after_key(expr, k).is_some()
+                    || legacy_bound_key(k)
+                        .map(|l| value_after_key(expr, l).is_some())
+                        .unwrap_or(false)
+            }),
             // A scalar has no pointer base, so no constant pointer offset.
             ptr_off: None,
         };
