@@ -4297,6 +4297,7 @@ static void run_fuzz(int seconds) {
        like a plateau. Counted so "the ceiling" is a statement about the grammar rather than
        about the buffer. */
     unsigned long truncated = 0, prune_flips = 0, inv_faults = 0;
+    unsigned long prune_pairs = 0, prune_artifacts = 0;
 
     printf("FUZZ start budget=%ds corpus_max=%d\n", seconds, FZ_CORPUS_MAX);
     while (time(NULL) - t0 < seconds) {
@@ -4390,19 +4391,34 @@ static void run_fuzz(int seconds) {
                construction, so a flagged rejection on a complexity limit is the instrument's
                own artefact and not a finding (0042). */
             {
-                union bpf_attr a2 = attr;
-                a2.prog_flags = BPF_F_TEST_STATE_FREQ;
-                a2.log_level = 0; a2.log_size = 0; a2.log_buf = 0;
-                int fdf = bpf(BPF_PROG_LOAD, &a2, sizeof(a2));
-                int ferr = errno;
-                if (fdf >= 0) close(fdf);
-                const int flipped = (fd >= 0) != (fdf >= 0);
-                const int resource = (fdf < 0) && (ferr == E2BIG || ferr == ENOSPC);
-                if (flipped && !resource) {
+                /* THE DENOMINATOR, which 0042 made non-negotiable: a pair counts only
+                   once the flag DEMONSTRABLY changed the state space. Two verdicts from
+                   identical explorations prove nothing about pruning, and counting them
+                   would make `pruneflip=0` mean "0 out of 0" while reading exactly like
+                   "0 out of many" — the 0025 trap, in the newest instrument.
+                   Reading the state count needs log_level=1, so this reuses 0042's own
+                   helper rather than a second implementation of the same parse. */
+                struct prune_load base = prune_load_typed(ins, n, 0, g_log, sizeof(g_log),
+                                                          BPF_PROG_TYPE_SOCKET_FILTER);
+                struct prune_load freq = prune_load_typed(ins, n, BPF_F_TEST_STATE_FREQ,
+                                                          g_log2, sizeof(g_log2),
+                                                          BPF_PROG_TYPE_SOCKET_FILTER);
+                const int widened = freq.states > base.states;
+                if (widened) prune_pairs++;
+                const int flipped = base.accept != freq.accept;
+                /* State-freq inflates the state count by construction, so a flagged
+                   rejection on a complexity limit is the instrument's own artefact. */
+                const int resource = !freq.accept &&
+                                     (strcmp(freq.reason, "too_many_states") == 0 ||
+                                      strcmp(freq.reason, "too_large") == 0);
+                if (resource) prune_artifacts++;
+                if (widened && flipped && !resource) {
                     prune_flips++;
-                    printf("FINDING kind=prune_verdict_flip iter=%lu base=%s freq=%s errno=%d ",
-                           iters, fd >= 0 ? "accept" : "reject",
-                           fdf >= 0 ? "accept" : "reject", ferr);
+                    printf("FINDING kind=prune_verdict_flip iter=%lu base=%s freq=%s"
+                           " base_states=%lu freq_states=%lu reason=%s ",
+                           iters, base.accept ? "accept" : "reject",
+                           freq.accept ? "accept" : "reject", base.states, freq.states,
+                           freq.reason);
                     fz_print_genome(&G);
                     printf("\n");
                 }
@@ -4481,14 +4497,14 @@ static void run_fuzz(int seconds) {
 
         if ((iters % 2000) == 0)
             printf("STATUS iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-                   " compared=%lu findings=%lu trunc=%lu pruneflip=%lu invfault=%lu elapsed=%lds\n",
+                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu invfault=%lu elapsed=%lds\n",
                    iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
-                   truncated, prune_flips, inv_faults, (long)(time(NULL) - t0));
+                   truncated, prune_pairs, prune_flips, prune_artifacts, inv_faults, (long)(time(NULL) - t0));
     }
     printf("FUZZ done iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-           " compared=%lu findings=%lu trunc=%lu pruneflip=%lu invfault=%lu elapsed=%lds\n",
+           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu invfault=%lu elapsed=%lds\n",
            iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
-           truncated, prune_flips, inv_faults, (long)(time(NULL) - t0));
+           truncated, prune_pairs, prune_flips, prune_artifacts, inv_faults, (long)(time(NULL) - t0));
     free(corpus);
     free(g_kseen);
     close(map_in);

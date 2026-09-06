@@ -155,9 +155,26 @@ fn the_expensive_oracles_run_and_cost_little() {
     assert_eq!(field(last, "pruneflip="), 0);
     assert_eq!(field(last, "invfault="), 0);
 
+    // AND THE DENOMINATOR, which 0042 made non-negotiable and 0083 supplied here. A pair
+    // counts only once BPF_F_TEST_STATE_FREQ demonstrably WIDENED the state space; two
+    // verdicts from identical explorations prove nothing about pruning. Without this,
+    // `pruneflip=0` would mean "0 out of 0" while reading exactly like "0 out of many" —
+    // the 0025 trap, arriving in the newest instrument.
+    assert!(
+        field(last, "prunepairs=") > 20_000,
+        "the pruning differential must actually be evaluated, not merely reported: {}",
+        field(last, "prunepairs=")
+    );
+    // The resource direction is excluded by construction rather than by luck: state-freq
+    // inflates the state count, so a flagged rejection on a complexity limit is the
+    // instrument's own artefact. Counted so its absence is a measurement, not an assumption.
+    assert!(last.contains("pruneartifact="));
+
     // And they must be affordable. Ungated they cost 2.5x (511k iterations became 202k);
     // reserved for programs that reached new coverage, plus a one-in-eight sample, the loop
     // runs at 424k — a ~17% toll instead of 60%.
     let iters = field(last, "iters=");
-    assert!(iters > 350_000, "the gating did not recover throughput: {iters}");
+    // The gated path now does two log_level=1 loads (the state count is only in the log),
+    // which costs a little more than the log-free version measured in 0082.
+    assert!(iters > 300_000, "the gating did not recover throughput: {iters}");
 }
