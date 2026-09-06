@@ -100,3 +100,47 @@ fn the_probe_reports_unavailability_rather_than_silently_measuring_nothing() {
     assert!(PROBE.contains("verdict=accept"), "no program was actually loaded");
     assert!(PROBE.contains("verdict=reject"), "the rejecting shape must be exercised too");
 }
+
+/// THE 3347 FALSE FINDINGS, AND THE ONE MEASUREMENT THAT SETTLED THEM (devlog 0081).
+///
+/// Adding atomic RMW to the grammar produced 3347 disagreements in a single run. The
+/// kernel's side of them was not a wrong computation but values like 0xffff8c00 and
+/// 0x050a3c78 — stale kernel stack. An atomic RMW READS its location, and the step targeted
+/// slots nothing had written.
+///
+/// The triage order says the generator first, and the question it raised was worth
+/// answering precisely rather than assuming: the verifier is supposed to reject a read from
+/// an uninitialised stack slot, so was this an asymmetry in the atomic path? The probe put
+/// a CONTROL beside it — the same untouched slot, read by an ordinary load — and settled it
+/// in one measurement: the plain load was ACCEPTED too. Reading uninitialised stack is
+/// simply permitted for a privileged program. No kernel finding; the grammar was emitting
+/// programs that are not closed-form, and the reference interpreter, whose stack starts
+/// zeroed, could not predict them.
+///
+/// Without the control arm this would have looked like a verifier bug in the atomic path.
+#[test]
+fn reading_an_uninitialised_stack_slot_is_permitted_not_a_finding() {
+    const UNINIT: &str = include_str!("fixtures/calibration/uninit-probe.log");
+    let line = |arm: &str| -> &str {
+        UNINIT
+            .lines()
+            .find(|l| l.starts_with(&format!("UNINIT arm={arm} load=")))
+            .unwrap_or_else(|| panic!("no load line for {arm}"))
+    };
+    // THE CONTROL is the whole point: an ordinary load of the untouched slot is accepted,
+    // so the atomic path is not special and there is nothing to report.
+    assert!(line("plain_load").contains("load=accept"));
+    assert!(line("atomic_fetch").contains("load=accept"));
+
+    // And what comes back is not a computation: it is whatever the kernel left there.
+    let vals: Vec<&str> = UNINIT
+        .lines()
+        .filter(|l| l.contains("arm=plain_load run="))
+        .filter_map(|l| l.split_whitespace().find_map(|t| t.strip_prefix("retval=")))
+        .collect();
+    assert_eq!(vals.len(), 3, "the arm is run three times on purpose");
+    assert!(
+        vals.iter().any(|v| *v != "0x00000000"),
+        "an uninitialised slot that read back as zero would prove nothing"
+    );
+}

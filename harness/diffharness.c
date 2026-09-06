@@ -3464,6 +3464,90 @@ static void report_jit_mode(int argc, char **argv) {
     printf("JITMODE requested=%s actual=%d\n", want_off ? "interp" : "default", actual);
 }
 
+// ---- is an atomic RMW on an UNINITIALISED stack slot accepted? (--probe-uninit) ----
+//
+// The coverage-guided run produced thousands of disagreements the moment atomics were
+// added, and the kernel's side of them was not a wrong computation but values like
+// 0xffff8c00 and 0x050a3c78 — stale kernel stack. Triage order says the generator first:
+// its atomic step targets fp-32/fp-28, and nothing necessarily writes there beforehand, so
+// it emits programs that are not closed-form and the reference cannot predict them. That
+// is a harness bug and it is fixed separately.
+//
+// But it raises a question worth answering precisely rather than assuming: the verifier
+// normally REJECTS a read from an uninitialised stack slot ("invalid read from stack").
+// check_atomic_rmw calls check_mem_access(BPF_READ) twice — once with value_regno = -1 and
+// again with the load register — so if the first call has the side effect of marking the
+// slot initialised, the second would pass and a fetching atomic would hand the program
+// whatever was on the kernel stack.
+//
+// This probe asks that one question with a control beside it. Both programs touch the SAME
+// untouched slot; only the instruction differs.
+//   plain   — an ordinary 8-byte load. Expected: REJECTED.
+//   atomic  — a fetch-add. If this is ACCEPTED, the asymmetry is real, and the returned
+//             value says whether anything was leaked.
+// The atomic arm is run three times: a value that changes between runs of the SAME program
+// is uninitialised memory, not a computation.
+static void run_probe_uninit(void) {
+    for (int arm = 0; arm < 2; arm++) {
+        struct bpf_insn ins[8];
+        int n = 0;
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_1, 1);
+        if (arm == 0) {
+            ins[n++] = BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_10, -64);
+        } else {
+            ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+            ins[n++] = (struct bpf_insn){.code = BPF_STX | BPF_ATOMIC | BPF_DW,
+                                         .dst_reg = BPF_REG_10, .src_reg = BPF_REG_1,
+                                         .off = -64, .imm = BPF_ADD | BPF_FETCH};
+            ins[n++] = BPF_MOV64_REG(BPF_REG_0, BPF_REG_1);
+        }
+        ins[n++] = BPF_EXIT_INSN();
+
+        g_log[0] = '\0';
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 2;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        int lerr = errno;
+
+        printf("UNINIT arm=%s load=%s errno=%d\n",
+               arm == 0 ? "plain_load" : "atomic_fetch",
+               fd >= 0 ? "accept" : "reject", fd >= 0 ? 0 : lerr);
+        if (fd >= 0) {
+            for (int r = 0; r < 3; r++) {
+                static char pin[64], pout[64];
+                union bpf_attr t;
+                memset(&t, 0, sizeof(t));
+                t.test.prog_fd = fd;
+                t.test.data_in = (uint64_t)(unsigned long)pin;
+                t.test.data_out = (uint64_t)(unsigned long)pout;
+                t.test.data_size_in = sizeof(pin);
+                t.test.data_size_out = sizeof(pout);
+                t.test.repeat = 1;
+                if (bpf(BPF_PROG_TEST_RUN, &t, sizeof(t)) == 0)
+                    printf("UNINIT arm=%s run=%d retval=0x%08x\n",
+                           arm == 0 ? "plain_load" : "atomic_fetch", r, t.test.retval);
+                else
+                    printf("UNINIT arm=%s run=%d testrun_errno=%d\n",
+                           arm == 0 ? "plain_load" : "atomic_fetch", r, errno);
+            }
+            close(fd);
+        } else {
+            /* The rejection text is the interesting half for the control arm. */
+            const char *nl = strrchr(g_log, '\n');
+            printf("UNINIT arm=%s reason=%s\n", arm == 0 ? "plain_load" : "atomic_fetch",
+                   nl && nl != g_log ? "see log" : "(none)");
+            printf("---LOG---\n%s\n---END---\n", g_log);
+        }
+    }
+}
+
 // ---- KCOV: does the verifier's code coverage actually vary per program? ------
 //
 // The plan is coverage-guided generation: keep and mutate the programs that reach kernel
@@ -3662,6 +3746,7 @@ enum gi_step {
     GI_PAIR,      /* the whole link-then-diverge shape, emitted as one unit           */
     GI_STORE,     /* a store through a map value — the grammar's DECISION surface      */
     GI_STACKVAR,  /* VARIABLE-offset stack access, stored and read back                 */
+    GI_ATOMIC,    /* atomic RMW — 250 lines of verifier code no other step reaches       */
     GI_PIN,       /* make the verifier believe it knows the value EXACTLY              */
     GI_SDIV,      /* signed div/mod — the interpreter-level UB shape                   */
     GI_STEP_N
@@ -3677,6 +3762,7 @@ static const char *gi_step_name(enum gi_step s) {
     case GI_PAIR: return "pair"; case GI_PIN: return "pin";
     case GI_STORE: return "store";
     case GI_STACKVAR: return "stackvar";
+    case GI_ATOMIC: return "atomic";
     case GI_SDIV: return "sdiv";
     default: return "?";
     }
@@ -3847,6 +3933,53 @@ static int gi_emit_body(const struct gi_genome *G, struct bpf_insn *ins, int n,
             ins[n++] = BPF_LDX_MEM(BPF_B, A, BPF_REG_1, -64);
             break;
         }
+        case GI_ATOMIC: {
+            /* RANK 1 on the reachability audit: check_atomic and its three sub-functions
+               plus atomic_ptr_type_ok are ~250 lines that NO other step reaches, and the
+               cost is zero — new instruction encodings on the map value and stack pointers
+               the corpus already carries, same program type, same context, fully
+               deterministic.
+               The FETCH forms leave the OLD value in the source register, so the result of
+               the atomic reaches the return value and a disagreement about it is visible
+               to the one oracle whose reference is not the verifier. CMPXCHG is included
+               deliberately: r0 must take the old value ALWAYS, and 39491867ace5 exists
+               because x86's native CMPXCHG loads its accumulator only on failure. */
+            static const int aops[] = { BPF_ADD, BPF_OR, BPF_AND, BPF_XOR };
+            const int dw = (o & 1);
+            const int sz = dw ? BPF_DW : BPF_W;
+            int imm;
+            switch ((o >> 1) & 7) {
+            case 0: case 1: case 2: case 3: imm = aops[(o >> 1) & 3]; break;
+            case 4: case 5: imm = aops[(o >> 4) & 3] | BPF_FETCH; break;
+            case 6: imm = BPF_XCHG; break;
+            default: imm = BPF_CMPXCHG; break;
+            }
+            /* SEED THE TARGET FIRST. An atomic RMW READS its location, and a privileged
+               program is ALLOWED to read an uninitialised stack slot — measured directly
+               with --probe-uninit, where a plain load of an untouched slot was accepted and
+               returned 0xa7292e75, stable across runs but a function of whatever the kernel
+               left there. So the read is legal and the program is simply NOT CLOSED-FORM,
+               which the reference interpreter (whose stack starts zeroed) cannot predict.
+               Adding the atomic step without this produced 3347 disagreements in one run,
+               every one of them ours.
+               Seeding from a register rather than an immediate keeps the starting value
+               varied, so the shape still exercises the arithmetic rather than always
+               folding from zero. */
+            if (o & 0x20) {
+                const short soff = (short)(dw ? -32 : -28);
+                ins[n++] = BPF_STX_MEM(sz, BPF_REG_10, B, soff);
+                ins[n++] = (struct bpf_insn){.code = BPF_STX | BPF_ATOMIC | sz,
+                                             .dst_reg = BPF_REG_10, .src_reg = A,
+                                             .off = soff, .imm = imm};
+            } else {
+                const short moff = (short)(dw ? 0 : 4);
+                ins[n++] = BPF_STX_MEM(sz, BPF_REG_8, B, moff);
+                ins[n++] = (struct bpf_insn){.code = BPF_STX | BPF_ATOMIC | sz,
+                                             .dst_reg = BPF_REG_8, .src_reg = A,
+                                             .off = moff, .imm = imm};
+            }
+            break;
+        }
         case GI_PAIR: {
             /* The aimed shape as one unit — drawing link, delta and narrow independently
                assembled it in 2 of 305 programs (0074). */
@@ -3971,7 +4104,9 @@ static void run_gen_intent_family(void) {
             for (int i = 0; i < GI_INPUTS_N; i++) {
                 const uint32_t in = GI_INPUTS[i];
                 uint32_t val[4] = { in, in ^ 0x5a5a5a5au, in + 3, 0 };
-                if (rt_map_set_bytes(map_in, 0, (const unsigned char *)val) < 0) {
+                static const unsigned char zero16[16] = {0};
+                if (rt_map_set_bytes(map_in, 0, (const unsigned char *)val) < 0 ||
+                    rt_map_set_bytes(map_out, 0, zero16) < 0) {
                     printf("RUNTIME input=0x%08x error=1 testrun_errno=0 map_err=1\n", in);
                     continue;
                 }
@@ -4219,7 +4354,13 @@ static void run_fuzz(int seconds) {
             for (int i = 0; i < GI_INPUTS_N; i++) {
                 const uint32_t in = GI_INPUTS[i];
                 uint32_t val[4] = { in, in ^ 0x5a5a5a5au, in + 3, 0 };
+                static const unsigned char zero16[16] = {0};
+                /* map_out survives between the sweep's runs, and a program that STORES into
+                   it and later READS it back would see the previous input's leftovers —
+                   the same not-closed-form failure as the stack, arriving from the other
+                   side. Re-zeroed every run so the reference's zeroed map matches. */
                 if (rt_map_set_bytes(map_in, 0, (const unsigned char *)val) < 0) continue;
+                if (rt_map_set_bytes(map_out, 0, zero16) < 0) continue;
                 struct bpfref_result ref = bpfref_run_seeded_map(ins, n, body, val[0], val[1], val[2]);
                 if (ref.status != BPFREF_OK) continue;
                 static char pin[64], pout[64];
@@ -4370,6 +4511,35 @@ static void run_probe_ref(void) {
       /* 12. `off` is signed: fp-8 must not become fp+65528. */
       {"negative_stack_off_is_signed", 3, {BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 5),
         BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_10, -8), BPF_EXIT_INSN()}},
+      /* 14. ATOMIC FETCH puts the OLD value in the SOURCE register, not the new one. */
+      {"atomic_fetch_add_returns_old", 5, {BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 7),
+        BPF_MOV64_IMM(BPF_REG_1, 5),
+        (struct bpf_insn){.code = BPF_STX | BPF_ATOMIC | BPF_DW, .dst_reg = BPF_REG_10,
+                          .src_reg = BPF_REG_1, .off = -8, .imm = BPF_ADD | BPF_FETCH},
+        BPF_MOV64_REG(BPF_REG_0, BPF_REG_1), BPF_EXIT_INSN()}},
+      /* 15. ...and the memory really did take the sum. */
+      {"atomic_add_updates_memory", 5, {BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 7),
+        BPF_MOV64_IMM(BPF_REG_1, 5),
+        (struct bpf_insn){.code = BPF_STX | BPF_ATOMIC | BPF_DW, .dst_reg = BPF_REG_10,
+                          .src_reg = BPF_REG_1, .off = -8, .imm = BPF_ADD},
+        BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_10, -8), BPF_EXIT_INSN()}},
+      /* 16. CMPXCHG loads r0 with the old value ALWAYS — including on a FAILED compare.
+             x86's native CMPXCHG loads the accumulator only on failure, and 39491867ace5
+             exists because the JIT once inherited exactly that asymmetry. Here the compare
+             SUCCEEDS, which is the direction a naive implementation gets wrong. */
+      {"cmpxchg_returns_old_on_success", 7, {BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 7),
+        BPF_MOV64_IMM(BPF_REG_0, 7), BPF_MOV64_IMM(BPF_REG_1, 9),
+        (struct bpf_insn){.code = BPF_STX | BPF_ATOMIC | BPF_DW, .dst_reg = BPF_REG_10,
+                          .src_reg = BPF_REG_1, .off = -8, .imm = BPF_CMPXCHG},
+        BPF_LDX_MEM(BPF_DW, BPF_REG_1, BPF_REG_10, -8),
+        BPF_ALU64_REG(BPF_ADD, BPF_REG_0, BPF_REG_1), BPF_EXIT_INSN()}},
+      /* 17. A 32-bit XCHG zero-extends the old value into the source register. */
+      {"xchg32_zero_extends_the_old_value", 7, {BPF_ST_MEM(BPF_W, BPF_REG_10, -4, -1),
+        REF_LD64(BPF_REG_1, 0xffffffff00000005ULL),
+        (struct bpf_insn){.code = BPF_STX | BPF_ATOMIC | BPF_W, .dst_reg = BPF_REG_10,
+                          .src_reg = BPF_REG_1, .off = -4, .imm = BPF_XCHG},
+        BPF_ALU64_IMM(BPF_RSH, BPF_REG_1, 32), BPF_MOV64_REG(BPF_REG_0, BPF_REG_1),
+        BPF_EXIT_INSN()}},
       /* 13. LD_IMM64 occupies two slots; a decoder that advances one corrupts the rest. */
       {"ld_imm64_consumes_two_slots", 4, {REF_LD64(BPF_REG_1, 0x1122334455667788ULL),
         BPF_MOV64_REG(BPF_REG_0, BPF_REG_1), BPF_EXIT_INSN()}},
@@ -4384,6 +4554,17 @@ static void run_probe_ref(void) {
     int n_total = 0, n_agree = 0;
     for (unsigned t = 0; t < sizeof(traps) / sizeof(traps[0]); t++) {
         struct ref_trap *T = &traps[t];
+        /* A trap that declares more instructions than it initialises ends on a zeroed
+           insn, which the verifier rejects as unreachable — and the result reads as a trap
+           that measured nothing rather than as the typo it is. This has now happened three
+           times (the jmp32 trap in 0073, an atomic trap here), so it is checked instead of
+           remembered: every trap must end in EXIT and carry no zeroed instruction. */
+        if (T->n <= 0 || T->ins[T->n - 1].code != (BPF_JMP | BPF_EXIT)) {
+            printf("REFTRAP name=%s verdict=MALFORMED reason=last_insn_is_not_exit n=%d\n",
+                   T->name, T->n);
+            n_total++;
+            continue;
+        }
         struct bpfref_result ref = bpfref_run(T->ins, T->n, 0);
 
         g_log[0] = '\0';
@@ -7960,6 +8141,10 @@ int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--fuzz") == 0) {
         report_jit_mode(argc, argv);
         run_fuzz(argc > 2 ? atoi(argv[2]) : 300);
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-uninit") == 0) {
+        run_probe_uninit();
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--probe-kcov") == 0) {
