@@ -6231,3 +6231,110 @@ Ders yine aynı: **bir guard'ı gözlemlenen sebebe göre değil, korunacak şey
 
 140k iterasyon, 677k karşılaştırma, dört oracle'dan **0 bulgu**, kapsama 5443 (en yüksek),
 `trunc=0`, `invchecked=16144`. Workspace 338 yeşil.
+
+---
+
+## 0086 — `seen_pcs`'in paydası: doğrulama geçişinin %30'undayız, ve eksik %70'in adı var
+
+### 1. Sekiz bacaktır paydasız bir sayı bildiriyordum
+
+0078'den beri fuzz döngüsü bir kapsama sayısı bildiriyor: 4789, 5203, 5406, 5443. Her biri
+**çıplak bir sayı.** Sayının arttığını söylüyor; **ne kadar kaldığını** asla söylemiyor.
+
+Bu, projenin kendi kuralının ihlali — pay, payda olmadan kanıt değil — ve tam sekiz bacak
+boyunca kendi enstrümanımda durdu. 0026, 0066, 0085'te başkalarının paydasını buldum;
+bunun paydası kendi metriğimdeydi.
+
+Payda statik olarak sayılabilir. KCOV, `__sanitizer_cov_trace_pc`'nin `_RET_IP_`'sini
+kaydediyor — yani **call'dan sonraki instruction'ın adresi.** Öyleyse ulaşılabilir kapsama
+noktaları kümesi tam olarak o call'ların dönüş adresleridir, ve `objdump -d vmlinux`
+hepsini sayabilir.
+
+`scripts/coverage-fraction.py`: 763,788 kapsama noktası, tüm kernel'de.
+
+### 2. Ölçümün kendisinin doğrulanması
+
+Kaydedilen 5370 PC'nin **5234'ü** (%97.5) statik olarak bulunmuş bir kapsama noktasına
+**tam olarak** oturuyor. Yanlış bir imaj bunu kazara üretemez: KASLR kayması ya da başka
+bir build ~%0 örtüşme verir, %97 değil. Yani 0085'in düzelttiği `vmlinux` gerçekten
+doğru imaj, ve rapordaki her yüzde bunun altında duruyor. Test bunu ilk assert olarak
+taşıyor.
+
+Eşleşmeyen 136 PC bir gizem değil: `.text` içindeki jump table'lar objdump yürüyüşünü
+kaydırıyor, ve yürüyüş **oranın iki tarafında da** nokta kaybediyor — tek yönlü bir hata
+değil. Rapor nerede durduklarını isimlendiriyor: `check_mem_access`, `do_check_common` —
+zaten girdiğimiz fonksiyonlar.
+
+### 3. İlk hesap yanlıştı, ve sebebi tanıdıktı
+
+İlk çalıştırmada doğrulama geçişinin paydası 15,241 çıktı. İçinde iki sembol vardı:
+`_sub_I_65535_1` ve `_sub_D_65535_0`, her biri **2698 noktayla.**
+
+Bunlar GCC'nin TU başına ctor/dtor stub'ları — **her** object dosyası tanımlıyor. Sembol
+adıyla anahtarlanan bir sözlük hepsini alfabetik olarak son okunan dosyaya veriyordu.
+Paydanın üçte biri, hiç girilemeyecek iki sembolün arkasındaydı.
+
+Düzeltme bir kural: **birden fazla object'in tanımladığı bir ad bir PC'yi atfedemez.**
+Tahmin etmek yerine düşürülüyor. Payda 15,241 → 10,244.
+
+Bu 0076'nın dersinin üçüncü örneği: bir payda, ateşlenemeyen karşılaştırmalarla şişebilir
+ve tam olarak kanıt gibi okunur.
+
+### 4. Sayı
+
+```
+COVFRAC verification_pass hit=3104 total=10244 pct=30.3
+COVFRAC split reached=3104 unreached_in_entered_functions=3743
+        in_functions_never_entered=3397
+COVFRAC share_of_our_coverage_that_is_the_verifier=59.3
+```
+
+Doğrulama geçişinin **%30.3**'ündeyiz. Ve ulaşılmayan %70 **iki farklı sorun**:
+
+| | nokta | pay |
+|---|---|---|
+| ulaşılan | 3104 | %30.3 |
+| girdiğimiz fonksiyonların girmediğimiz blokları | 3743 | %36.5 |
+| **hiç girmediğimiz fonksiyonlar** | 3397 | %33.2 |
+
+İkincisi bir dal sorunu; üçüncüsü gramerin **ifade edemediği bir özellik.** Tek bir "%70
+ulaşılmadı" bu ayrımı gizlerdi.
+
+Kapsamamızın %59'u verifier'da — yani kılavuzluk doğru yarıya nişanlı; `bpf_prog_load`'un
+sürüklediği vmalloc/per-cpu/JIT gürültüsü değil.
+
+### 5. Ve eksik kısmın adı var
+
+Hiç girilmemiş 3397 noktanın teması:
+
+| tema | nokta |
+|---|---|
+| **kfunc / BTF çağrıları** | **1318** |
+| log + disasm yazdırma | 362 |
+| reference / spin lock | 338 |
+| attach target / trampoline | 163 |
+| callback / subprog | 160 |
+| dynptr / iterator | 94 |
+| **packet pointer** | **89** |
+| geri kalan | 873 |
+
+Tek bir özellik — kfunc çağrıları — **tüm doğrulama geçişinin %13'ünü** tutuyor ve gramer
+onu hiç üretmedi. Sonraki en büyüğünden dört kat büyük.
+
+### 6. Sıfır bulgunun açıklaması
+
+Ters tarafı daha çok şey söylüyor:
+
+```
+cnum.o    137 / 143   %95.8
+tnum.o     36 /  55   %65.5
+states.o  241 / 405   %59.5
+```
+
+Oracle'larımız **skaler aritmetikte** en güçlü. Kapsama tam orada **doymuş.** İnce olan
+bölgeler — tipler, referanslar, kfunc'lar — oracle'larımızın en az şey söylediği yerler.
+
+Yani enstrüman program açlığı çekmiyor. **Çözülmüş bir yüzeye nişanlı.** 84 bacaklık sıfır
+bulgunun en dürüst açıklaması bu, ve ilk kez bir sayı olarak duruyor.
+
+Workspace 345 yeşil.

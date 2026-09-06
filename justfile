@@ -72,3 +72,9 @@ build-rust:
 # Confirm the Python package imports on a bare interpreter.
 check-python:
     python -c "import sys; sys.path.insert(0, 'python/src'); import verifierloop_analysis, verifierloop_analysis.contract, verifierloop_analysis.schemas; print('python import OK')"
+
+# The denominator for seen_pcs: enumerate every KCOV coverage point in vmlinux, intersect
+# with a run's PCSET dump, and report the fraction of the verification pass we reach.
+coverage-fraction LOG=".lab/fuzz-pcset.log":
+    python3 scripts/coverage-fraction.py .lab/build/vmlinux {{LOG}} .lab/bpf-next/kernel/bpf \
+      | tee .lab/coverage-fraction.txt
