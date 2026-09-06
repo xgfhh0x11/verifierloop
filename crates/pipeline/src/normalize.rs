@@ -190,6 +190,7 @@ impl RecordParser for ReferenceParser {
                     helper_arg_observations: Vec::new(),
                     runtime_samples: Vec::new(),
                     intended_retval: None,
+                    multi_path: None,
                     store_site: None,
                     prune_probe: None,
                     helper_arg_violations: if buggy {
@@ -351,6 +352,7 @@ mod tests {
                         helper_arg_observations: Vec::new(),
                         runtime_samples: Vec::new(),
                         intended_retval: None,
+                        multi_path: None,
                         store_site: None,
                         prune_probe: None,
                         helper_arg_violations: Vec::new(),

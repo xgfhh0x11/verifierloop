@@ -66,9 +66,13 @@ static inline int bpfref_stack_ok(int64_t off, int size) {
     return off <= -size && off >= -BPFREF_STACK;
 }
 
-/* Run `n` instructions starting at 0. r1 is given `ctx` (never dereferenced by the subset),
-   r10 is the frame pointer. Returns r0 at EXIT. */
-static struct bpfref_result bpfref_run(const struct bpf_insn *ins, int n, uint64_t ctx) {
+/* The general entry point: begin at `start_pc` with r6/r7/r9 preloaded.
+ *
+ * `bpfref_run` (start at 0, all registers zero) and `bpfref_run_seeded` are the two ways
+ * in. r10 is the frame pointer; its numeric value is never observed by this subset. */
+static struct bpfref_result bpfref_run_at(const struct bpf_insn *ins, int n, int start_pc,
+                                          uint64_t ctx, uint64_t s6, uint64_t s7,
+                                          uint64_t s9) {
     struct bpfref_result out;
     memset(&out, 0, sizeof(out));
     uint64_t r[11];
@@ -76,10 +80,13 @@ static struct bpfref_result bpfref_run(const struct bpf_insn *ins, int n, uint64
     unsigned char stack[BPFREF_STACK];
     memset(stack, 0, sizeof(stack));
     r[1] = ctx;
-    r[10] = 0; /* the frame pointer's numeric value is never observed by this subset */
+    r[6] = s6;
+    r[7] = s7;
+    r[9] = s9;
+    r[10] = 0;
 
     long budget = 1L << 22;
-    int pc = 0;
+    int pc = start_pc;
     while (1) {
         if (pc < 0 || pc >= n) { out.status = BPFREF_BADPC; out.fault_pc = pc; return out; }
         if (--budget < 0) { out.status = BPFREF_LOOP; out.fault_pc = pc; return out; }
@@ -322,6 +329,29 @@ static struct bpfref_result bpfref_run(const struct bpf_insn *ins, int n, uint64
         out.fault_code = code;
         return out;
     }
+}
+
+/* Run from instruction 0 with every register zero. */
+static inline struct bpfref_result bpfref_run(const struct bpf_insn *ins, int n,
+                                              uint64_t ctx) {
+    return bpfref_run_at(ins, n, 0, ctx, 0, 0, 0);
+}
+
+/* Start at `start_pc` with three seed scalars already in r6/r7/r9.
+ *
+ * A program whose scalars are all compile-time constants gives the verifier's range
+ * tracker nothing to get wrong, so the interesting families seed themselves from a map —
+ * unknown to the verifier, known to the harness that wrote it a moment earlier. The fixed
+ * prologue performing that lookup calls a helper and is outside this subset, so it is
+ * SKIPPED rather than modelled: interpretation begins at the generated body, which is in
+ * the subset, and still reads the emitted bytes rather than any generator's intent.
+ *
+ * The seeds arrive in the real program through `BPF_LDX_MEM(BPF_W, ...)`, so they are
+ * zero-extended 32-bit values; the caller passes them already in that form. */
+static inline struct bpfref_result bpfref_run_seeded(const struct bpf_insn *ins, int n,
+                                                     int start_pc, uint64_t r6, uint64_t r7,
+                                                     uint64_t r9) {
+    return bpfref_run_at(ins, n, start_pc, 0, r6, r7, r9);
 }
 
 static inline const char *bpfref_status_name(enum bpfref_status s) {

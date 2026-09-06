@@ -3438,6 +3438,333 @@ static void run_probe_idlink(void) {
     }
 }
 
+// ---- the aimed closed-form family (--gen-intent) ----------------------------
+// THE HUNT. This is the first family whose oracle does not consult the verifier at all.
+// Each program's return value is computed by bpfref.h — an independent implementation of
+// the ISA, calibrated against the kernel on sixteen traps (0073) — and compared against
+// what the kernel's JIT actually returns. A disagreement means an ACCEPTED program did
+// something its own instructions do not permit.
+//
+// WHY THIS SHAPE. Screening the tree's history for "accepted program behaves differently
+// from what its instructions mean" found thirteen instances, six of them in the last 34
+// months and four in a single month, with two commit messages using the phrase
+// "verifier-vs-runtime mismatch" outright. The single most productive shape is
+// LINK-THEN-DIVERGE: mint a shared scalar id with `rB = rA`, tag one member with a
+// constant delta, do something that should but might not fully clear the link, then narrow
+// one member by a branch and USE the other. That is exactly what calibration pair five
+// (af9e89d8dd39) named and what the `relink` composition piece was built from. The second
+// most productive is a 32-bit width or sign mis-tracking consumed by a signed compare.
+//
+// CLOSED-FORM FOR US, UNKNOWN TO THE VERIFIER. Pure constants would leave nothing for the
+// range tracker to get wrong, so the seed scalars are read from a map — which the verifier
+// cannot see into, and which this harness wrote a moment earlier. bpfref therefore starts
+// at the BODY with those seeds preloaded; the fixed prologue (lookup + three loads) is not
+// interpreted, and the null path returns a sentinel so a failed lookup can never be
+// mistaken for a computed answer.
+#define GI_MAXPROG 4096
+#define GI_NULL_SENTINEL 0xdead
+#define GI_INPUTS_N 8
+/* Chosen for the boundaries the historical fixes cluster on: zero, small values that stay
+   inside a narrowing bound, the signed 32-bit extremes, and -1 — the divisor that makes
+   the sdiv overflow case reachable. */
+static const uint32_t GI_INPUTS[GI_INPUTS_N] = {
+    0, 1, 7, 0x7fffffff, 0x80000000, 0xffffffff, 0xfffffff9, 0x0000ffff
+};
+
+struct gi_ctx { uint32_t rng; };
+static uint32_t gi_rand(struct gi_ctx *c) {
+    c->rng ^= c->rng << 13; c->rng ^= c->rng >> 17; c->rng ^= c->rng << 5;
+    return c->rng;
+}
+static int gi_pick(struct gi_ctx *c, int n) { return (int)(gi_rand(c) % (unsigned)n); }
+
+/* The body's alphabet, weighted toward the two shapes history says break most often. */
+enum gi_step {
+    GI_LINK,      /* rB = rA — mints the shared id                                  */
+    GI_DELTA,     /* rB += C (alu64) or wB += C (alu32): the ADD_CONST tag           */
+    GI_SELFOP,    /* rA op= rA — dst mutated before delta tracking reads src         */
+    GI_CLEAROP,   /* a non-add/sub op that should clear the link but may leave delta */
+    GI_NARROW,    /* branch on one member; the bound must reach the other            */
+    GI_RELINK,    /* a SECOND link taken from the base after a sync                  */
+    GI_SPILL,     /* spill and refill, sometimes sign-extending the refill           */
+    GI_W32,       /* a 32-bit ALU op — width mis-tracking                            */
+    GI_SHIFT,     /* logical or arithmetic shift, both widths                        */
+    GI_SCMP,      /* a signed compare, 64- or 32-bit, consuming the above            */
+    GI_PAIR,      /* the whole link-then-diverge shape, emitted as one unit           */
+    GI_PIN,       /* make the verifier believe it knows the value EXACTLY              */
+    GI_SDIV,      /* signed div/mod — the interpreter-level UB shape                   */
+    GI_STEP_N
+};
+
+static const char *gi_step_name(enum gi_step s) {
+    switch (s) {
+    case GI_LINK: return "link"; case GI_DELTA: return "delta";
+    case GI_SELFOP: return "selfop"; case GI_CLEAROP: return "clear";
+    case GI_NARROW: return "narrow"; case GI_RELINK: return "relink";
+    case GI_SPILL: return "spill"; case GI_W32: return "w32";
+    case GI_SHIFT: return "shift"; case GI_SCMP: return "scmp";
+    case GI_PAIR: return "pair"; case GI_PIN: return "pin";
+    case GI_SDIV: return "sdiv";
+    default: return "?";
+    }
+}
+
+static void run_gen_intent_family(void) {
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 16; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0) {
+        printf("===PROG genintent#err type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n",
+               errno);
+        return;
+    }
+
+    struct gi_ctx c;
+    c.rng = 0x9e3779b9u;
+    for (int prog = 0; prog < GI_MAXPROG; prog++) {
+        const uint32_t seed = c.rng;
+        struct bpf_insn ins[128];
+        int n = 0, jexit[16], nx = 0;
+        char recipe[160]; recipe[0] = '\0';
+
+        /* ---- fixed prologue: three seeds the verifier must treat as unknown ---- */
+        ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+        ins[n++] = (struct bpf_insn){0};
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+        const int jnull = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);
+        ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_0, 4);
+        ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_9, BPF_REG_0, 8);
+        const int body = n;
+
+        /* ---- generated body: closed-form once r6/r7/r9 are known ---- */
+        const int steps = 3 + gi_pick(&c, 6);
+        int stack_next = -8;
+        for (int s = 0; s < steps; s++) {
+            const enum gi_step st = (enum gi_step)gi_pick(&c, GI_STEP_N);
+            /* Only r6/r7/r9 are seeded by the prologue. Picking r8 read an
+               uninitialised register and cost 207 of the first run's 512 programs a
+               STRUCTURAL rejection — a rejected program teaches the oracle nothing. */
+            static const int REGS[3] = { 6, 7, 9 };
+            const int A = REGS[gi_pick(&c, 3)];
+            int B = REGS[gi_pick(&c, 3)]; if (B == A) B = (A == 6 ? 7 : 6);
+            const int K = 1 + gi_pick(&c, 15);
+            switch (st) {
+            case GI_LINK:
+                ins[n++] = BPF_MOV64_REG(B, A);
+                break;
+            case GI_DELTA:
+                if (gi_pick(&c, 2)) ins[n++] = BPF_ALU64_IMM(BPF_ADD, B, K);
+                else                ins[n++] = BPF_ALU32_IMM(BPF_ADD, B, K);
+                break;
+            case GI_SELFOP: {
+                static const int ops[] = { BPF_ADD, BPF_SUB, BPF_XOR, BPF_OR };
+                ins[n++] = BPF_ALU64_REG(ops[gi_pick(&c, 4)], A, A);
+                break;
+            }
+            case GI_CLEAROP: {
+                static const int ops[] = { BPF_XOR, BPF_OR, BPF_AND, BPF_MUL };
+                ins[n++] = BPF_ALU64_IMM(ops[gi_pick(&c, 4)], B, K);
+                break;
+            }
+            case GI_NARROW:
+                jexit[nx++] = n;
+                ins[n++] = BPF_JMP_IMM(BPF_JGT, B, K, 0);
+                break;
+            case GI_RELINK:
+                ins[n++] = BPF_MOV64_REG(9, A);
+                break;
+            case GI_SPILL: {
+                if (stack_next > -200) stack_next -= 8;
+                ins[n++] = BPF_STX_MEM(BPF_DW, BPF_REG_10, A, stack_next);
+                if (gi_pick(&c, 3) == 0)
+                    /* a sign-extending refill of the same slot: the 2026-07 shape */
+                    ins[n++] = (struct bpf_insn){.code = BPF_LDX | BPF_MEMSX | BPF_W,
+                                                 .dst_reg = A, .src_reg = BPF_REG_10,
+                                                 .off = (short)stack_next, .imm = 0};
+                else
+                    ins[n++] = BPF_LDX_MEM(BPF_DW, A, BPF_REG_10, stack_next);
+                break;
+            }
+            case GI_W32: {
+                static const int ops[] = { BPF_ADD, BPF_SUB, BPF_MUL, BPF_AND, BPF_OR, BPF_XOR };
+                ins[n++] = BPF_ALU32_IMM(ops[gi_pick(&c, 6)], A, K);
+                break;
+            }
+            case GI_SHIFT: {
+                const int sh = 1 + gi_pick(&c, 31);
+                switch (gi_pick(&c, 4)) {
+                case 0: ins[n++] = BPF_ALU64_IMM(BPF_LSH, A, sh); break;
+                case 1: ins[n++] = BPF_ALU64_IMM(BPF_RSH, A, sh); break;
+                case 2: ins[n++] = BPF_ALU64_IMM(BPF_ARSH, A, sh); break;
+                default: ins[n++] = BPF_ALU32_IMM(BPF_ARSH, A, sh); break;
+                }
+                break;
+            }
+            case GI_SCMP: {
+                jexit[nx++] = n;
+                if (gi_pick(&c, 2)) ins[n++] = BPF_JMP_IMM(BPF_JSLT, A, K, 0);
+                else                ins[n++] = BPF_JMP32_IMM(BPF_JSLT, A, K, 0);
+                break;
+            }
+            case GI_SDIV: {
+                /* SUBCLASS B, where the JIT or interpreter disagrees with the ISA rather
+                   than with the verifier. `c77b30bd1dcb` (2026-03) is the live example:
+                   ___bpf_prog_run's sdiv32/smod32 called abs() on an s32, and abs(S32_MIN)
+                   is UB that returns S32_MIN unchanged on x86 and arm64, corrupting the
+                   quotient. The divisor is a register so the verifier must insert its
+                   guard rewrites, and one of the seeds is 0xffffffff — which is -1 in the
+                   32-bit view, exactly the operand that makes the overflow case reachable. */
+                const int cls = gi_pick(&c, 2) ? BPF_ALU64 : BPF_ALU;
+                const int op = gi_pick(&c, 2) ? BPF_DIV : BPF_MOD;
+                ins[n++] = (struct bpf_insn){.code = cls | BPF_X | op, .dst_reg = A,
+                                             .src_reg = B, .off = 1, .imm = 0};
+                break;
+            }
+            case GI_PIN: {
+                /* THE CONDITION SUBCLASS-A NEEDS. A divergence of the 811c363645b3 kind
+                   arises only when the verifier believes a value is a known CONSTANT and
+                   therefore resolves a branch statically — at which point
+                   bpf_opt_hard_wire_dead_code_branches() removes the other side and the
+                   run can no longer contradict the belief. With map-seeded unknowns alone
+                   the verifier never reaches that state, so nothing of that class could
+                   ever appear. This step manufactures it two ways: a 64-bit immediate
+                   spilled and reloaded (811c's own shape), or a value narrowed to a single
+                   point by a pair of branches. */
+                if (gi_pick(&c, 2)) {
+                    if (stack_next > -200) stack_next -= 8;
+                    const int imm = (gi_pick(&c, 2) ? -1 : 1) * (1 + gi_pick(&c, 64));
+                    ins[n++] = BPF_ST_MEM(BPF_DW, BPF_REG_10, stack_next, imm);
+                    ins[n++] = BPF_LDX_MEM(BPF_DW, A, BPF_REG_10, stack_next);
+                } else {
+                    jexit[nx++] = n;
+                    ins[n++] = BPF_JMP_IMM(BPF_JNE, A, K, 0);   /* A is now exactly K */
+                }
+                break;
+            }
+            case GI_PAIR: {
+                /* THE AIMED SHAPE, as one unit. Drawing link, delta and narrow
+                   independently produced the sequence in 2 of 305 accepted programs on the
+                   first run — the same trap `relink` avoided in 0069: which register a
+                   separate narrow step picks is random, so the shape essentially never
+                   assembles. Here one register is threaded through the whole thing.
+                     base  = A            the class base
+                     other = B            takes the shared id, then a constant delta
+                   with an optional operation in between that SHOULD clear the link, and a
+                   second link off the base afterwards — the three axes the 2026 fixes are
+                   clustered on. */
+                const int base = A, other = B;
+                ins[n++] = BPF_MOV64_REG(other, base);
+                if (gi_pick(&c, 2)) ins[n++] = BPF_ALU64_IMM(BPF_ADD, other, K);
+                else                ins[n++] = BPF_ALU32_IMM(BPF_ADD, other, K);
+                switch (gi_pick(&c, 4)) {
+                case 0: break;                                              /* nothing   */
+                case 1: ins[n++] = BPF_ALU64_REG(BPF_ADD, base, base); break; /* self-op */
+                case 2: ins[n++] = BPF_ALU64_IMM(BPF_XOR, other, K); break;   /* clear   */
+                case 3: ins[n++] = BPF_MOV64_REG(9, base); break;             /* relink  */
+                }
+                /* Narrow the OTHER member; the bound must reach the base through the id. */
+                jexit[nx++] = n;
+                ins[n++] = BPF_JMP_IMM(BPF_JGT, other, K + 8, 0);
+                /* ...and USE the base, so a bound that failed to propagate shows up. */
+                ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_6, base);
+                break;
+            }
+            default: break;
+            }
+            strncat(recipe, gi_step_name(st), sizeof(recipe) - strlen(recipe) - 2);
+            strncat(recipe, ",", sizeof(recipe) - strlen(recipe) - 2);
+        }
+
+        /* ---- tail: return one half of the accumulated value ----
+           Every in-body branch lands HERE, not on the sentinel. On the first run 727 of
+           1830 samples took a narrowing branch straight to a constant, so they agreed with
+           the reference while observing nothing about the computation — a denominator
+           inflated with samples that could not have disagreed. Only the map-null path,
+           which must stay distinguishable from any computed answer, keeps the sentinel. */
+        const int tail = n;
+        const int hi = gi_pick(&c, 2);
+        if (hi) ins[n++] = BPF_ALU64_IMM(BPF_RSH, BPF_REG_6, 32);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_0, BPF_REG_6);
+        ins[n++] = BPF_EXIT_INSN();
+        const int exit_sentinel = n;
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, GI_NULL_SENTINEL);
+        ins[n++] = BPF_EXIT_INSN();
+        for (int i = 0; i < nx; i++) ins[jexit[i]].off = tail - jexit[i] - 1;
+        ins[jnull].off = exit_sentinel - jnull - 1;
+
+        g_log[0] = '\0';
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 2;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        int lerr = errno;
+
+        printf("===PROG genintent#s%08x#%03d type=socket_filter ===\n", seed, prog);
+        printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+               fd >= 0 ? "accept" : "reject", fd >= 0 ? 1 : -1, fd >= 0 ? 0 : lerr);
+        /* The programs branch, so their exit is reached along several paths — which is
+           the precondition the verifier-referenced retval oracle needs and does not have.
+           Declared here rather than inferred there. */
+        printf("EXPECT paths=multi\n");
+        printf("INTENT seed=0x%08x insns=%d body=%d recipe=%s hi=%d\n",
+               seed, n, body, recipe, hi);
+
+        if (fd >= 0) {
+            for (int i = 0; i < GI_INPUTS_N; i++) {
+                const uint32_t in = GI_INPUTS[i];
+                uint32_t val[4] = { in, in ^ 0x5a5a5a5au, in + 3, 0 };
+                if (rt_map_set_bytes(map_in, 0, (const unsigned char *)val) < 0) {
+                    printf("RUNTIME input=0x%08x error=1 testrun_errno=0 map_err=1\n", in);
+                    continue;
+                }
+                /* The reference: bpfref starts at the BODY with the seeds this harness
+                   just wrote, and interprets the emitted bytes from there. */
+                struct bpfref_result ref = bpfref_run_seeded(ins, n, body, val[0], val[1], val[2]);
+
+                static char pin[64], pout[64];
+                union bpf_attr t;
+                memset(&t, 0, sizeof(t));
+                t.test.prog_fd = fd;
+                t.test.data_in = (uint64_t)(unsigned long)pin;
+                t.test.data_out = (uint64_t)(unsigned long)pout;
+                t.test.data_size_in = sizeof(pin);
+                t.test.data_size_out = sizeof(pout);
+                t.test.repeat = 1;
+                if (bpf(BPF_PROG_TEST_RUN, &t, sizeof(t)) < 0) {
+                    printf("RUNTIME input=0x%08x error=1 testrun_errno=%d\n", in, errno);
+                    continue;
+                }
+                /* No claim is printed when the reference could not model the body — an
+                   absent expectation is honest; a guessed one would be a false finding. */
+                if (ref.status == BPFREF_OK)
+                    printf("RUNTIME input=0x%08x retval=0x%08x intended_retval=%u"
+                           " ref_status=ok\n",
+                           in, t.test.retval, (unsigned)(uint32_t)ref.retval);
+                else
+                    printf("RUNTIME input=0x%08x retval=0x%08x ref_status=%s ref_pc=%d\n",
+                           in, t.test.retval, bpfref_status_name(ref.status), ref.fault_pc);
+            }
+            close(fd);
+        }
+        printf("---LOG---\n%s\n---END---\n", g_log);
+    }
+    close(map_in);
+}
+
 // ---- reference-interpreter calibration (--probe-ref) ------------------------
 // bpfref.h is a second implementation of the ISA, written so the intent oracle has a
 // reference that never consults the kernel. A second implementation is only worth having
@@ -7107,6 +7434,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-ref") == 0) {
         run_probe_ref();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--gen-intent") == 0) {
+        run_gen_intent_family();
         return 0;
     }
 

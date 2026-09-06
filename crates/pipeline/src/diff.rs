@@ -1139,6 +1139,15 @@ fn check_runtime_ground_truth(
     out: &mut Vec<DivergenceFinding>,
     checked: &mut u64,
 ) {
+    // PRECONDITION. This oracle's reference is the union of the r0 states the verifier
+    // PRINTED, and the verifier prints a state only where it scratches registers. On a
+    // program that reaches its exit along several paths the printed set is a strict subset
+    // of what was proved, so the union is narrower than the real claim and a sound program
+    // gets reported. A generator that knows its programs are multi-path says so, exactly as
+    // it declares its STORE site — the same provenance rule, applied to a different fact.
+    if record.core.multi_path == Some(true) {
+        return;
+    }
     if record.core.runtime_samples.is_empty() {
         return;
     }
@@ -1156,10 +1165,29 @@ fn check_runtime_ground_truth(
             last_insn = last_insn.max(snap.insn_idx);
             umin = umin.min(reg.umin);
             umax = umax.max(reg.umax);
-            if let (Some(a), Some(b)) = (reg.u32_min, reg.u32_max) {
-                have32 = true;
-                u32lo = u32lo.min(a);
-                u32hi = u32hi.max(b);
+            // THE ABSENCE CONVENTION, IN A UNION. A bound the verifier did not print is
+            // at its EXTREME, so a path whose 32-bit view was omitted has the FULL 32-bit
+            // range — and a union containing it is the full range. Abstaining instead (as
+            // this did) makes the union NARROWER than the truth, which is how a perfectly
+            // sound program gets reported.
+            //
+            // Found by --gen-intent (0074), whose programs reach one exit along several
+            // paths: the verifier printed `umin32=6,umax32=0x7fffffff` on one and nothing
+            // at all on the other three, and the union of one path was used to judge the
+            // return values of all four. Seventh time an absence has been misread — 0041
+            // and 0050 were the same convention inside a single state; this is the first
+            // time it hid in the combination of several.
+            match (reg.u32_min, reg.u32_max) {
+                (Some(a), Some(b)) => {
+                    have32 = true;
+                    u32lo = u32lo.min(a);
+                    u32hi = u32hi.max(b);
+                }
+                _ => {
+                    have32 = true;
+                    u32lo = 0;
+                    u32hi = u32::MAX as u64;
+                }
             }
         }
     }
@@ -1413,6 +1441,7 @@ mod tests {
                 helper_arg_observations: Vec::new(),
                 runtime_samples: Vec::new(),
                 intended_retval: None,
+                multi_path: None,
                 store_site: None,
                 prune_probe: None,
                 helper_arg_violations: Vec::new(),
@@ -1588,12 +1617,13 @@ fn check_runtime_intent(
     out: &mut Vec<DivergenceFinding>,
     checked: &mut u64,
 ) {
-    let intended = match record.core.intended_retval {
-        Some(v) => v,
-        None => return,
-    };
     // A rejected program never ran, so there is nothing to compare it against.
     if !matches!(record.core.verifier_decision, VerifierDecision::Accept) {
+        return;
+    }
+    if record.core.intended_retval.is_none()
+        && !record.core.runtime_samples.iter().any(|s| s.intended_retval.is_some())
+    {
         return;
     }
     for s in &record.core.runtime_samples {
@@ -1603,6 +1633,12 @@ fn check_runtime_intent(
         if s.error || s.executed == Some(false) || !s.retval_observed {
             continue;
         }
+        // A per-sample claim wins over the record-level one: a family that sweeps inputs
+        // has a different answer per input.
+        let intended = match s.intended_retval.or(record.core.intended_retval) {
+            Some(v) => v,
+            None => continue,
+        };
         *checked += 1;
         if s.retval != intended {
             out.push(DivergenceFinding {

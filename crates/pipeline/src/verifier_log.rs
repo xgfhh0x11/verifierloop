@@ -162,6 +162,11 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
         helper_arg_violations: Vec::new(),        // legacy synthetic path
         runtime_samples: parse_runtime_samples(&runtime_lines),
         intended_retval: expect_line.and_then(parse_intended_retval),
+        multi_path: expect_line.and_then(|l| {
+            l.split_whitespace()
+                .find_map(|t| t.strip_prefix("paths="))
+                .map(|v| v.trim() == "multi")
+        }),
         store_site: store_line.and_then(parse_store_site),
         prune_probe: prune_line.and_then(parse_prune_probe),
     };
@@ -220,6 +225,7 @@ fn parse_runtime_samples(lines: &[&str]) -> Vec<metrics::core::RuntimeSample> {
         let mut store_len: Option<i64> = None;
         let mut store_size: Option<i64> = None;
         let mut executed: Option<bool> = None;
+        let mut intended: Option<u64> = None;
         let mut error = false;
         for tok in l.split_whitespace() {
             if let Some(v) = tok.strip_prefix("input=") {
@@ -242,6 +248,11 @@ fn parse_runtime_samples(lines: &[&str]) -> Vec<metrics::core::RuntimeSample> {
             } else if let Some(v) = tok.strip_prefix("executed=") {
                 // --gen-loc: did this run reach the store at all? (branch-bounded arm)
                 executed = v.trim().parse::<i64>().ok().map(|n| n != 0);
+            } else if let Some(v) = tok.strip_prefix("intended_retval=") {
+                // The generator's per-input claim. Parsed BEFORE the `retval=` arm would
+                // ever see it, and it cannot collide anyway: these are whole tokens matched
+                // by prefix, and "intended_retval=" does not start with "retval=".
+                intended = parse_u(v);
             } else if tok.starts_with("error=") {
                 error = true;
             }
@@ -253,6 +264,7 @@ fn parse_runtime_samples(lines: &[&str]) -> Vec<metrics::core::RuntimeSample> {
                 input: i,
                 retval: retval.unwrap_or(0),
                 retval_observed: retval.is_some(),
+                intended_retval: intended,
                 store_off,
                 store_len,
                 store_size,

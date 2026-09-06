@@ -191,6 +191,22 @@ pub struct CoreMetrics {
     /// expectation would be worse than none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intended_retval: Option<u64>,
+    /// Whether the program reaches its exit along MORE THAN ONE path, declared by the
+    /// generator.
+    ///
+    /// It decides whether one oracle's precondition holds. `check_runtime_ground_truth`
+    /// compares an observed return value against the union of the r0 states the verifier
+    /// PRINTED — but the verifier prints a state only when it scratches registers, and on
+    /// a multi-path program the printed set is a strict SUBSET of what it proved. The
+    /// union is then narrower than the real claim, and a perfectly sound program is
+    /// reported. Measured on --gen-intent (0074): one program's log carried a single
+    /// `R0=0xffffffff` for the path it annotated, while the runtime legitimately returned
+    /// 0 along another.
+    ///
+    /// `None` keeps the historical behaviour, so the single-path families this oracle was
+    /// built for are unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multi_path: Option<bool>,
     /// Where the program's store instruction is, declared by the GENERATOR that
     /// built the program (not read out of the verifier log). Knowing which
     /// instruction stores, and through which register, is a fact about the program
@@ -242,6 +258,13 @@ pub struct RuntimeSample {
     /// check that consumes `retval` must gate on this flag.
     #[serde(default)]
     pub retval_observed: bool,
+    /// What THIS sample's input should produce, when the generator can say so per-input.
+    ///
+    /// The record-level `CoreMetrics::intended_retval` covers a program with one answer;
+    /// a family that sweeps inputs has a different answer per input, so the claim belongs
+    /// on the sample. When both are present this one wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intended_retval: Option<u64>,
     /// For a STORE program: the offset inside the map value where the sentinel
     /// actually landed, or `Some(-1)` if it was absent (the store went out of the
     /// readable value — an OOB write). `None` for return-value samples.

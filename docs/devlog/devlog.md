@@ -5697,3 +5697,68 @@ birbirinden ayrışıyor (aynı cevabı veren bir süit hiçbir şey test etmezd
 Workspace 320 yeşil. Sıradaki: bu referansı hacme çıkaran kapalı-form jeneratör, ajanın
 tarihsel verimlilik sıralamasındaki 1 numaralı şekle nişanlı — **link-then-diverge**, ki
 `relink` parçası olarak zaten elimizde.
+
+---
+
+## 0074 — Nişan alınmış kapalı-form aile: 32768 karşılaştırma, sıfır uyuşmazlık — ve iki oracle hatası daha
+
+### 1. Ne kuruldu
+
+`--gen-intent`: verifier'a hiç danışmayan bir oracle tarafından yargılanan ilk korpus. Her
+programın dönüş değerini `bpfref.h` hesaplıyor (0073'te 16 tuzakta kalibre edilmiş bağımsız
+ISA uygulaması), kernel'in JIT'inin gerçekte döndürdüğüyle karşılaştırılıyor.
+
+**Kapalı-form bize, bilinmez verifier'a.** Saf sabitler aralık izleyicisine yanlış yapacak
+bir şey bırakmazdı; o yüzden tohum skalerler harness'ın az önce yazdığı bir map'ten geliyor.
+`bpfref` gövdeden başlıyor, lookup yapan sabit prologue modellenmiyor — **atlanıyor**.
+
+Şekiller ajan taramasının tarihsel verimlilik sıralamasından: link-then-diverge, 32-bit
+genişlik/işaret hatasının işaretli karşılaştırmaya beslenmesi, sabit-sabitleme, signed
+div/mod.
+
+### 2. Üç iterasyon, hepsi ölçümle
+
+**İlk koşu:** 512 programın 207'si **yapısal** reddedildi (`Initialize R<N>`) — prologue
+r6/r7/r9 tohumluyor ama adımlar r8'i seçebiliyordu. Ve 1830 örneğin 727'si erken dallanıp
+sabit döndürüyordu: uyuşan ama hiçbir şey gözlemlemeyen örnekler. Ayrıca nişan aldığım
+şekil 305 kabul programın **2'sinde** oluşmuştu — adımları bağımsız çekmek, 0069'da
+`relink`'in kaçındığı tuzağın aynısı. Aynı hatayı ikinci kez yaptım.
+
+**İkinci koşu:** 512/512 kabul, sıfır boşa örnek. Ama bir tasarım eksiği kaldı: 811c
+sınıfı bir sapma ancak verifier bir değeri **kesin sabit sandığında** doğar — o zaman dalı
+statik çözer ve dead-code hard-wiring öbür tarafı siler. Map'ten gelen bilinmeyenlerle
+verifier o duruma hiç girmiyordu, yani o sınıf **hiç üretilemiyordu**. `pin` adımı eklendi.
+
+**Tam koşu:** 4096 program, **4096 kabul**, **32768 karşılaştırma**, 767 farklı cevap,
+13 adımın hepsi dengeli, **0 uyuşmazlık**.
+
+### 3. Ama pipeline 39 bulgu verdi — ve ikisi de bizimdi
+
+Yeni oracle sessizdi; ateşleyen **eski** oracle'dı (`runtime_bound_violation`). İki ayrı
+hata çıktı, ikisi de "yeni girdi ailesi devralınmış varsayımı kırıyor".
+
+**(a) Birleşimde okunan yokluk — yedinci kez.** Verifier'ın basmadığı bir sınır kendi
+**ekstremumundadır**, yani 32-bit görünümü basılmamış bir yolun aralığı **tamdır** ve onu
+içeren birleşim de tamdır. Oracle ise o state'i **atlıyordu**, birleşimi gerçeğinden dar
+yapıyordu. Somut vaka: log insn 14'te dört state basıyor, biri `umin32=6,umax32=0x7fffffff`,
+üçü hiç 32-bit alan basmıyor; oracle tek yolun penceresiyle dört yolun dönüş değerlerini
+yargılıyordu. 0041 ve 0050 aynı konvansiyonun **tek bir state içindeki** hâliydi; bu, ilk
+kez **birkaçının birleşiminde** saklanışı. 39 → 26 bulgu.
+
+**(b) Basılan state'ler kanıtlananların alt kümesi.** Verifier state'i yalnız register
+"scratched" olduğunda basıyor, dolayısıyla çıkışına **birden çok yoldan** ulaşan bir
+programda basılan küme kanıtlananın kesin alt kümesi. Birleşim gerçek iddiadan dar kalıyor.
+Somut vaka: bir programın log'unda tek bir `22: (bf) r0 = r6 ; R0=0xffffffff` var — verifier'ın
+şerh düştüğü tek yol — oysa program başka bir yoldan meşru olarak 0 döndürüyor.
+
+Çözüm, jeneratörün `STORE` bildirimiyle aynı provenance kuralı: **program hakkındaki bir
+olguyu jeneratör bildirir, oracle da kendi ön koşulunu denetler.** `EXPECT paths=multi`.
+Tek-yollu aileler (bu oracle'ın kurulduğu `--gen-rt`) etkilenmiyor. 26 → 0.
+
+### 4. Durum
+
+`scripts/run-intent.sh` önce referansı kalibre ediyor ve kalibre değilse **koşuyu iptal
+ediyor** — kalibre olmamış bir enstrümanla avlanmak avlanmamaktan kötüdür.
+
+Bulgu yok. Ama bu "temiz" sayılı: bağımsız bir ISA uygulamasına karşı, tarihsel olarak en
+verimli şekle nişanlı 4096 programda 32768 yürütme, sıfır boşa örnek. Workspace 325 yeşil.
