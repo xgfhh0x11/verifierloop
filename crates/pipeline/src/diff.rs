@@ -1597,9 +1597,10 @@ fn check_runtime_intent(
         return;
     }
     for s in &record.core.runtime_samples {
-        // An errored test_run observed nothing, and a run that never reached the store
-        // (the 0041 witness) says nothing about the return path either.
-        if s.error || s.executed == Some(false) {
+        // An errored test_run observed nothing, a run that never reached the store (the
+        // 0041 witness) says nothing about the return path, and a sample whose family never
+        // printed a `retval=` at all carries a DEFAULT zero rather than an observation.
+        if s.error || s.executed == Some(false) || !s.retval_observed {
             continue;
         }
         *checked += 1;

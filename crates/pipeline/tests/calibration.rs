@@ -834,3 +834,32 @@ fn each_arm_states_its_own_expectation() {
         assert!(pos.contains("retval=0x00000001"));
     }
 }
+
+/// The guard that keeps the intent oracle from firing on an ABSENCE.
+///
+/// Most families print `store_off=` and no `retval=` at all — the store location is their
+/// signal. `RuntimeSample.retval` then holds a DEFAULT zero, indistinguishable from a
+/// program that really returned 0. Comparing that against an expectation of 1 would fire on
+/// every sample of every such family: the same "absence read as an observed zero" that
+/// produced ten false OOB findings in 0041, arriving from a new direction and caught this
+/// time before any capture was taken.
+#[test]
+fn a_sample_with_no_observed_retval_is_not_compared_against_the_expectation() {
+    use pipeline::normalize::RecordParser;
+    use pipeline::verifier_log::VerifierLogParser;
+
+    // A store-only RUNTIME line, the shape most families emit.
+    let block = "===PROG t type=socket_filter ===\n\
+                 RESULT decision=accept fd=1 errno=0 load_ns=0\n\
+                 EXPECT intended_retval=1\n\
+                 RUNTIME input=0x00000000 store_off=7 store_len=1 store_size=1 executed=1\n\
+                 ---LOG---\n\
+                 0: (b7) r0 = 1                        ; R0_w=scalar(imm=1,umin=1,umax=1,var_off=(0x1; 0x0))\n\
+                 ---END---\n";
+    let out = VerifierLogParser.parse("t", block.as_bytes());
+    let rec = out.records.first().expect("one record");
+    let smp = rec.core.runtime_samples.first().expect("one sample");
+    assert!(!smp.retval_observed, "no retval= token was printed");
+    assert_eq!(smp.retval, 0, "the default, which must NOT be read as an observation");
+    assert_eq!(rec.core.intended_retval, Some(1));
+}

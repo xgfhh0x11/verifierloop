@@ -252,6 +252,7 @@ fn parse_runtime_samples(lines: &[&str]) -> Vec<metrics::core::RuntimeSample> {
             out.push(metrics::core::RuntimeSample {
                 input: i,
                 retval: retval.unwrap_or(0),
+                retval_observed: retval.is_some(),
                 store_off,
                 store_len,
                 store_size,

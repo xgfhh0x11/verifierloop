@@ -233,6 +233,15 @@ pub struct RuntimeSample {
     pub input: u64,
     /// The value the program actually returned (retval, low 32 bits).
     pub retval: u64,
+    /// Whether a return value was actually OBSERVED for this sample.
+    ///
+    /// Most families print `store_off=` and no `retval=` at all, because the store
+    /// location is their signal. `retval` then defaults to 0, which is indistinguishable
+    /// from a program that really returned 0 — the same "absence read as an observed zero"
+    /// that produced ten false OOB findings in 0041, arriving from a new direction. Any
+    /// check that consumes `retval` must gate on this flag.
+    #[serde(default)]
+    pub retval_observed: bool,
     /// For a STORE program: the offset inside the map value where the sentinel
     /// actually landed, or `Some(-1)` if it was absent (the store went out of the
     /// readable value — an OOB write). `None` for return-value samples.
