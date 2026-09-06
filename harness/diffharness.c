@@ -3564,7 +3564,11 @@ static void run_probe_uninit(void) {
 #define KCOV_ENABLE     _IO('c', 100)
 #define KCOV_DISABLE    _IO('c', 101)
 #define KCOV_TRACE_PC   0
-#define KCOV_ENTRIES    (1 << 18)
+/* Sized against the LONGEST program the grammar emits, not the average. 0085 lengthened
+   genomes to 6-20 genes and 41 loads in 144k promptly filled a 1<<18 buffer — and a
+   truncated load loses coverage, which looks exactly like a plateau. The guest has room for
+   the larger mapping; the harness's own footprint is a few megabytes either way. */
+#define KCOV_ENTRIES    (1 << 20)
 
 struct kcov_ctx { int fd; unsigned long *area; };
 
@@ -3800,7 +3804,12 @@ static int gi_set_jit(int v) {
    mutable and reproducible: the coverage-guided loop keeps genomes, perturbs them, and can
    replay any of them exactly. It also keeps every mutant inside the typed grammar, so a
    mutation cannot produce a malformed program the way byte-level mutation would. */
-#define GI_MAXGENES 12
+/* LONGER PROGRAMS, because that is what makes the verifier CHECKPOINT. is_state_visited
+   only records a state when `jmps_processed - prev >= 2 && insn_processed - prev >= 8`
+   (kernel/bpf/states.c), so a short program with a couple of branches produces almost no
+   checkpoints — which is exactly why the measured depth was avgstates=1 and the pruning
+   differential was comparing nothing. The lever is not loops but LENGTH times BRANCHES. */
+#define GI_MAXGENES 24
 struct gi_gene { uint8_t st, a, b, k, opt; };
 struct gi_genome { uint8_t n, hi; struct gi_gene g[GI_MAXGENES]; };
 
@@ -3812,7 +3821,7 @@ static void gi_gene_random(struct gi_ctx *c, struct gi_gene *g) {
     g->opt = (uint8_t)gi_pick(c, 64);
 }
 static void gi_genome_random(struct gi_ctx *c, struct gi_genome *G) {
-    G->n = (uint8_t)(3 + gi_pick(c, 6));
+    G->n = (uint8_t)(6 + gi_pick(c, 15));
     G->hi = (uint8_t)gi_pick(c, 2);
     for (int i = 0; i < G->n; i++) gi_gene_random(c, &G->g[i]);
 }
@@ -4114,8 +4123,8 @@ static void run_gen_intent_family(void) {
     c.rng = 0x9e3779b9u;
     for (int prog = 0; prog < GI_MAXPROG; prog++) {
         const uint32_t seed = c.rng;
-        struct bpf_insn ins[128];
-        int n = 0, jexit[16], nx = 0;
+        struct bpf_insn ins[320];
+        int n = 0, jexit[2 * GI_MAXGENES + 8], nx = 0;
         char recipe[160]; recipe[0] = '\0';
 
         /* ---- fixed prologue: three seeds the verifier must treat as unknown ---- */
@@ -4309,7 +4318,7 @@ static void fz_mutate(struct gi_ctx *c, const struct gi_genome *src, struct gi_g
                     dst->n++;
                 }
                 break;
-        case 1: if (dst->n > 3) {               /* delete */
+        case 1: if (dst->n > 6) {               /* delete */
                     int at = gi_pick(c, dst->n);
                     for (int j = at; j + 1 < dst->n; j++) dst->g[j] = dst->g[j + 1];
                     dst->n--;
@@ -4368,6 +4377,7 @@ static void run_fuzz(int seconds) {
     unsigned long truncated = 0, prune_flips = 0, inv_faults = 0;
     unsigned long prune_pairs = 0, prune_artifacts = 0;
     unsigned long max_base_states = 0, max_freq_states = 0, sum_base_states = 0;
+    unsigned long inv_checked = 0;
 
     printf("FUZZ start budget=%ds corpus_max=%d\n", seconds, FZ_CORPUS_MAX);
     while (time(NULL) - t0 < seconds) {
@@ -4377,7 +4387,7 @@ static void run_fuzz(int seconds) {
         else
             gi_genome_random(&c, &G);
 
-        struct bpf_insn ins[192];
+        struct bpf_insn ins[320];
         int n = 0, jexit[2 * GI_MAXGENES + 8], nx = 0;
         ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
         ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
@@ -4502,12 +4512,19 @@ static void run_fuzz(int seconds) {
                     printf("\n");
                 }
 
+                /* THE SAME DENOMINATOR RULE, applied to the channel that still lacked
+                   one. The invariant load only says anything when the BASE load accepted:
+                   a program the verifier rejected outright never reached the state whose
+                   consistency is in question, so counting it would make `invfault=0` read
+                   as evidence about programs that were never examined. This is exactly the
+                   gap 0083 closed for the pruning differential, still open here. */
                 union bpf_attr a3 = attr;
                 a3.prog_flags = BPF_F_TEST_REG_INVARIANTS;
                 a3.log_level = 0; a3.log_size = 0; a3.log_buf = 0;
                 int fdi = bpf(BPF_PROG_LOAD, &a3, sizeof(a3));
                 int ierr = errno;
                 if (fdi >= 0) close(fdi);
+                if (fd >= 0) inv_checked++;
                 if (fd >= 0 && fdi < 0 && ierr == EFAULT) {
                     inv_faults++;
                     printf("FINDING kind=reg_invariants_violation iter=%lu ", iters);
@@ -4576,16 +4593,33 @@ static void run_fuzz(int seconds) {
 
         if ((iters % 2000) == 0)
             printf("STATUS iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invfault=%lu elapsed=%lds\n",
+                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu elapsed=%lds\n",
                    iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
                    truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
-                   max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_faults, (long)(time(NULL) - t0));
+                   max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, (long)(time(NULL) - t0));
+    }
+    /* THE PC SET ITSELF, so the coverage number can become a FRACTION. 5406 distinct PCs
+       is uninterpretable on its own: CONFIG_KCOV_INSTRUMENT_ALL means the list includes the
+       syscall path, the allocator and everything else a load touches, and we have no
+       denominator for the verifier's own size. Dumping the addresses lets a host-side
+       script split them against vmlinux's symbol ranges. Packed several per line to keep a
+       long run's output bounded. */
+    {
+        unsigned printed = 0;
+        for (unsigned i = 0; i < KSEEN_N; i++) {
+            if (!g_kseen[i]) continue;
+            if ((printed % 8) == 0) printf("PCSET");
+            printf(" %lx", g_kseen[i]);
+            if ((++printed % 8) == 0) printf("\n");
+        }
+        if (printed % 8) printf("\n");
+        printf("PCSET total=%u\n", printed);
     }
     printf("FUZZ done iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invfault=%lu elapsed=%lds\n",
+           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu elapsed=%lds\n",
            iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
            truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
-           max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_faults, (long)(time(NULL) - t0));
+           max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, (long)(time(NULL) - t0));
     free(corpus);
     free(g_kseen);
     close(map_in);

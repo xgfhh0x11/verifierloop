@@ -56,7 +56,12 @@ BZ="arch/x86/boot/bzImage"
 
 mkdir -p "$LAB/build"
 mkdir -p "$(dirname "$OUT")"; cp "$BZ" "$OUT"
-if [ -n "${EXTRA_FRAG:-}" ]; then
+# THE SHARED ARTEFACTS BELONG TO THE DEFAULT BUILD ONLY, and the test is the OUTPUT PATH,
+# not the presence of a config fragment. 0079 added this guard keyed on EXTRA_FRAG, and it
+# was not enough: the buggy-kernel builds pass only SRC and OUT, so they took the else
+# branch and silently replaced .lab/build/vmlinux with a 2023 tree's. Nothing noticed until
+# a coverage symbolization needed it. Keying on OUT covers every variant, however invoked.
+if [ "$OUT" != "$LAB/build/bzImage" ]; then
   # A variant must not overwrite the main kernel's vmlinux/config: those are what every
   # other script reads, and a silently swapped config is the worst kind of stale artifact.
   cp .config "${OUT}.config"
@@ -75,7 +80,7 @@ else
 fi
 echo "[build] bzImage  -> $OUT ($(du -h "$BZ" | cut -f1))"
 echo "[build] vmlinux  -> $LAB/build/vmlinux"
-if [ -n "${EXTRA_FRAG:-}" ]; then
+if [ "$OUT" != "$LAB/build/bzImage" ]; then
   echo "[build] config   -> ${OUT}.config  (variant; the shared config was left alone)"
 else
   echo "[build] config   -> $LAB/build/kernel.config"

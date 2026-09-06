@@ -6159,3 +6159,75 @@ etmemişti çünkü yanlış değişkeni kısıyordum.
 biliyoruz — ve test bunu bir eşik olarak taşıyor, böylece gramer sığlaşırsa görünür oluyor.
 
 Workspace 338 yeşil.
+
+---
+
+## 0085 — Üç ölçüm boşluğu: sayılmayan invariant, sığ arama, ve yanlış vmlinux
+
+### 1. `BPF_F_TEST_REG_INVARIANTS` kaç kez sorulmuştu? Bilmiyorduk
+
+0083 kernel'in kendi sınır assert'ini üçüncü oracle olarak koştu ve `invfault=0` bildirdi.
+Ama o sıfırın **paydası yoktu.** Bayraklı yükleme reddedilirse — ki gramerin %23'ü
+reddediliyor — assert hiç çalışmaz, ve `invfault=0` "sordum, temiz" ile "hiç sormadım"
+arasında ayrım yapmaz. Bu, 0026'dan beri dördüncü paydasız-invariant vakası.
+
+`inv_checked`, temel yükleme kabul edildiğinde (yani assert'in gerçekten koşabildiği
+durumda) artıyor:
+
+```
+invchecked=16144 invfault=0
+```
+
+Artık sıfır 16 bin sorunun cevabı.
+
+### 2. Aramanın derinliği: checkpoint kuralını okumak
+
+0084 `avgstates=2`'yi mütevazı bulmuştu. Sebebini tahmin etmek yerine `kernel/bpf/states.c`
+içindeki kuralı okudum:
+
+```c
+add_new_state = force_new_state;
+if (jmps_processed - prev_jmps_processed >= 2 &&
+    insn_processed - prev_insn_processed >= 8)
+        add_new_state = true;
+```
+
+Yani checkpoint için **hem iki atlama hem sekiz instruction** gerekiyor. Bizim genomumuz
+en fazla 12 gendi — çoğu program eşiğe hiç ulaşmıyordu. Bu bir oracle sorunu değil, bir
+**uzunluk** sorunu.
+
+`GI_MAXGENES` 12 → 24, genom boyu `6 + rand(15)`, instruction dizileri 128/192 → 320,
+mutasyon silme tabanı 3 → 6.
+
+| | 0084 | 0085 |
+|---|---|---|
+| `avgstates` | 2 | **3** |
+| `maxstates` (base/freq) | 9/34 | **17/61** |
+| kapsama | 5406 | **5443** |
+| iterasyon | 250k | 140k |
+
+Uzun programlar daha yavaş doğrulanıyor; derinlik zaten amaçtı. Testteki iş hacmi tabanı
+ve `prunepairs` eşiği bu yüzden **bilerek** aşağı taşındı — ve onları anlamsızlaşmaktan
+koruyan şey, aynı dosyadaki derinlik assert'leri.
+
+Uzatmanın ilk sonucu bir **kesilme** oldu: `trunc=41`. KCOV tamponu (1<<18) artık bir
+programın PC izini almıyordu, yani kapsama sayısı sessizce eksik ölçülüyordu.
+`KCOV_ENTRIES` 1<<20 → `trunc=0`.
+
+### 3. Ve `vmlinux` yanlış kernel'di
+
+Kapsamayı sembolize etmeye hazırlanırken `.lab/build/vmlinux`'un **6.6.0-10112-g05670f81d128**
+olduğunu gördüm — 2023 tarihli buggy3 ağacı. 0079 paylaşılan artefaktları koruyan guard'ı
+`EXTRA_FRAG` üzerinden kurmuştu; buggy kernel build'leri yalnızca `SRC`/`OUT` geçiyor, yani
+guard'ın altından geçiyorlardı.
+
+Ölçümler etkilenmedi — VM doğru `bzImage`'ı koşuyor — sadece sembolizasyon bloke olmuştu.
+Guard artık `OUT` üzerinden anahtarlanıyor; her varyantı, nasıl çağrılırsa çağrılsın
+kapsıyor. Ana kernel yeniden derlendi: `7.2.0-gdffc1150e2cc`.
+
+Ders yine aynı: **bir guard'ı gözlemlenen sebebe göre değil, korunacak şeye göre anahtarla.**
+
+### 4. Sonuç
+
+140k iterasyon, 677k karşılaştırma, dört oracle'dan **0 bulgu**, kapsama 5443 (en yüksek),
+`trunc=0`, `invchecked=16144`. Workspace 338 yeşil.

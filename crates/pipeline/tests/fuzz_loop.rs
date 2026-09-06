@@ -161,8 +161,12 @@ fn the_expensive_oracles_run_and_cost_little() {
     // verdicts from identical explorations prove nothing about pruning. Without this,
     // `pruneflip=0` would mean "0 out of 0" while reading exactly like "0 out of many" —
     // the 0025 trap, arriving in the newest instrument.
+    // The threshold falls as programs get longer and slower to verify — 43k pairs at 8-gene
+    // genomes, 17k at 6-20. Fewer pairs, but each one is a deeper exploration: the point of
+    // 0085 was that a large count of trivial comparisons is worth less than a smaller count
+    // of real ones.
     assert!(
-        field(last, "prunepairs=") > 20_000,
+        field(last, "prunepairs=") > 10_000,
         "the pruning differential must actually be evaluated, not merely reported: {}",
         field(last, "prunepairs=")
     );
@@ -179,8 +183,10 @@ fn the_expensive_oracles_run_and_cost_little() {
     // and 0084's loops make some programs genuinely more expensive to VERIFY — deeper
     // exploration is the point, and it is not free. Recorded as a floor rather than a
     // target: 511k with no extra oracles, 202k ungated, 424k gated, 250k once the grammar
-    // could loop.
-    assert!(iters > 200_000, "the gating did not recover throughput: {iters}");
+    // could loop, 140k once 0085 raised the genome to 6-20 genes. Every drop here bought
+    // depth (avgstates 1 -> 3, maxstates 8 -> 46); the floor moves DOWN deliberately, and
+    // it is the depth assertions above that stop this from becoming a licence to be slow.
+    assert!(iters > 100_000, "the gating did not recover throughput: {iters}");
 }
 
 /// A NON-ZERO DENOMINATOR IS NOT ENOUGH IF THE COMPARISONS ARE TRIVIAL (devlog 0084).
