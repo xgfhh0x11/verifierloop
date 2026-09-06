@@ -5625,3 +5625,75 @@ bedavaya kullanabilir; kompozisyon jeneratörü için ise iddia ancak tarif kapa
 kaldığı sürece kurulabilir — bir sonraki bacağın sorusu bu.
 
 Workspace 316 yeşil.
+
+---
+
+## 0073 — Bağımsız referans interpreter, ve onun kalibrasyonu
+
+### 1. Neden
+
+0070'in ölçtüğü sınır yapısaldı: bu projedeki her oracle'ın referansı **kernel'in kendisi**.
+Verifier kendi içinde tutarlı biçimde yanılırsa ve
+`bpf_opt_hard_wire_dead_code_branches()` o inancı yayılan koda gömerse, ailenin tamamı
+sessiz kalıyor. Çıkış yolu tek: ISA'nın **ikinci bir uygulaması**.
+
+Ajan raporu bu sınıfın nadir olmadığını gösterdi: 11 yılda 13 sağlam örnek, ama **son 34
+ayda 6 tanesi, dördü tek bir ayda (Nisan 2026)**, en yenisi 29 günlük. İkisinin commit
+mesajında birebir *"verifier-vs-runtime mismatch"* geçiyor. 2019-2023 kohortunun tamamı
+**tek bir fuzzer** tarafından, **saf kapalı-form skaler programlarda** bulunmuş — yani şekil
+yönlendirilmiş bir jeneratörle erişilebilir.
+
+### 2. `harness/bpfref.h`
+
+Emitlenen `struct bpf_insn` dizisini yorumluyor — **jeneratörün niyetini değil**. İki kural:
+emitter'larla hiç kod paylaşmıyor, ve tek girdisi komut akışı. Jeneratör kastettiğinden
+başka bir şey emitlerse, interpreter baytları izler.
+
+Kapsam: ALU/ALU64 (K ve X), MOV/MOVSX, JMP/JMP32, LD_IMM64, stack LDX/STX/ST (MEMSX dahil),
+EXIT. Dışındaki her şey tahmin edilmiyor, `UNSUPPORTED` diye bildiriliyor.
+
+### 3. Ve kalibrasyonu — asıl mesele
+
+**İkinci bir uygulama ancak birincinin haklı olduğu her yerde onunla uyuşuyorsa değerlidir.
+Yanlış bir ikinci uygulama her programı yanlış bulguya çevirir.** O yüzden yargılamadan
+önce yargılandı: saf bir uygulamanın saptığı 16 nokta program olarak emitlendi, **hem
+bpfref'te hem gerçek kernel'da** koşturuldu, hepsinin uyuşması şart koşuldu.
+
+```
+16 verdict=agree
+```
+
+Tuzaklar egzotik oldukları için değil, ilk denemede yanlış yapıldıkları için seçildi:
+32-bit ALU'nun (MOV ve NEG dahil) koşulsuz sıfır-genişletmesi; `MOV|K`'nin iki ALU sınıfı
+arasında işaret-genişletme farkı; JMP32'nin yalnız alt yarıyı karşılaştırması; `x/0 = 0` ve
+`x%0 = x`; `S64_MIN sdiv -1 = S64_MIN`; minimumun negasyonunun sarması; DW immediate
+store'un s32'yi **işaret-genişletmesi** (811c363645b3'ün verifier tarafında yanlış yaptığı
+kuralın ta kendisi); MEMSX'in üst yarıyı doldurması; ALU sınıfında MOVSX'in 32 bitte
+durması; 32-bit MOD'un sıfır bölende üst yarıyı sıfırlaması; `off`'un işaretli olması;
+LD_IMM64'ün iki yuva tüketmesi.
+
+Her program ayırt edici bitlerini **alt 32 bite** düşürecek şekilde kuruldu, çünkü
+`BPF_PROG_TEST_RUN`'ın retval'i bir u32 — tuzakların birçoğu üst yarı hakkında, ve değeri
+doğrudan döndürmek bilgi taşımayan yarıyı karşılaştırırdı.
+
+### 4. İlk koşu bir uyuşmazlık gösterdi — ve o bendim
+
+`jmp32_ignores_upper_half`: ref 7, kernel 0. Triyaj sırası (önce ben, sonra kernel) hemen
+cevabı verdi: satırın tamamı `load=reject load_errno=22 ran=0` diyordu. Program **7 komut
+bildirip 6 emitlemişti**; verifier yüklemede reddetmiş, `kernel=0` da ilklenmemiş varsayılan
+değerdi. Semantik uyuşmazlığa birebir benziyordu ve değildi.
+
+Çıktı buna göre düzeltildi: `not-run` / `ref-fault` / `agree` / `DISAGREE` ayrı ayrı
+bildiriliyor artık — bir yükleme reddi uyuşmazlık **değildir**, ve onu öyle raporlamak
+0055'in "kurt geldi diye bağıran metrik" dersinin tekrarı olurdu. Test de bunu ayrıca
+pinliyor.
+
+### 5. Durum
+
+`scripts/probe-ref.sh` ikisini de koşturup her satırın `agree` bitmesini şart koşuyor.
+`reference_interpreter.rs` üç test: hepsi uyuşuyor, hepsi gerçekten koştu, ve tuzaklar
+birbirinden ayrışıyor (aynı cevabı veren bir süit hiçbir şey test etmezdi).
+
+Workspace 320 yeşil. Sıradaki: bu referansı hacme çıkaran kapalı-form jeneratör, ajanın
+tarihsel verimlilik sıralamasındaki 1 numaralı şekle nişanlı — **link-then-diverge**, ki
+`relink` parçası olarak zaten elimizde.

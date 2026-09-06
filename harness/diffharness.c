@@ -64,6 +64,14 @@
 #define BPF_ALU32_IMM(OP, DST, IMM)                                            \
     ((struct bpf_insn){.code = BPF_ALU | BPF_OP(OP) | BPF_K,                   \
                        .dst_reg = DST, .src_reg = 0, .off = 0, .imm = IMM})
+/* Present in the kernel's uapi since 2023 but absent from distro headers, so define it
+   the way include/uapi/linux/bpf.h does. */
+#ifndef BPF_MEMSX
+#define BPF_MEMSX 0x80
+#endif
+
+#include "bpfref.h"
+
 #define BPF_JMP32_IMM(OP, DST, IMM, OFF)                                       \
     ((struct bpf_insn){.code = BPF_JMP32 | BPF_OP(OP) | BPF_K,                 \
                        .dst_reg = DST, .src_reg = 0, .off = OFF, .imm = IMM})
@@ -3427,6 +3435,148 @@ static void run_probe_idlink(void) {
         printf("CHANNEL div_by_zero_reject=%d\n",
                strstr(g_log, "div by zero") != NULL);
         printf("---LOG---\n%s\n---END---\n", g_log);
+    }
+}
+
+// ---- reference-interpreter calibration (--probe-ref) ------------------------
+// bpfref.h is a second implementation of the ISA, written so the intent oracle has a
+// reference that never consults the kernel. A second implementation is only worth having
+// if it AGREES with the first everywhere the first is right — so before it is allowed to
+// judge anything, it is judged: the fifteen places a naive interpreter goes wrong are
+// emitted as programs, run on the real kernel AND on bpfref, and required to match.
+//
+// The comparison is at 32 bits because BPF_PROG_TEST_RUN's retval is a __u32, so each
+// program is shaped to land its distinguishing bits in the LOW half — several of these
+// traps are about the UPPER 32 bits, and returning the value directly would compare the
+// half that carries no information.
+struct ref_trap { const char *name; int n; struct bpf_insn ins[16]; };
+
+/* `r1 = <imm64>` occupies two slots; the second carries the high half in its imm. */
+#define REF_LD64(DST, VAL)                                                              \
+    (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = (DST),              \
+                      .src_reg = 0, .off = 0, .imm = (int)(uint32_t)((uint64_t)(VAL))}, \
+    (struct bpf_insn){.code = 0, .dst_reg = 0, .src_reg = 0, .off = 0,                  \
+                      .imm = (int)(uint32_t)(((uint64_t)(VAL)) >> 32)}
+/* ALU with a non-zero `off`: signed div/mod (off=1) and the sign-extending mov. */
+#define REF_ALU_OFF(CLS, OP, DST, SRC, OFF)                                             \
+    (struct bpf_insn){.code = (CLS) | BPF_X | (OP), .dst_reg = (DST),                   \
+                      .src_reg = (SRC), .off = (OFF), .imm = 0}
+
+static void run_probe_ref(void) {
+    static struct ref_trap traps[] = {
+      /* 1. ALU64 MOV|K sign-extends the immediate; the 32-bit form does not. Shift the
+            upper half down so the difference is visible in a u32 retval. */
+      {"mov64_k_sign_extends", 4, {BPF_MOV64_IMM(BPF_REG_1, -1),
+        BPF_ALU64_IMM(BPF_RSH, BPF_REG_1, 32), BPF_MOV64_REG(BPF_REG_0, BPF_REG_1),
+        BPF_EXIT_INSN()}},
+      {"mov32_k_zero_extends", 4, {BPF_MOV32_IMM(BPF_REG_1, -1),
+        BPF_ALU64_IMM(BPF_RSH, BPF_REG_1, 32), BPF_MOV64_REG(BPF_REG_0, BPF_REG_1),
+        BPF_EXIT_INSN()}},
+      /* 2. EVERY 32-bit ALU op zero-extends the result, with no exception. */
+      {"alu32_add_zero_extends", 6, {REF_LD64(BPF_REG_1, 0xffffffff00000001ULL),
+        BPF_ALU32_IMM(BPF_ADD, BPF_REG_1, 1), BPF_ALU64_IMM(BPF_RSH, BPF_REG_1, 32),
+        BPF_MOV64_REG(BPF_REG_0, BPF_REG_1), BPF_EXIT_INSN()}},
+      /* 3. JMP32 compares the low half and never inspects the upper one. */
+      {"jmp32_ignores_upper_half", 6, {BPF_MOV64_IMM(BPF_REG_0, 0),
+        REF_LD64(BPF_REG_1, 0x0000000100000005ULL),
+        BPF_JMP32_IMM(BPF_JNE, BPF_REG_1, 5, 1), BPF_MOV64_IMM(BPF_REG_0, 7),
+        BPF_EXIT_INSN()}},
+      /* 4. A runtime-zero divisor does not trap: x/0 = 0 and x%0 = x. */
+      {"udiv_by_runtime_zero_is_zero", 5, {BPF_MOV64_IMM(BPF_REG_1, 7),
+        BPF_MOV64_IMM(BPF_REG_2, 0), BPF_ALU64_REG(BPF_DIV, BPF_REG_1, BPF_REG_2),
+        BPF_MOV64_REG(BPF_REG_0, BPF_REG_1), BPF_EXIT_INSN()}},
+      {"umod_by_runtime_zero_is_dst", 5, {BPF_MOV64_IMM(BPF_REG_1, 7),
+        BPF_MOV64_IMM(BPF_REG_2, 0), BPF_ALU64_REG(BPF_MOD, BPF_REG_1, BPF_REG_2),
+        BPF_MOV64_REG(BPF_REG_0, BPF_REG_1), BPF_EXIT_INSN()}},
+      /* 5. S64_MIN sdiv -1 is S64_MIN, not an overflow. */
+      {"sdiv64_min_by_minus_one", 7, {REF_LD64(BPF_REG_1, 0x8000000000000000ULL),
+        BPF_MOV64_IMM(BPF_REG_2, -1), REF_ALU_OFF(BPF_ALU64, BPF_DIV, BPF_REG_1, BPF_REG_2, 1),
+        BPF_ALU64_IMM(BPF_RSH, BPF_REG_1, 32), BPF_MOV64_REG(BPF_REG_0, BPF_REG_1),
+        BPF_EXIT_INSN()}},
+      /* 6. Negating the minimum value wraps to itself. */
+      {"neg64_of_min_wraps", 6, {REF_LD64(BPF_REG_1, 0x8000000000000000ULL),
+        BPF_ALU64_IMM(BPF_NEG, BPF_REG_1, 0), BPF_ALU64_IMM(BPF_RSH, BPF_REG_1, 32),
+        BPF_MOV64_REG(BPF_REG_0, BPF_REG_1), BPF_EXIT_INSN()}},
+      /* 7. A DW immediate store SIGN-extends the s32 imm before the 8-byte write — the
+            exact rule 811c363645b3 fixed in the verifier's parallel bookkeeping. */
+      {"st_dw_imm_sign_extends", 4, {BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, -1),
+        BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_10, -8),
+        BPF_ALU64_IMM(BPF_RSH, BPF_REG_0, 32), BPF_EXIT_INSN()}},
+      /* 8. MEMSX sign-extends into the FULL 64-bit register. */
+      {"ldx_memsx_fills_upper_half", 4, {BPF_ST_MEM(BPF_W, BPF_REG_10, -4, -1),
+        (struct bpf_insn){.code = BPF_LDX | BPF_MEMSX | BPF_W, .dst_reg = BPF_REG_0,
+                          .src_reg = BPF_REG_10, .off = -4, .imm = 0},
+        BPF_ALU64_IMM(BPF_RSH, BPF_REG_0, 32), BPF_EXIT_INSN()}},
+      /* 9. An ordinary byte load zero-extends even when the byte reads as -1. */
+      {"ldx_b_zero_extends", 3, {BPF_ST_MEM(BPF_B, BPF_REG_10, -1, -1),
+        BPF_LDX_MEM(BPF_B, BPF_REG_0, BPF_REG_10, -1), BPF_EXIT_INSN()}},
+      /* 10. A sign-extending mov in the 32-bit class stops at 32 bits, then zero-extends. */
+      {"movsx32_then_zero_extends", 5, {BPF_MOV64_IMM(BPF_REG_1, 0xff),
+        REF_ALU_OFF(BPF_ALU, BPF_MOV, BPF_REG_2, BPF_REG_1, 8),
+        BPF_ALU64_IMM(BPF_RSH, BPF_REG_2, 32), BPF_MOV64_REG(BPF_REG_0, BPF_REG_2),
+        BPF_EXIT_INSN()}},
+      {"movsx64_fills_upper_half", 5, {BPF_MOV64_IMM(BPF_REG_1, 0xff),
+        REF_ALU_OFF(BPF_ALU64, BPF_MOV, BPF_REG_2, BPF_REG_1, 8),
+        BPF_ALU64_IMM(BPF_RSH, BPF_REG_2, 32), BPF_MOV64_REG(BPF_REG_0, BPF_REG_2),
+        BPF_EXIT_INSN()}},
+      /* 11. The 32-bit MOD zeroes the upper half on the zero-divisor path; ALU64 MOD does
+             not touch the destination at all. */
+      {"alu32_mod_by_zero_zeroes_upper", 7, {REF_LD64(BPF_REG_1, 0xffffffff00000007ULL),
+        BPF_MOV64_IMM(BPF_REG_2, 0), BPF_ALU32_REG(BPF_MOD, BPF_REG_1, BPF_REG_2),
+        BPF_ALU64_IMM(BPF_RSH, BPF_REG_1, 32), BPF_MOV64_REG(BPF_REG_0, BPF_REG_1),
+        BPF_EXIT_INSN()}},
+      /* 12. `off` is signed: fp-8 must not become fp+65528. */
+      {"negative_stack_off_is_signed", 3, {BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 5),
+        BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_10, -8), BPF_EXIT_INSN()}},
+      /* 13. LD_IMM64 occupies two slots; a decoder that advances one corrupts the rest. */
+      {"ld_imm64_consumes_two_slots", 4, {REF_LD64(BPF_REG_1, 0x1122334455667788ULL),
+        BPF_MOV64_REG(BPF_REG_0, BPF_REG_1), BPF_EXIT_INSN()}},
+    };
+
+    for (unsigned t = 0; t < sizeof(traps) / sizeof(traps[0]); t++) {
+        struct ref_trap *T = &traps[t];
+        struct bpfref_result ref = bpfref_run(T->ins, T->n, 0);
+
+        g_log[0] = '\0';
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = T->n;
+        attr.insns = (uint64_t)(unsigned long)T->ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 1;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        int lerr = errno;
+
+        uint32_t kern = 0;
+        int ran = 0, rerr = 0;
+        if (fd >= 0) {
+            static char pin[64], pout[64];
+            union bpf_attr r;
+            memset(&r, 0, sizeof(r));
+            r.test.prog_fd = fd;
+            r.test.data_in = (uint64_t)(unsigned long)pin;
+            r.test.data_out = (uint64_t)(unsigned long)pout;
+            r.test.data_size_in = sizeof(pin);
+            r.test.data_size_out = sizeof(pout);
+            r.test.repeat = 1;
+            if (bpf(BPF_PROG_TEST_RUN, &r, sizeof(r)) == 0) { ran = 1; kern = r.test.retval; }
+            else rerr = errno;
+            close(fd);
+        }
+        uint32_t refv = (uint32_t)ref.retval;
+        /* A load rejection or a run error is NOT a semantic disagreement, and reporting
+           it as one would make the calibration cry wolf — the same lesson 0055 learned
+           about the validity counter. Say which of the three happened. */
+        const char *verdict = !ran ? "not-run"
+                            : ref.status != BPFREF_OK ? "ref-fault"
+                            : refv == kern ? "agree" : "DISAGREE";
+        printf("REFTRAP name=%s load=%s load_errno=%d ran=%d run_errno=%d"
+               " ref_status=%s ref=0x%08x kernel=0x%08x verdict=%s\n",
+               T->name, fd >= 0 ? "accept" : "reject", fd >= 0 ? 0 : lerr, ran, rerr,
+               bpfref_status_name(ref.status), refv, kern, verdict);
     }
 }
 
@@ -6953,6 +7103,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-spill") == 0) {
         run_probe_spill();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-ref") == 0) {
+        run_probe_ref();
         return 0;
     }
 
