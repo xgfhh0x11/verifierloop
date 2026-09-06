@@ -6027,3 +6027,73 @@ paylaşılıyor ve bir satır kelime ortasından bölünebiliyor — bu probe'da
 **yokluk üzerinden geçmek yerine gürültüyle düşüyor**.
 
 Workspace 335 yeşil.
+
+---
+
+## 0082 — Fuzzer'ın kendi kalibrasyonu: 21 tarihsel hatanın 14'ünü bulurduk — ve önerilen çareyi reddetmek
+
+### 1. Hiç sormadığımız soru
+
+Ajan taraması 21 yeniden-kurulabilir tarihsel verifier düzeltmesinin her birini bu fuzzer'a
+karşı ayrı ayrı değerlendirdi. Üç soru, birbirine karıştırılmadan: gramer bu durumu
+**tetikleyebilir mi**, tetiklenirse hangi oracle **yakalar**, ve sonuçta **bulur muyduk**.
+
+| | |
+|---|---|
+| bugün tetiklenebilir | **17 / 21** |
+| bir oracle yakalar | **16 / 21** |
+| **ikisi birden** | **14 / 21** |
+
+Asıl önemli sayı 17 ile 14 arasındaki fark: **üç hata bugün tetiklenebiliyor ve yine de
+görünmez.** İkisi cross-state pruning kusuru, biri saf aşırı-yaklaşım. Hiçbiri gramer
+sorunu değil — tavan bir **oracle** boşluğu.
+
+### 2. Gramer tarafında tam bir ekleme: MOVSX
+
+Taramanın verdiği tek gramer eklemesi verdict çeviriyor: **register-to-register MOVSX**
+(`rY = (s8|s16|s32) rX`), 2 hatayı açıyor (`44b7f7151dfc`, `380d5f89a481` — aynı gün inen
+kardeş yamalar).
+
+Ve ajan kaynağı okuyup doğrulamış: gramerin **zaten var olan** işaret-genişletmesi
+(MEMSX stack fill) `coerce_reg_to_size_sx`'i çağırıyor; o iki hata ise
+`coerce_subreg_to_size_sx` / `set_sext32_default_val`'de yaşıyor — yalnız **ALU MOVSX**
+yolundan erişilebilir. Kardeş özellik, farklı fonksiyon. Sezgiyle değil kaynakla
+gerekçelendirilmiş bir ekleme.
+
+### 3. Önerilen çareyi reddettim
+
+Tarama, görünmez üçlü için **kernel-sürüm verdict farkını** önerdi. Almadım — çünkü bu
+projenin kendi sonucu buna karşı: **0068**, iki kernel sürümünün bir verdict'te
+anlaşmamasının **meşru** olduğunu kurmuştu (hassasiyet her sürümde değişir). Sürüm farkı
+**kalibre eder, avlanamaz**.
+
+Sağlam olan şey **aynı kernel**e karşı, cevabı değiştirmemesi gereken bir bayrak farkı:
+
+- `BPF_F_TEST_STATE_FREQ` yalnızca checkpoint'lemeyi yoğunlaştırıyor, yani bir **verdict
+  çevrilmesi** budamanın, budanmamış yürüyüşün vermediği bir karar verdiği anlamına gelir —
+  tam olarak görünmez sınıf.
+- `BPF_F_TEST_REG_INVARIANTS` kernel'in kendi sınır assert'ini sert hataya çeviriyor.
+
+Kaynak yönü dışlanıyor: state-freq durum sayısını yapısı gereği şişiriyor, dolayısıyla
+karmaşıklık limitinde gelen bir red enstrümanın kendi artefaktı (0042).
+
+### 4. Ve maliyeti kapıyla ödedim
+
+İki ek yükleme iş hacmini **2.5 kat** düşürdü (511k → 202k). Bu her rastgele mutant için
+kötü bir takas. Klasik fuzzer disiplini: **pahalı kontrolleri onu hak eden girdilere ayır.**
+Yeni verifier koduna ulaşan program tanımı gereği ikinci bakışı hak ediyor; gerisi
+sekizde bir örnekleniyor. Ucuz oracle — referans interpreter karşılaştırması — hepsinde
+koşmaya devam ediyor.
+
+| yapılandırma | iterasyon |
+|---|---|
+| ek oracle yok | 511k |
+| kapısız iki ek oracle | 202k |
+| **kapılı** | **424k** |
+
+%60 yerine ~%17.
+
+### 5. Sonuç
+
+424k iterasyon, 2.37M karşılaştırma, üç oracle'ın üçünden de **0 bulgu**, kapsama 5203,
+`trunc=0`. Workspace 337 yeşil.

@@ -3747,6 +3747,7 @@ enum gi_step {
     GI_STORE,     /* a store through a map value — the grammar's DECISION surface      */
     GI_STACKVAR,  /* VARIABLE-offset stack access, stored and read back                 */
     GI_ATOMIC,    /* atomic RMW — 250 lines of verifier code no other step reaches       */
+    GI_MOVSX,     /* register-to-register sign-extending MOV — a DIFFERENT kernel path   */
     GI_PIN,       /* make the verifier believe it knows the value EXACTLY              */
     GI_SDIV,      /* signed div/mod — the interpreter-level UB shape                   */
     GI_STEP_N
@@ -3763,6 +3764,7 @@ static const char *gi_step_name(enum gi_step s) {
     case GI_STORE: return "store";
     case GI_STACKVAR: return "stackvar";
     case GI_ATOMIC: return "atomic";
+    case GI_MOVSX: return "movsx";
     case GI_SDIV: return "sdiv";
     default: return "?";
     }
@@ -3978,6 +3980,23 @@ static int gi_emit_body(const struct gi_genome *G, struct bpf_insn *ins, int n,
                                              .dst_reg = BPF_REG_8, .src_reg = A,
                                              .off = moff, .imm = imm};
             }
+            break;
+        }
+        case GI_MOVSX: {
+            /* Justified by history rather than intuition. Screening all 21 reconstructable
+               verifier fixes for "could this fuzzer have found it" produced exactly ONE
+               grammar addition that flips a verdict: register-to-register MOVSX, which
+               unlocks 44b7f7151dfc and 380d5f89a481 — companion patches landed the same day.
+               The grammar already sign-extends, but through a stack fill (BPF_MEMSX), and
+               that reaches `coerce_reg_to_size_sx`; both bugs live in
+               `coerce_subreg_to_size_sx` / `set_sext32_default_val`, reachable ONLY from the
+               ALU MOVSX path. Sibling feature, different function. */
+            static const short widths[] = { 8, 16, 32 };
+            const int cls = (o & 1) ? BPF_ALU64 : BPF_ALU;
+            /* the 32-bit class has no 32-bit sign-extend: that would be a plain move */
+            const int wi = (cls == BPF_ALU) ? (int)(o >> 1) % 2 : (int)(o >> 1) % 3;
+            ins[n++] = (struct bpf_insn){.code = cls | BPF_X | BPF_MOV, .dst_reg = A,
+                                         .src_reg = B, .off = widths[wi], .imm = 0};
             break;
         }
         case GI_PAIR: {
@@ -4277,7 +4296,7 @@ static void run_fuzz(int seconds) {
     /* A load whose PC list filled the buffer lost coverage, and lost coverage looks exactly
        like a plateau. Counted so "the ceiling" is a statement about the grammar rather than
        about the buffer. */
-    unsigned long truncated = 0;
+    unsigned long truncated = 0, prune_flips = 0, inv_faults = 0;
 
     printf("FUZZ start budget=%ds corpus_max=%d\n", seconds, FZ_CORPUS_MAX);
     while (time(NULL) - t0 < seconds) {
@@ -4349,6 +4368,62 @@ static void run_fuzz(int seconds) {
             fz_print_genome(&G);
             printf("\n");
         }
+        /* THE EXPENSIVE ORACLES GO TO THE INTERESTING INPUTS. Two extra loads per
+           program cost 2.5x throughput — 511k iterations became 202k — which is a bad
+           trade to pay on every random mutant. A program that reached NEW verifier code
+           is by definition the one worth the second look; everything else is sampled.
+           The cheap oracle, the reference-interpreter comparison, still runs on all of
+           them. */
+        if (fresh > 0 || (iters & 7) == 0) {
+            /* TWO MORE ORACLES, ON THE SAME KERNEL. Screening the 21 historical fixes found
+               that three of them are triggerable by this grammar today and STILL invisible,
+               because they are cross-state pruning defects that no single-state check can see.
+               The suggested cure was a kernel-VERSION differential — but 0068 established that
+               two versions are ALLOWED to disagree on a verdict, so that is a calibration
+               instrument, not a hunting oracle.
+               What IS sound is a differential against the same kernel under a flag that must
+               not change the answer: BPF_F_TEST_STATE_FREQ only intensifies checkpointing, so a
+               verdict FLIP means a prune decided something the unpruned walk did not — exactly
+               the class. And BPF_F_TEST_REG_INVARIANTS promotes the kernel's own bounds
+               assertion from warn-and-recover to a hard fault.
+               The resource direction is excluded: state-freq inflates the state count by
+               construction, so a flagged rejection on a complexity limit is the instrument's
+               own artefact and not a finding (0042). */
+            {
+                union bpf_attr a2 = attr;
+                a2.prog_flags = BPF_F_TEST_STATE_FREQ;
+                a2.log_level = 0; a2.log_size = 0; a2.log_buf = 0;
+                int fdf = bpf(BPF_PROG_LOAD, &a2, sizeof(a2));
+                int ferr = errno;
+                if (fdf >= 0) close(fdf);
+                const int flipped = (fd >= 0) != (fdf >= 0);
+                const int resource = (fdf < 0) && (ferr == E2BIG || ferr == ENOSPC);
+                if (flipped && !resource) {
+                    prune_flips++;
+                    printf("FINDING kind=prune_verdict_flip iter=%lu base=%s freq=%s errno=%d ",
+                           iters, fd >= 0 ? "accept" : "reject",
+                           fdf >= 0 ? "accept" : "reject", ferr);
+                    fz_print_genome(&G);
+                    printf("\n");
+                }
+
+                union bpf_attr a3 = attr;
+                a3.prog_flags = BPF_F_TEST_REG_INVARIANTS;
+                a3.log_level = 0; a3.log_size = 0; a3.log_buf = 0;
+                int fdi = bpf(BPF_PROG_LOAD, &a3, sizeof(a3));
+                int ierr = errno;
+                if (fdi >= 0) close(fdi);
+                if (fd >= 0 && fdi < 0 && ierr == EFAULT) {
+                    inv_faults++;
+                    printf("FINDING kind=reg_invariants_violation iter=%lu ", iters);
+                    fz_print_genome(&G);
+                    printf("\n");
+                }
+            }
+
+            if (cnt >= KCOV_ENTRIES - 1) truncated++;
+            unsigned fresh = 0;
+        }
 
         if (fd >= 0) {
             for (int i = 0; i < GI_INPUTS_N; i++) {
@@ -4406,14 +4481,14 @@ static void run_fuzz(int seconds) {
 
         if ((iters % 2000) == 0)
             printf("STATUS iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-                   " compared=%lu findings=%lu trunc=%lu elapsed=%lds\n",
+                   " compared=%lu findings=%lu trunc=%lu pruneflip=%lu invfault=%lu elapsed=%lds\n",
                    iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
-                   truncated, (long)(time(NULL) - t0));
+                   truncated, prune_flips, inv_faults, (long)(time(NULL) - t0));
     }
     printf("FUZZ done iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-           " compared=%lu findings=%lu trunc=%lu elapsed=%lds\n",
+           " compared=%lu findings=%lu trunc=%lu pruneflip=%lu invfault=%lu elapsed=%lds\n",
            iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
-           truncated, (long)(time(NULL) - t0));
+           truncated, prune_flips, inv_faults, (long)(time(NULL) - t0));
     free(corpus);
     free(g_kseen);
     close(map_in);

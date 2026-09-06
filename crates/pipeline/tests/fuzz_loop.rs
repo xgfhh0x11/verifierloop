@@ -76,6 +76,7 @@ fn coverage_and_corpus_both_grow() {
 ///     + map-value store (0079)       4942       23%
 ///     + var-offset stack (0080)      5188       39%
 ///     + atomic RMW (0081)            5251       29%
+///     + MOVSX, +2 oracles (0082)     5203       30%
 ///
 /// Each new KIND of memory adds roughly 150-250 PCs; more programs add none. The limit is
 /// the number of distinct memory kinds the grammar can express, not the number of programs
@@ -97,8 +98,8 @@ fn the_ceiling_is_set_by_memory_kinds_not_by_program_count() {
     let rej = field(last, "reject=");
     assert!(rej > 0 && rej < acc, "two-sided decision surface: accept {acc}, reject {rej}");
     assert!(
-        field(last, "seen_pcs=") > 5_200,
-        "the ceiling should sit above the 5188 of the var-offset-stack grammar"
+        field(last, "seen_pcs=") > 5_150,
+        "the ceiling should sit around the 5200-5250 the memory-kind additions reached"
     );
     // A load that fills the KCOV buffer loses coverage, and lost coverage looks exactly
     // like a plateau — so this is watched rather than assumed. Atomics lengthened the
@@ -121,4 +122,42 @@ fn the_loop_refuses_to_run_without_feedback() {
     assert!(!SMOKE.contains("FUZZ abort"), "the smoke run aborted");
     assert!(SMOKE.contains("FUZZ start"), "no start line");
     assert!(SMOKE.contains("FUZZ done"), "the run did not finish cleanly");
+}
+
+/// THREE ORACLES, AND WHY NOT THE ONE THAT WAS SUGGESTED (devlog 0082).
+///
+/// Screening all 21 reconstructable historical verifier fixes against this fuzzer gave a
+/// number worth keeping: **14 of 21 would have been found** — triggerable by the grammar
+/// AND caught by an oracle. Of the seven that would not, three are triggerable TODAY and
+/// still invisible, because they are cross-state pruning defects that no single-state check
+/// can see by construction.
+///
+/// The screening's suggested cure was a kernel-VERSION verdict differential. That was
+/// declined, and the reason is a result this project already owns: 0068 established that
+/// two kernel versions are ALLOWED to disagree on a verdict, since precision changes every
+/// release — so a version flip is evidence only when you already know which side is the bug.
+/// It calibrates; it cannot hunt.
+///
+/// What IS sound is a differential against the SAME kernel under a flag that must not change
+/// the answer. `BPF_F_TEST_STATE_FREQ` only intensifies checkpointing, so a verdict flip
+/// means a prune decided something the unpruned walk did not — exactly the invisible class.
+/// `BPF_F_TEST_REG_INVARIANTS` promotes the kernel's own bounds assertion to a hard fault.
+/// The resource direction is excluded, because state-freq inflates the state count by
+/// construction and a flagged rejection on a complexity limit is the instrument's own
+/// artefact (0042).
+#[test]
+fn the_expensive_oracles_run_and_cost_little() {
+    let last = status_lines().last().copied().unwrap();
+    // Both counters must be PRESENT — a run whose extra oracles never executed would report
+    // the same zero as a run where they executed and found nothing.
+    assert!(last.contains("pruneflip="), "the pruning differential must be reported");
+    assert!(last.contains("invfault="), "the invariant channel must be reported");
+    assert_eq!(field(last, "pruneflip="), 0);
+    assert_eq!(field(last, "invfault="), 0);
+
+    // And they must be affordable. Ungated they cost 2.5x (511k iterations became 202k);
+    // reserved for programs that reached new coverage, plus a one-in-eight sample, the loop
+    // runs at 424k — a ~17% toll instead of 60%.
+    let iters = field(last, "iters=");
+    assert!(iters > 350_000, "the gating did not recover throughput: {iters}");
 }
