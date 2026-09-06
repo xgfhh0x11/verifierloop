@@ -3748,6 +3748,9 @@ enum gi_step {
     GI_STACKVAR,  /* VARIABLE-offset stack access, stored and read back                 */
     GI_ATOMIC,    /* atomic RMW — 250 lines of verifier code no other step reaches       */
     GI_MOVSX,     /* register-to-register sign-extending MOV — a DIFFERENT kernel path   */
+    GI_DIAMOND,   /* a branch that RECONVERGES — two states meeting, which is what        */
+                  /* states_equal actually compares                                       */
+    GI_LOOP,      /* a COUNTED back-edge: deep state exploration, and deterministic       */
     GI_PIN,       /* make the verifier believe it knows the value EXACTLY              */
     GI_SDIV,      /* signed div/mod — the interpreter-level UB shape                   */
     GI_STEP_N
@@ -3765,6 +3768,8 @@ static const char *gi_step_name(enum gi_step s) {
     case GI_STACKVAR: return "stackvar";
     case GI_ATOMIC: return "atomic";
     case GI_MOVSX: return "movsx";
+    case GI_DIAMOND: return "diamond";
+    case GI_LOOP: return "loop";
     case GI_SDIV: return "sdiv";
     default: return "?";
     }
@@ -3819,6 +3824,7 @@ static int gi_emit_body(const struct gi_genome *G, struct bpf_insn *ins, int n,
        and cost 207 of an early run's 512 programs a STRUCTURAL rejection (0074). */
     static const int REGS[3] = { 6, 7, 9 };
     int stack_next = -8;
+    int loops_emitted = 0;
     for (int s = 0; s < G->n && s < GI_MAXGENES; s++) {
         const struct gi_gene *g = &G->g[s];
         const enum gi_step st = (enum gi_step)(g->st % GI_STEP_N);
@@ -3997,6 +4003,69 @@ static int gi_emit_body(const struct gi_genome *G, struct bpf_insn *ins, int n,
             const int wi = (cls == BPF_ALU) ? (int)(o >> 1) % 2 : (int)(o >> 1) % 3;
             ins[n++] = (struct bpf_insn){.code = cls | BPF_X | BPF_MOV, .dst_reg = A,
                                          .src_reg = B, .off = widths[wi], .imm = 0};
+            break;
+        }
+        case GI_DIAMOND: {
+            /* THE FUEL THE PRUNING ORACLE WAS MISSING. 0083 gave the STATE_FREQ verdict
+               differential a real denominator — 43,379 pairs where the flag demonstrably
+               widened the state space — and it found nothing. Looking at what the grammar
+               emits explains why: every branch it produces jumps straight to the tail, so
+               the program is a LADDER and no two states ever meet inside the body. But
+               states_equal and the pruning it drives operate exactly where two states DO
+               meet, so the oracle was aimed at a region the grammar never built.
+               This step builds it: a forward branch that skips a couple of instructions and
+               RECONVERGES, so the merge point is reached with two different states. That is
+               a diamond, and it is what a prune has to decide about. */
+            const int skip_a = A, skip_b = B;
+            const int jd = n;
+            if (o & 1) ins[n++] = BPF_JMP_IMM(BPF_JGT, skip_a, K, 0);
+            else       ins[n++] = BPF_JMP32_IMM(BPF_JGT, skip_a, K, 0);
+            /* The skipped side shapes the registers differently, so the two states that
+               meet at the merge are genuinely distinct rather than a formality. */
+            ins[n++] = BPF_ALU64_IMM(((o >> 1) & 1) ? BPF_OR : BPF_AND, skip_b, K);
+            if ((o >> 2) & 1)
+                ins[n++] = BPF_ALU64_REG(BPF_ADD, skip_a, skip_b);
+            ins[jd].off = n - jd - 1;          /* the merge point is right here */
+            break;
+        }
+        case GI_LOOP: {
+            /* WHAT THE PRUNING ORACLE ACTUALLY NEEDS. Measuring the search depth after
+               adding diamonds gave `avgstates=1`: the verifier explores essentially ONE
+               state per program, so the differential's 33k "prune pairs" were 33k trivial
+               comparisons. A non-zero denominator is not enough when the individual
+               comparisons cannot fail — the same lesson 0076 learned about constants, one
+               level up.
+               A back-edge is what makes the verifier reach one instruction repeatedly with
+               DIFFERENT states, which is when states_equal and its pruning have something to
+               decide. `may_goto` would do it, but its budget is TIME-based and the trip
+               count is not reproducible, so it would break the closed-form property the
+               reference interpreter depends on. A COUNTED loop keeps both: the verifier
+               proves termination by state convergence, and the trip count is fixed. */
+            /* BOUNDED HARD, because the first attempt OOM-killed the VM in 57 seconds.
+               A back-edge multiplies the verifier's state count, and under KASAN each state
+               is large enough that one pathological program can exhaust the guest before
+               BPF_COMPLEXITY_LIMIT_STATES stops it. Two defences: a small trip count, and
+               at most ONE loop per program — a genome carrying several would compound them.
+               This is the cost of the fuel; the shape is worth having anyway, but not at
+               the price of a guest that dies before it reports. */
+            if (loops_emitted) break;
+            loops_emitted = 1;
+            const int trips = 2 + (int)(o % 3);          /* 2..4 */
+            /* THE COUNTER MUST NOT BE THE BODY'S TARGET. r9 is one of the three scalars
+               the step may pick as `A`, and when it picked itself the body mutated the
+               counter — `r9 ^= K` before `r9 -= 1` — so the count stopped decreasing
+               monotonically, the loop had no proof of termination, and the verifier
+               explored until it exhausted the guest's memory. That is what OOM-killed the
+               VM twice; capping the trip count did not help because the trip count was
+               never the problem. */
+            const int ctr = (A == 9) ? 7 : 9;
+            ins[n++] = BPF_MOV64_IMM(ctr, trips);
+            const int head = n;
+            ins[n++] = BPF_ALU64_IMM(((o >> 3) & 1) ? BPF_ADD : BPF_XOR, A, K);
+            ins[n++] = BPF_ALU64_IMM(BPF_SUB, ctr, 1);
+            const int jback = n;
+            ins[n++] = BPF_JMP_IMM(BPF_JGT, ctr, 0, 0);
+            ins[jback].off = (short)(head - jback - 1);
             break;
         }
         case GI_PAIR: {
@@ -4298,6 +4367,7 @@ static void run_fuzz(int seconds) {
        about the buffer. */
     unsigned long truncated = 0, prune_flips = 0, inv_faults = 0;
     unsigned long prune_pairs = 0, prune_artifacts = 0;
+    unsigned long max_base_states = 0, max_freq_states = 0, sum_base_states = 0;
 
     printf("FUZZ start budget=%ds corpus_max=%d\n", seconds, FZ_CORPUS_MAX);
     while (time(NULL) - t0 < seconds) {
@@ -4405,6 +4475,15 @@ static void run_fuzz(int seconds) {
                                                           BPF_PROG_TYPE_SOCKET_FILTER);
                 const int widened = freq.states > base.states;
                 if (widened) prune_pairs++;
+                /* HOW DEEP the search actually went. Coverage rising says the grammar
+                   reached new code; it does NOT say pruning had anything to decide. A
+                   verifier that explores two or three states per program is not pruning in
+                   any interesting sense, so the differential's 43k pairs could still be 43k
+                   trivial comparisons. Reported so "the pruning oracle found nothing" can be
+                   read against how much pruning there was to do. */
+                if (base.states > max_base_states) max_base_states = base.states;
+                if (freq.states > max_freq_states) max_freq_states = freq.states;
+                sum_base_states += base.states;
                 const int flipped = base.accept != freq.accept;
                 /* State-freq inflates the state count by construction, so a flagged
                    rejection on a complexity limit is the instrument's own artefact. */
@@ -4497,14 +4576,16 @@ static void run_fuzz(int seconds) {
 
         if ((iters % 2000) == 0)
             printf("STATUS iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu invfault=%lu elapsed=%lds\n",
+                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invfault=%lu elapsed=%lds\n",
                    iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
-                   truncated, prune_pairs, prune_flips, prune_artifacts, inv_faults, (long)(time(NULL) - t0));
+                   truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
+                   max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_faults, (long)(time(NULL) - t0));
     }
     printf("FUZZ done iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu invfault=%lu elapsed=%lds\n",
+           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invfault=%lu elapsed=%lds\n",
            iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
-           truncated, prune_pairs, prune_flips, prune_artifacts, inv_faults, (long)(time(NULL) - t0));
+           truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
+           max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_faults, (long)(time(NULL) - t0));
     free(corpus);
     free(g_kseen);
     close(map_in);

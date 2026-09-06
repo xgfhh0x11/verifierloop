@@ -77,6 +77,7 @@ fn coverage_and_corpus_both_grow() {
 ///     + var-offset stack (0080)      5188       39%
 ///     + atomic RMW (0081)            5251       29%
 ///     + MOVSX, +2 oracles (0082)     5203       30%
+///     + diamonds, counted loop(0084) 5406       29%
 ///
 /// Each new KIND of memory adds roughly 150-250 PCs; more programs add none. The limit is
 /// the number of distinct memory kinds the grammar can express, not the number of programs
@@ -174,7 +175,51 @@ fn the_expensive_oracles_run_and_cost_little() {
     // reserved for programs that reached new coverage, plus a one-in-eight sample, the loop
     // runs at 424k — a ~17% toll instead of 60%.
     let iters = field(last, "iters=");
-    // The gated path now does two log_level=1 loads (the state count is only in the log),
-    // which costs a little more than the log-free version measured in 0082.
-    assert!(iters > 300_000, "the gating did not recover throughput: {iters}");
+    // The gated path does two log_level=1 loads (the state count lives only in the log),
+    // and 0084's loops make some programs genuinely more expensive to VERIFY — deeper
+    // exploration is the point, and it is not free. Recorded as a floor rather than a
+    // target: 511k with no extra oracles, 202k ungated, 424k gated, 250k once the grammar
+    // could loop.
+    assert!(iters > 200_000, "the gating did not recover throughput: {iters}");
+}
+
+/// A NON-ZERO DENOMINATOR IS NOT ENOUGH IF THE COMPARISONS ARE TRIVIAL (devlog 0084).
+///
+/// 0083 gave the pruning differential a denominator — 43,379 pairs where
+/// BPF_F_TEST_STATE_FREQ demonstrably widened the state space — and reported zero flips.
+/// Measuring how DEEP the search actually went turned that number over: `avgstates=1`. The
+/// verifier was exploring essentially ONE state per program, so those were 43,379 trivial
+/// comparisons. Pruning had nothing to decide.
+///
+/// It is the same lesson 0076 learned about constants — "a constant is not a check, it is a
+/// tautology" — one level up: a one-state exploration is not a prune. A denominator counts
+/// comparisons that RAN; this counts whether they could have said anything.
+///
+/// Two grammar additions supply the missing fuel. Diamonds make a branch RECONVERGE, so two
+/// states meet inside the body rather than every branch running to the tail — the grammar
+/// had been emitting ladders, and states_equal operates on meetings. A counted back-edge
+/// then makes one instruction be reached repeatedly with different states; it is
+/// deterministic, unlike `may_goto` whose time-based budget would break the closed-form
+/// property the reference interpreter needs.
+#[test]
+fn the_search_is_deep_enough_for_pruning_to_mean_something() {
+    let last = status_lines().last().copied().unwrap();
+    assert!(last.contains("avgstates="), "the search depth must be reported at all");
+    assert!(
+        field(last, "avgstates=") >= 2,
+        "at one state per program the pruning differential is counting comparisons that \
+         cannot fail: avgstates={}",
+        field(last, "avgstates=")
+    );
+    // The maximum matters too: an average of two with a maximum of two would mean every
+    // program is the same shallow shape.
+    let maxes = last
+        .split_whitespace()
+        .find_map(|t| t.strip_prefix("maxstates="))
+        .expect("maxstates");
+    let (base, freq) = maxes.split_once('/').expect("base/freq");
+    let base: u64 = base.parse().unwrap();
+    let freq: u64 = freq.parse().unwrap();
+    assert!(base >= 8, "deepest base exploration only {base} states");
+    assert!(freq > base * 2, "state-freq must widen the deep cases too: {base} -> {freq}");
 }

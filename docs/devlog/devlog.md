@@ -6097,3 +6097,65 @@ koşmaya devam ediyor.
 
 424k iterasyon, 2.37M karşılaştırma, üç oracle'ın üçünden de **0 bulgu**, kapsama 5203,
 `trunc=0`. Workspace 337 yeşil.
+
+---
+
+## 0084 — Paydanın altındaki soru: karşılaştırmalar önemsizse sıfır bir şey söylemiyor
+
+### 1. 0083'ün sayısını çeviren ölçüm
+
+0083 budama farkına payda vermişti: 43,379 çift, sıfır çevrilme. Aramanın gerçekte **ne
+kadar derin** gittiğini ölçtüm:
+
+```
+avgstates=1
+```
+
+Verifier program başına **tek bir state** keşfediyor. Yani o 43 bin çift, 43 bin **önemsiz**
+karşılaştırma — budamanın karar vereceği bir şey yok.
+
+Bu, 0076'nın dersinin bir seviye üstü. Orası *"bir sabit bir kontrol değil, bir
+totolojidir"* diyordu; burası: **tek-durumlu bir keşif bir budama değildir.** Payda,
+*koşan* karşılaştırmaları sayar; bu ölçüm ise onların *bir şey söyleyebilir* olup
+olmadığını sorar.
+
+### 2. Eksik yakıt: buluşma
+
+Gramerin ürettiği her dal doğrudan tail'e atlıyordu — yani **merdiven** üretiyorduk, elmas
+değil. `states_equal` ve sürüklediği budama tam olarak **iki durumun buluştuğu** yerde
+çalışır. `diamond` adımı ileri atlayıp birkaç instruction sonra **yeniden birleşiyor**, ve
+atlanan taraf register'ları farklı şekillendiriyor ki buluşan iki durum gerçekten farklı
+olsun.
+
+Sonra sayaçlı **geri kenar**: bir instruction'a farklı durumlarla tekrar tekrar ulaşmak.
+`may_goto` bunu yapardı ama bütçesi zaman-tabanlı, yani kapalı-formu bozardı; sayaçlı döngü
+deterministik — her iki oracle da çalışıyor.
+
+### 3. VM'i iki kez öldürdüm, ve sebep tahmin ettiğim değildi
+
+İlk deneme 57 saniyede **OOM** ile guest'i öldürdü. Tur sayısını 3-7'den 2-4'e indirdim ve
+program başına tek döngüye kısıtladım — **yine öldü.** Çünkü tur sayısı hiç sorun değildi.
+
+Asıl sebep: gövdenin hedefi `A`, sayaç register'ı **r9 ile aynı olabiliyordu.** O zaman
+gövde sayacı bozuyor (`r9 ^= K` sonra `r9 -= 1`), sayaç monoton azalmıyor, döngünün
+sonlanma kanıtı yok, ve verifier guest'in belleği bitene kadar durum ayırıyor.
+
+Düzeltme tek satır: sayaç asla gövdenin hedefi olamaz. Tur sayısını kısmak yardım
+etmemişti çünkü yanlış değişkeni kısıyordum.
+
+### 4. Sonuç
+
+| | önce | sonra |
+|---|---|---|
+| `avgstates` | 1 | **2** |
+| `maxstates` (base/freq) | 7/17 | **9/34** |
+| kapsama | 5261 | **5406** |
+| korpus | 144 | 154 |
+| bulgu | 0 | **0** |
+
+İş hacmi 346k → 250k: daha derin doğrulama bedava değil, ve derinlik zaten amaçtı.
+
+`avgstates=2` hâlâ mütevazı. Ama artık sayının ne olduğunu ve neyin yükselttiğini
+biliyoruz — ve test bunu bir eşik olarak taşıyor, böylece gramer sığlaşırsa görünür oluyor.
+
+Workspace 338 yeşil.

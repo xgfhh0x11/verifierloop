@@ -1,322 +1,284 @@
 JITMODE requested=default actual=1
-FUZZ start budget=300s corpus_max=4096
-CORPUS n=1 new_pcs=2734 seen=2734 verdict=reject genes=7 hi=0:0.2.1.6.21,15.2.1.14.51,11.2.0.2.60,15.0.2.13.52,3.1.0.3.0,7.0.1.2.16,14.2.2.11.45
-CORPUS n=2 new_pcs=1238 seen=3972 verdict=accept genes=8 hi=1:10.2.1.2.7,7.2.0.8.46,8.1.1.1.14,8.0.1.2.41,0.1.2.12.8,5.2.1.7.10,2.1.0.11.51,9.0.2.2.20
-CORPUS n=3 new_pcs=120 seen=4092 verdict=reject genes=5 hi=0:4.0.2.10.63,1.1.0.3.9,5.2.2.14.3,11.1.2.12.24,13.2.2.13.53
-CORPUS n=4 new_pcs=26 seen=4118 verdict=accept genes=8 hi=1:10.2.1.2.7,7.2.0.8.46,8.1.1.1.14,8.0.1.2.41,0.1.2.12.8,5.2.1.7.10,2.1.0.3.51,9.0.2.2.20
-CORPUS n=5 new_pcs=13 seen=4131 verdict=accept genes=8 hi=1:10.2.1.2.7,7.2.0.8.46,8.1.1.1.14,0.0.1.2.41,0.1.2.12.8,5.2.1.7.10,2.1.0.3.51,9.0.2.2.20
-CORPUS n=6 new_pcs=3 seen=4134 verdict=accept genes=7 hi=1:10.2.1.2.7,7.2.0.8.46,8.0.1.2.41,0.1.2.12.8,5.2.1.7.10,2.1.0.3.51,9.0.2.2.20
-CORPUS n=7 new_pcs=204 seen=4338 verdict=accept genes=7 hi=1:2.1.0.5.11,13.1.1.13.38,14.0.2.9.45,3.2.0.5.34,11.0.0.4.32,9.0.0.5.61,5.1.0.12.15
-CORPUS n=8 new_pcs=40 seen=4378 verdict=accept genes=5 hi=0:2.0.1.10.44,4.2.2.9.1,13.0.0.11.25,3.1.2.8.45,0.1.0.5.60
-CORPUS n=9 new_pcs=14 seen=4392 verdict=accept genes=8 hi=1:10.2.1.2.7,7.2.0.8.46,8.1.1.1.14,8.0.1.2.41,0.1.2.12.8,3.2.2.7.49,2.1.0.11.51,9.0.2.2.20
-CORPUS n=10 new_pcs=1 seen=4393 verdict=accept genes=8 hi=1:10.2.1.2.7,7.2.0.8.46,8.1.1.1.14,8.0.1.2.41,0.1.2.12.8,5.2.1.7.10,2.1.0.3.51,9.0.2.1.20
-CORPUS n=11 new_pcs=19 seen=4412 verdict=reject genes=6 hi=1:7.0.2.8.38,11.2.2.9.38,13.2.1.15.46,16.2.2.6.53,9.2.0.14.9,6.1.2.3.17
-CORPUS n=12 new_pcs=75 seen=4487 verdict=reject genes=7 hi=1:6.1.2.1.36,12.1.2.10.34,7.2.0.14.26,3.2.1.15.49,7.1.0.6.13,16.0.0.2.49,16.0.0.6.15
-CORPUS n=13 new_pcs=1 seen=4488 verdict=reject genes=6 hi=1:6.1.2.1.36,12.1.2.10.34,3.2.1.15.49,7.1.0.6.13,10.2.2.4.33,16.0.0.6.15
-CORPUS n=14 new_pcs=5 seen=4493 verdict=accept genes=4 hi=1:14.0.1.12.29,5.0.1.13.27,3.0.2.5.29,13.0.0.7.27
-CORPUS n=15 new_pcs=22 seen=4515 verdict=reject genes=7 hi=0:0.2.1.6.21,15.2.1.14.51,11.2.0.2.36,15.0.2.13.52,3.1.0.3.0,7.0.1.2.16,14.2.2.11.45
-CORPUS n=16 new_pcs=1 seen=4516 verdict=accept genes=8 hi=1:10.2.1.2.7,14.2.2.7.3,7.2.0.8.46,8.1.1.1.14,8.0.1.2.41,0.1.2.12.8,5.2.1.7.10,9.0.2.1.20
-CORPUS n=17 new_pcs=5 seen=4521 verdict=accept genes=8 hi=1:10.2.1.2.7,7.2.0.8.17,8.1.1.1.14,8.0.1.2.41,0.1.2.12.8,5.2.1.7.10,2.1.0.3.51,9.0.2.1.20
-CORPUS n=18 new_pcs=3 seen=4524 verdict=accept genes=8 hi=1:10.2.1.2.7,7.2.0.8.48,8.1.1.1.14,8.0.1.2.41,0.1.2.12.8,5.2.1.4.10,2.1.0.3.51,9.0.2.2.20
-CORPUS n=19 new_pcs=40 seen=4564 verdict=accept genes=4 hi=0:5.1.0.11.30,5.0.0.7.1,16.1.1.7.4,0.1.0.11.17
-CORPUS n=20 new_pcs=8 seen=4572 verdict=reject genes=3 hi=0:16.0.1.6.59,2.0.2.12.10,12.0.2.12.22
-CORPUS n=21 new_pcs=37 seen=4609 verdict=accept genes=7 hi=1:16.0.1.1.18,10.0.0.3.14,16.0.1.8.6,10.1.0.2.25,15.2.2.1.39,3.1.2.5.20,6.2.2.2.9
-CORPUS n=22 new_pcs=1 seen=4610 verdict=accept genes=8 hi=1:8.2.1.14.7,2.2.2.7.3,7.2.0.8.46,8.1.1.1.14,8.0.1.2.41,0.1.2.12.8,5.2.1.7.10,9.0.2.1.20
-CORPUS n=23 new_pcs=1 seen=4611 verdict=accept genes=4 hi=0:4.2.2.9.1,13.0.0.11.25,3.1.2.8.45,0.1.0.5.60
-CORPUS n=24 new_pcs=3 seen=4614 verdict=accept genes=6 hi=1:16.0.1.1.18,10.0.0.3.14,16.0.1.8.6,15.2.2.1.39,3.1.2.5.20,6.2.2.2.9
-CORPUS n=25 new_pcs=10 seen=4624 verdict=accept genes=4 hi=1:14.0.1.12.29,5.0.1.13.27,3.0.2.5.29,15.0.0.7.27
-CORPUS n=26 new_pcs=17 seen=4641 verdict=accept genes=5 hi=1:13.0.0.4.53,15.0.1.6.57,3.0.1.3.57,3.2.1.14.47,4.1.0.8.33
-CORPUS n=27 new_pcs=25 seen=4666 verdict=accept genes=7 hi=1:8.2.1.14.7,2.2.2.7.3,14.2.0.15.38,8.1.1.1.14,8.0.1.2.41,5.2.1.7.10,9.0.2.1.20
-CORPUS n=28 new_pcs=4 seen=4670 verdict=accept genes=6 hi=1:13.0.0.4.53,15.0.1.6.57,3.0.1.3.57,14.0.2.5.40,3.2.1.14.47,4.1.0.8.33
-CORPUS n=29 new_pcs=11 seen=4681 verdict=reject genes=6 hi=1:13.0.0.4.53,15.1.1.6.57,3.0.1.3.57,3.2.1.14.47,4.1.0.8.33,11.1.1.7.18
-CORPUS n=30 new_pcs=7 seen=4688 verdict=reject genes=6 hi=0:13.0.0.4.53,13.2.1.3.41,3.0.1.3.57,3.2.1.14.47,4.1.0.8.33,11.1.1.7.18
-CORPUS n=31 new_pcs=2 seen=4690 verdict=reject genes=8 hi=1:12.0.2.15.55,7.1.2.14.16,6.1.2.10.41,8.2.0.8.39,13.2.0.11.46,2.1.0.14.3,14.0.0.8.52,1.2.0.2.34
-CORPUS n=32 new_pcs=3 seen=4693 verdict=accept genes=7 hi=1:2.1.0.5.11,10.1.1.13.38,14.0.2.9.45,3.2.0.5.34,11.0.0.4.32,13.0.0.5.61,5.1.0.12.15
-CORPUS n=33 new_pcs=50 seen=4743 verdict=reject genes=5 hi=0:4.0.2.10.63,5.2.2.14.3,12.2.1.1.57,11.1.2.12.24,13.2.2.13.53
-CORPUS n=34 new_pcs=21 seen=4764 verdict=reject genes=6 hi=0:15.1.2.10.32,4.0.2.10.63,5.2.2.14.3,12.2.1.1.57,11.1.2.12.24,13.2.2.13.53
-CORPUS n=35 new_pcs=6 seen=4770 verdict=accept genes=7 hi=1:16.0.1.1.21,10.0.0.3.14,16.0.1.8.6,10.1.0.2.25,15.2.2.1.39,3.1.2.5.20,6.2.2.2.9
-CORPUS n=36 new_pcs=2 seen=4772 verdict=reject genes=5 hi=1:15.2.2.8.43,5.2.2.14.3,12.2.1.1.57,11.1.2.12.24,13.2.2.13.53
-CORPUS n=37 new_pcs=4 seen=4776 verdict=accept genes=9 hi=1:8.2.1.14.7,2.2.2.7.3,9.2.1.7.27,7.2.0.8.46,8.1.1.1.14,8.0.1.14.41,0.1.2.12.8,5.2.1.7.10,9.0.2.1.20
-CORPUS n=38 new_pcs=11 seen=4787 verdict=accept genes=5 hi=0:10.0.1.12.22,1.1.2.3.38,10.2.1.13.42,2.2.0.7.33,1.0.2.3.18
-CORPUS n=39 new_pcs=2 seen=4789 verdict=accept genes=8 hi=1:10.2.1.2.7,7.2.0.8.48,8.1.1.1.14,8.0.1.2.41,0.1.2.12.8,5.2.1.4.10,0.1.0.6.10,9.0.2.2.20
-CORPUS n=40 new_pcs=4 seen=4793 verdict=accept genes=7 hi=0:0.0.2.6.42,8.2.0.7.61,9.1.1.13.32,1.0.2.7.52,7.0.1.5.5,16.1.1.1.23,16.0.0.5.48
-CORPUS n=41 new_pcs=6 seen=4799 verdict=accept genes=3 hi=1:3.0.2.4.33,4.1.2.15.52,14.1.0.14.42
-CORPUS n=42 new_pcs=5 seen=4804 verdict=accept genes=3 hi=0:15.1.0.2.47,14.2.2.13.15,13.0.2.13.62
-CORPUS n=43 new_pcs=11 seen=4815 verdict=accept genes=8 hi=1:9.0.2.13.3,8.0.0.8.12,8.1.2.13.59,14.2.1.5.60,3.1.2.1.12,8.2.2.9.36,13.0.2.3.2,11.2.0.14.5
-CORPUS n=44 new_pcs=4 seen=4819 verdict=accept genes=7 hi=1:16.0.1.1.18,10.0.0.3.14,16.0.1.8.6,10.1.0.2.25,3.1.2.14.5,3.1.2.5.20,6.2.2.2.9
-CORPUS n=45 new_pcs=1 seen=4820 verdict=reject genes=6 hi=0:15.1.2.10.32,0.1.2.2.63,5.2.2.14.3,12.2.1.1.57,11.1.2.12.24,13.2.2.13.21
-CORPUS n=46 new_pcs=4 seen=4824 verdict=accept genes=5 hi=0:10.0.1.12.22,1.1.2.3.38,10.2.1.13.42,2.2.0.7.33,1.1.0.3.18
-CORPUS n=47 new_pcs=5 seen=4829 verdict=accept genes=6 hi=1:13.0.0.4.53,15.0.1.6.57,3.0.1.3.57,14.0.2.5.40,14.2.2.15.31,4.1.0.8.33
-CORPUS n=48 new_pcs=1 seen=4830 verdict=accept genes=7 hi=1:10.2.1.2.7,14.2.2.7.3,7.2.0.8.46,8.1.1.1.14,8.0.1.2.0,5.2.1.7.10,9.0.2.1.20
-CORPUS n=49 new_pcs=1 seen=4831 verdict=accept genes=3 hi=0:0.1.0.9.34,14.2.1.10.53,2.2.1.1.7
-CORPUS n=50 new_pcs=30 seen=4861 verdict=reject genes=8 hi=1:10.2.1.2.7,7.2.0.8.46,8.1.1.1.14,8.0.1.2.41,0.1.2.12.8,12.0.0.3.40,2.1.0.11.51,9.0.2.2.20
-CORPUS n=51 new_pcs=4 seen=4865 verdict=accept genes=4 hi=0:4.0.2.10.63,12.2.1.1.57,15.2.2.1.37,13.2.2.13.53
-CORPUS n=52 new_pcs=1 seen=4866 verdict=accept genes=8 hi=1:16.0.1.1.21,10.0.0.3.14,8.1.2.14.20,16.0.1.8.6,10.1.0.2.25,15.2.2.1.39,3.1.2.2.20,6.2.2.2.9
-CORPUS n=53 new_pcs=14 seen=4880 verdict=accept genes=8 hi=1:10.2.1.2.7,7.2.0.8.46,8.1.1.1.14,8.0.1.2.41,0.1.2.12.8,3.2.1.7.10,2.1.0.3.51,9.0.2.1.20
-CORPUS n=54 new_pcs=8 seen=4888 verdict=accept genes=3 hi=0:4.1.0.1.38,13.0.2.12.50,14.2.2.13.37
-CORPUS n=55 new_pcs=1 seen=4889 verdict=accept genes=5 hi=1:15.0.1.4.11,8.2.2.1.30,14.1.1.7.27,4.2.2.9.62,3.1.1.2.48
-CORPUS n=56 new_pcs=1 seen=4890 verdict=accept genes=4 hi=0:13.1.0.6.12,16.1.0.12.33,2.0.0.6.13,5.1.2.12.4
-CORPUS n=57 new_pcs=2 seen=4892 verdict=accept genes=3 hi=1:16.2.0.6.42,8.2.0.6.5,4.0.0.9.27
-CORPUS n=58 new_pcs=3 seen=4895 verdict=accept genes=8 hi=0:9.0.2.13.3,4.0.0.8.12,8.1.2.13.59,14.2.1.5.60,3.1.2.1.12,8.2.2.9.36,13.0.2.3.2,11.2.0.14.5
-CORPUS n=59 new_pcs=1 seen=4896 verdict=accept genes=6 hi=1:16.0.0.4.53,15.2.1.6.57,3.0.1.3.57,14.0.2.5.40,14.2.2.15.31,4.1.0.8.33
-CORPUS n=60 new_pcs=55 seen=4951 verdict=accept genes=6 hi=1:13.0.0.4.53,3.0.1.3.57,3.2.1.14.47,4.0.1.13.47,4.1.0.8.33,11.1.1.7.18
-CORPUS n=61 new_pcs=1 seen=4952 verdict=accept genes=9 hi=1:13.1.1.10.11,10.2.1.2.7,7.2.0.8.17,8.1.1.1.14,8.0.1.2.41,0.1.2.12.8,5.1.2.7.10,2.1.0.3.51,9.0.2.1.20
-CORPUS n=62 new_pcs=1 seen=4953 verdict=reject genes=4 hi=1:10.2.0.4.15,9.2.1.5.18,11.0.1.15.12,14.1.1.3.36
-CORPUS n=63 new_pcs=1 seen=4954 verdict=accept genes=8 hi=1:10.2.1.2.7,7.2.0.8.46,8.1.1.1.14,0.0.1.2.41,0.1.2.12.8,5.2.1.7.10,2.1.0.3.24,9.0.2.10.20
-CORPUS n=64 new_pcs=1 seen=4955 verdict=accept genes=7 hi=1:2.1.0.5.11,10.1.1.13.38,14.0.2.9.45,3.2.0.5.34,9.0.0.4.32,13.0.0.5.61,7.1.0.12.15
-CORPUS n=65 new_pcs=2 seen=4957 verdict=accept genes=5 hi=0:4.0.2.10.63,1.1.0.3.9,5.2.2.14.3,5.1.2.12.24,13.2.2.13.42
-CORPUS n=66 new_pcs=1 seen=4958 verdict=accept genes=4 hi=0:5.1.0.11.30,10.1.2.6.7,16.1.1.7.4,0.1.0.11.17
-CORPUS n=67 new_pcs=1 seen=4959 verdict=reject genes=5 hi=1:4.0.0.15.3,10.0.2.8.48,6.2.0.10.7,15.2.1.15.47,12.0.0.5.57
-CORPUS n=68 new_pcs=1 seen=4960 verdict=accept genes=4 hi=1:3.0.2.4.33,15.0.2.13.4,2.0.2.4.16,14.1.0.14.42
-CORPUS n=69 new_pcs=1 seen=4961 verdict=accept genes=8 hi=1:10.2.1.2.7,7.2.0.8.46,8.1.1.1.14,8.0.1.2.41,0.1.2.12.8,5.2.1.7.10,9.1.0.11.51,9.0.2.2.20
-CORPUS n=70 new_pcs=3 seen=4964 verdict=accept genes=8 hi=1:5.0.1.10.15,15.0.0.9.29,15.1.2.13.11,3.0.1.7.0,10.0.0.5.31,12.0.2.2.50,2.0.1.8.60,2.2.0.6.27
-CORPUS n=71 new_pcs=2 seen=4966 verdict=accept genes=8 hi=1:10.2.2.2.7,7.2.0.8.7,8.1.1.1.14,8.0.1.2.41,0.1.2.12.8,3.2.1.7.10,2.1.0.3.51,9.0.2.1.20
-CORPUS n=72 new_pcs=1 seen=4967 verdict=accept genes=8 hi=1:16.0.1.1.21,10.0.0.3.14,8.1.2.14.20,16.0.1.8.6,10.1.0.2.25,15.1.0.5.14,3.1.2.2.20,6.2.2.2.9
-CORPUS n=73 new_pcs=3 seen=4970 verdict=accept genes=5 hi=1:4.0.0.15.3,10.0.2.8.48,14.0.2.7.18,15.2.1.15.47,12.0.0.5.57
-CORPUS n=74 new_pcs=1 seen=4971 verdict=accept genes=6 hi=1:13.0.0.4.53,15.0.1.6.57,3.0.1.3.57,14.0.2.5.18,3.2.1.14.47,4.1.0.8.33
-CORPUS n=75 new_pcs=4 seen=4975 verdict=accept genes=7 hi=1:15.0.1.14.3,13.0.0.4.53,15.1.1.6.57,3.0.1.3.57,3.2.1.14.47,4.1.0.8.33,11.1.1.7.18
-CORPUS n=76 new_pcs=2 seen=4977 verdict=accept genes=4 hi=1:13.0.0.4.53,3.0.1.3.57,3.2.1.14.47,4.1.0.8.33
-CORPUS n=77 new_pcs=1 seen=4978 verdict=accept genes=4 hi=1:15.2.2.8.43,15.2.2.14.3,12.2.1.1.57,13.2.2.13.53
-CORPUS n=78 new_pcs=2 seen=4980 verdict=reject genes=6 hi=1:15.0.2.2.45,10.1.1.2.25,8.2.2.14.46,3.0.2.8.57,0.1.1.10.52,12.2.0.14.6
-CORPUS n=79 new_pcs=1 seen=4981 verdict=accept genes=5 hi=1:4.0.0.15.3,10.0.2.8.48,14.0.2.7.1,15.2.1.15.47,12.0.0.5.57
-CORPUS n=80 new_pcs=6 seen=4987 verdict=accept genes=6 hi=0:15.0.0.3.30,11.0.1.3.44,4.2.0.6.38,1.2.1.13.14,16.2.0.13.47,8.1.1.2.6
-CORPUS n=81 new_pcs=1 seen=4988 verdict=reject genes=8 hi=0:16.2.0.12.63,4.0.0.13.34,14.0.1.15.51,11.2.2.14.23,6.0.1.7.40,6.2.1.10.33,11.1.1.3.4,1.2.0.13.24
-CORPUS n=82 new_pcs=6 seen=4994 verdict=reject genes=7 hi=1:8.2.2.8.0,15.0.1.12.34,7.1.1.8.15,7.0.0.4.2,0.2.1.14.16,16.2.2.15.30,11.2.2.6.37
-CORPUS n=83 new_pcs=8 seen=5002 verdict=reject genes=8 hi=0:9.2.2.4.32,16.0.0.3.21,15.0.0.6.59,2.0.0.3.3,13.2.0.12.39,16.0.0.15.49,9.1.1.15.37,12.2.2.15.33
-CORPUS n=84 new_pcs=11 seen=5013 verdict=accept genes=6 hi=0:15.0.0.3.30,11.0.1.3.44,4.2.0.6.38,1.2.1.13.14,16.2.0.13.60,8.1.1.2.6
-CORPUS n=85 new_pcs=3 seen=5016 verdict=reject genes=8 hi=1:2.1.0.5.11,10.1.1.13.38,11.1.2.1.22,14.0.2.9.45,3.2.0.5.34,9.0.0.4.32,13.0.0.5.61,7.1.0.12.15
-CORPUS n=86 new_pcs=6 seen=5022 verdict=accept genes=7 hi=1:10.2.1.2.7,15.2.2.7.3,7.2.0.8.46,8.0.1.1.14,8.0.1.2.0,5.2.1.7.10,9.0.2.1.20
-CORPUS n=87 new_pcs=7 seen=5029 verdict=reject genes=9 hi=0:9.2.2.4.32,16.0.0.3.21,15.0.0.6.59,2.0.0.3.3,13.2.0.12.39,14.1.0.12.26,16.0.0.15.49,9.1.1.15.37,12.2.2.15.33
-CORPUS n=88 new_pcs=2 seen=5031 verdict=accept genes=6 hi=0:5.0.1.1.35,15.0.0.3.30,4.2.0.6.38,1.2.1.13.14,16.2.0.13.60,8.1.1.2.6
-CORPUS n=89 new_pcs=1 seen=5032 verdict=accept genes=6 hi=0:13.0.0.4.53,15.0.1.6.57,14.0.2.5.40,3.2.1.14.47,1.0.1.11.46,4.1.0.8.33
-CORPUS n=90 new_pcs=1 seen=5033 verdict=accept genes=8 hi=0:15.0.0.3.16,8.2.2.6.32,4.0.0.2.19,9.0.0.1.52,6.0.2.14.23,12.0.2.2.60,11.1.2.11.35,6.0.1.2.31
-CORPUS n=91 new_pcs=5 seen=5038 verdict=accept genes=3 hi=0:15.0.1.15.59,16.1.1.2.41,16.2.0.9.4
-STATUS iters=2000 accept=1360 reject=640 corpus=91 seen_pcs=5038 compared=10880 findings=0 trunc=0 prunepairs=332 pruneflip=0 pruneartifact=0 invfault=0 elapsed=1s
-CORPUS n=92 new_pcs=6 seen=5044 verdict=accept genes=5 hi=1:4.0.0.15.3,4.2.0.12.32,6.2.0.10.7,15.2.1.15.16,12.0.0.5.57
-CORPUS n=93 new_pcs=1 seen=5045 verdict=reject genes=7 hi=1:10.2.1.2.7,15.2.2.7.3,7.2.0.8.46,8.0.1.14.14,8.0.1.2.0,12.2.1.7.10,9.0.2.1.20
-CORPUS n=94 new_pcs=2 seen=5047 verdict=accept genes=7 hi=1:10.2.1.2.7,15.2.2.7.3,7.2.0.8.46,8.0.1.1.14,2.2.0.7.41,5.2.1.7.10,9.2.2.1.20
-CORPUS n=95 new_pcs=1 seen=5048 verdict=accept genes=7 hi=1:15.1.1.9.51,5.0.1.7.21,14.2.0.8.16,1.0.2.2.41,7.2.2.4.59,15.1.2.6.8,6.1.1.11.19
-CORPUS n=96 new_pcs=1 seen=5049 verdict=accept genes=8 hi=1:16.0.1.1.21,10.0.0.3.14,8.1.2.14.20,16.0.1.8.6,10.1.0.2.25,16.2.2.1.39,3.1.2.2.20,6.2.2.2.9
-CORPUS n=97 new_pcs=5 seen=5054 verdict=accept genes=6 hi=1:13.0.0.3.14,4.2.0.12.32,2.2.1.13.11,6.2.0.10.7,15.2.1.15.16,12.0.0.5.57
-CORPUS n=98 new_pcs=4 seen=5058 verdict=reject genes=9 hi=1:16.0.1.1.21,10.0.0.3.14,12.2.0.14.15,8.1.2.14.20,16.0.1.8.6,10.1.0.2.25,15.1.0.5.14,3.1.2.2.20,6.2.2.2.9
-CORPUS n=99 new_pcs=2 seen=5060 verdict=accept genes=8 hi=1:10.2.1.2.7,6.2.2.1.47,15.2.2.7.3,5.2.0.8.46,8.0.1.1.14,2.2.0.7.41,5.2.1.7.10,9.2.2.1.20
-CORPUS n=100 new_pcs=1 seen=5061 verdict=accept genes=8 hi=1:16.0.1.1.21,10.0.0.3.14,8.1.2.14.42,16.0.1.8.6,10.1.0.2.25,15.1.0.5.14,3.1.2.2.20,6.2.2.2.9
-CORPUS n=101 new_pcs=1 seen=5062 verdict=accept genes=6 hi=0:0.1.2.9.22,6.2.1.8.35,13.1.1.15.62,4.2.1.3.27,9.1.2.11.51,12.1.0.14.38
-CORPUS n=102 new_pcs=2 seen=5064 verdict=accept genes=6 hi=1:6.0.0.15.3,14.1.0.7[    5.314058] clocksource: Watchdog remote CPU 1 read timed out
-.39,4.2.0.12.32,6.2.0.10.7,15.2.1.15.16,12.0.0.5.57
-CORPUS n=103 new_pcs=1 seen=5065 verdict=reject genes=8 hi=0:15.0.0.3.16,8.2.2.6.32,4.0.0.2.19,9.0.0.1.52,8.0.2.14.23,12.0.2.2.60,11.1.2.11.35,6.0.1.2.31
-STATUS iters=4000 accept=2708 reject=1292 corpus=103 seen_pcs=5065 compared=21664 findings=0 trunc=0 prunepairs=593 pruneflip=0 pruneartifact=0 invfault=0 elapsed=3s
-CORPUS n=104 new_pcs=32 seen=5097 verdict=accept genes=8 hi=0:3.2.0.10.50,11.0.0.15.10,16.1.0.8.3,16.1.1.4.13,16.0.1.8.17,16.1.2.15.47,9.1.2.14.59,2.1.1.8.61
-CORPUS n=105 new_pcs=1 seen=5098 verdict=accept genes=8 hi=0:3.2.0.10.50,11.0.0.15.10,5.0.0.2.22,16.1.0.8.3,16.1.1.4.13,16.0.1.8.17,16.1.2.15.47,9.1.2.14.59
-CORPUS n=106 new_pcs=17 seen=5115 verdict=accept genes=5 hi=1:15.2.2.8.43,9.2.2.14.3,12.2.1.1.57,11.1.2.12.24,13.2.2.13.53
-CORPUS n=107 new_pcs=8 seen=5123 verdict=accept genes=6 hi=1:13.0.0.3.14,4.2.0.12.32,14.2.2.7.57,6.2.0.10.7,15.2.1.15.16,12.0.0.5.57
-CORPUS n=108 new_pcs=18 seen=5141 verdict=accept genes=9 hi=1:13.1.0.13.48,16.0.1.1.21,10.0.0.3.14,8.2.2.14.42,16.0.1.8.6,10.1.0.2.25,15.1.0.5.14,3.1.2.2.20,6.2.2.2.9
-CORPUS n=109 new_pcs=2 seen=5143 verdict=accept genes=9 hi=1:13.1.0.13.30,16.0.1.1.21,10.0.0.3.14,8.2.2.14.28,16.0.1.8.6,10.1.0.2.25,15.1.0.5.14,3.1.2.2.20,6.2.2.2.9
-CORPUS n=110 new_pcs=1 seen=5144 verdict=accept genes=5 hi=1:4.0.0.15.3,10.0.2.13.48,14.0.2.7.18,12.2.1.15.47,12.0.0.5.57
-CORPUS n=111 new_pcs=1 seen=5145 verdict=accept genes=8 hi=1:16.0.1.1.21,10.0.0.3.14,8.0.0.14.20,0.0.1.8.6,10.1.0.2.25,16.2.2.1.39,3.1.2.2.20,6.2.2.2.9
-STATUS iters=6000 accept=4098 reject=1902 corpus=111 seen_pcs=5145 compared=32784 findings=0 trunc=0 prunepairs=850 pruneflip=0 pruneartifact=0 invfault=0 elapsed=5s
-STATUS iters=8000 accept=5463 reject=2537 corpus=111 seen_pcs=5145 compared=43704 findings=0 trunc=0 prunepairs=1100 pruneflip=0 pruneartifact=0 invfault=0 elapsed=7s
-CORPUS n=112 new_pcs=2 seen=5147 verdict=accept genes=9 hi=0:9.2.2.4.32,16.0.0.3.21,15.0.0.6.59,2.0.0.3.3,13.2.0.12.39,14.1.0.12.15,16.0.0.15.49,9.1.1.9.37,12.2.2.15.33
-CORPUS n=113 new_pcs=1 seen=5148 verdict=accept genes=8 hi=1:14.0.1.13.21,10.0.0.3.14,8.1.2.14.20,16.0.1.8.6,10.1.0.2.25,15.1.0.5.14,3.1.2.2.20,6.2.2.2.9
-CORPUS n=114 new_pcs=4 seen=5152 verdict=accept genes=8 hi=0:9.0.2.13.3,4.0.0.8.12,8.1.2.13.59,14.2.1.5.60,3.1.2.1.12,8.2.2.9.36,13.0.2.3.62,11.2.0.14.5
-STATUS iters=10000 accept=6856 reject=3144 corpus=114 seen_pcs=5152 compared=54848 findings=0 trunc=0 prunepairs=1353 pruneflip=0 pruneartifact=0 invfault=0 elapsed=9s
-CORPUS n=115 new_pcs=3 seen=5155 verdict=accept genes=8 hi=0:9.0.2.13.3,4.0.0.8.12,0.1.1.1.29,14.2.1.5.60,3.1.2.1.12,8.2.2.9.36,13.0.2.3.2,11.2.0.14.5
-CORPUS n=116 new_pcs=1 seen=5156 verdict=reject genes=6 hi=0:16.0.0.9.27,9.0.2.14.41,12.2.2.10.5,1.2.2.9.49,6.0.1.13.39,0.1.1.1.53
-CORPUS n=117 new_pcs=1 seen=5157 verdict=accept genes=4 hi=1:14.0.1.12.29,5.0.1.13.27,3.0.2.5.29,15.0.0.7.33
-CORPUS n=118 new_pcs=2 seen=5159 verdict=reject genes=6 hi=1:16.0.2.6.30,10.0.0.7.32,9.2.0.2.32,11.0.0.11.24,0.2.2.11.51,8.2.0.4.58
-CORPUS n=119 new_pcs=1 seen=5160 verdict=accept genes=4 hi=0:5.1.0.11.30,15.1.2.1.9,16.1.1.7.4,0.1.0.11.17
-CORPUS n=120 new_pcs=3 seen=5163 verdict=reject genes=3 hi=1:8.1.0.10.3,0.1.2.3.8,12.0.2.1.6
-CORPUS n=121 new_pcs=1 seen=5164 verdict=accept genes=7 hi=1:16.0.1.1.18,10.0.0.3.14,16.0.1.8.6,10.1.0.2.25,7.1.2.14.5,3.1.2.5.20,6.2.2.2.9
-CORPUS n=122 new_pcs=1 seen=5165 verdict=accept genes=8 hi=0:9.0.2.13.3,8.0.0.8.12,8.1.2.13.59,14.2.1.5.60,3.1.2.1.12,8.2.2.9.36,13.0.2.3.29,11.2.0.14.5
-CORPUS n=123 new_pcs=1 seen=5166 verdict=accept genes=9 hi=1:16.0.1.1.21,10.0.0.3.14,15.1.0.3.11,8.1.2.14.42,16.0.1.8.6,10.1.0.2.25,15.1.0.5.14,14.0.1.13.55,6.2.2.2.9
-STATUS iters=12000 accept=8227 reject=3773 corpus=123 seen_pcs=5166 compared=65816 findings=0 trunc=0 prunepairs=1612 pruneflip=0 pruneartifact=0 invfault=0 elapsed=11s
-STATUS iters=14000 accept=9599 reject=4401 corpus=123 seen_pcs=5166 compared=76792 findings=0 trunc=0 prunepairs=1862 pruneflip=0 pruneartifact=0 invfault=0 elapsed=13s
-STATUS iters=16000 accept=10939 reject=5061 corpus=123 seen_pcs=5166 compared=87512 findings=0 trunc=0 prunepairs=2112 pruneflip=0 pruneartifact=0 invfault=0 elapsed=14s
-CORPUS n=124 new_pcs=2 seen=5168 verdict=accept genes=8 hi=1:1.0.2.5.16,9.1.0.7.36,5.2.2.12.3,6.0.2.6.49,3.1.2.11.21,6.0.1.11.62,15.1.0.8.45,13.0.0.11.36
-STATUS iters=18000 accept=12330 reject=5670 corpus=124 seen_pcs=5168 compared=98640 findings=0 trunc=0 prunepairs=2363 pruneflip=0 pruneartifact=0 invfault=0 elapsed=16s
-CORPUS n=125 new_pcs=3 seen=5171 verdict=accept genes=5 hi=0:3.0.0.5.62,13.1.1.7.34,14.0.1.1.3,12.0.0.10.0,6.2.0.5.9
-CORPUS n=126 new_pcs=1 seen=5172 verdict=accept genes=8 hi=1:13.1.0.13.48,16.0.1.1.21,10.0.0.3.14,8.2.2.14.42,16.0.1.8.6,15.1.0.5.14,16.0.0.2.29,6.2.2.2.9
-CORPUS n=127 new_pcs=1 seen=5173 verdict=accept genes=8 hi=1:1.1.1.5.25,16.0.0.11.60,6.2.0.15.4,3.1.0.3.61,1.2.1.13.51,16.0.2.6.2,3.2.2.15.1,2.2.1.14.7
-CORPUS n=128 new_pcs=8 seen=5181 verdict=accept genes=5 hi=0:8.1.2.10.49,7.1.1.4.36,15.0.0.13.8,5.2.2.14.59,2.1.2.6.56
-STATUS iters=20000 accept=13699 reject=6301 corpus=128 seen_pcs=5181 compared=109592 findings=0 trunc=0 prunepairs=2616 pruneflip=0 pruneartifact=0 invfault=0 elapsed=18s
-CORPUS n=129 new_pcs=5 seen=5186 verdict=accept genes=4 hi=0:6.1.0.2.47,14.2.2.13.15,13.0.2.13.62,13.2.0.13.31
-CORPUS n=130 new_pcs=1 seen=5187 verdict=accept genes=3 hi=1:15.0.1.15.59,14.2.0.10.57,16.2.0.9.4
-STATUS iters=22000 accept=15098 reject=6902 corpus=130 seen_pcs=5187 compared=120784 findings=0 trunc=0 prunepairs=2868 pruneflip=0 pruneartifact=0 invfault=0 elapsed=20s
-STATUS iters=24000 accept=16500 reject=7500 corpus=130 seen_pcs=5187 compared=132000 findings=0 trunc=0 prunepairs=3118 pruneflip=0 pruneartifact=0 invfault=0 elapsed=21s
-STATUS iters=26000 accept=17896 reject=8104 corpus=130 seen_pcs=5187 compared=143168 findings=0 trunc=0 prunepairs=3368 pruneflip=0 pruneartifact=0 invfault=0 elapsed=23s
-STATUS iters=28000 accept=19273 reject=8727 corpus=130 seen_pcs=5187 compared=154184 findings=0 trunc=0 prunepairs=3618 pruneflip=0 pruneartifact=0 invfault=0 elapsed=25s
-CORPUS n=131 new_pcs=1 seen=5188 verdict=accept genes=9 hi=1:16.0.1.1.21,10.0.0.3.11,15.1.0.3.11,8.1.2.14.42,16.0.1.8.6,10.1.0.2.25,15.1.0.5.14,14.0.1.13.55,6.2.2.2.9
-CORPUS n=132 new_pcs=1 seen=5189 verdict=reject genes=8 hi=0:0.2.2.11.28,6.0.0.13.61,13.0.1.4.18,7.0.0.13.60,9.2.0.4.24,9.0.0.11.28,9.2.0.2.15,12.0.0.15.56
-STATUS iters=30000 accept=20679 reject=9321 corpus=132 seen_pcs=5189 compared=165432 findings=0 trunc=0 prunepairs=3869 pruneflip=0 pruneartifact=0 invfault=0 elapsed=27s
-CORPUS n=133 new_pcs=2 seen=5191 verdict=accept genes=7 hi=1:13.1.1.10.11,7.2.0.8.17,8.1.1.1.14,8.0.1.2.41,0.1.2.12.8,5.1.2.7.10,9.0.2.1.20
-STATUS iters=32000 accept=22051 reject=9949 corpus=133 seen_pcs=5191 compared=176408 findings=0 trunc=0 prunepairs=4119 pruneflip=0 pruneartifact=0 invfault=0 elapsed=28s
-CORPUS n=134 new_pcs=4 seen=5195 verdict=reject genes=3 hi=0:2.0.0.10.8,13.2.2.9.41,11.2.0.8.60
-STATUS iters=34000 accept=23439 reject=10561 corpus=134 seen_pcs=5195 compared=187512 findings=0 trunc=0 prunepairs=4370 pruneflip=0 pruneartifact=0 invfault=0 elapsed=30s
-STATUS iters=36000 accept=24820 reject=11180 corpus=134 seen_pcs=5195 compared=198560 findings=0 trunc=0 prunepairs=4620 pruneflip=0 pruneartifact=0 invfault=0 elapsed=32s
-STATUS iters=38000 accept=26207 reject=11793 corpus=134 seen_pcs=5195 compared=209656 findings=0 trunc=1 prunepairs=4870 pruneflip=0 pruneartifact=0 invfault=0 elapsed=34s
-STATUS iters=40000 accept=27577 reject=12423 corpus=134 seen_pcs=5195 compared=220616 findings=0 trunc=1 prunepairs=5120 pruneflip=0 pruneartifact=0 invfault=0 elapsed=35s
-STATUS iters=42000 accept=28977 reject=13023 corpus=134 seen_pcs=5195 compared=231816 findings=0 trunc=1 prunepairs=5370 pruneflip=0 pruneartifact=0 invfault=0 elapsed=37s
-STATUS iters=44000 accept=30300 reject=13700 corpus=134 seen_pcs=5195 compared=242400 findings=0 trunc=1 prunepairs=5620 pruneflip=0 pruneartifact=0 invfault=0 elapsed=39s
-CORPUS n=135 new_pcs=1 seen=5196 verdict=reject genes=7 hi=0:7.0.2.8.38,11.2.2.9.38,13.2.1.15.46,16.2.2.6.53,9.2.0.14.9,4.0.1.14.52,6.1.2.3.17
-STATUS iters=46000 accept=31677 reject=14323 corpus=135 seen_pcs=5196 compared=253416 findings=0 trunc=1 prunepairs=5871 pruneflip=0 pruneartifact=0 invfault=0 elapsed=41s
-STATUS iters=48000 accept=33053 reject=14947 corpus=135 seen_pcs=5196 compared=264424 findings=0 trunc=1 prunepairs=6121 pruneflip=0 pruneartifact=0 invfault=0 elapsed=42s
-STATUS iters=50000 accept=34418 reject=15582 corpus=135 seen_pcs=5196 compared=275344 findings=0 trunc=1 prunepairs=6371 pruneflip=0 pruneartifact=0 invfault=0 elapsed=44s
-STATUS iters=52000 accept=35758 reject=16242 corpus=135 seen_pcs=5196 compared=286064 findings=0 trunc=1 prunepairs=6621 pruneflip=0 pruneartifact=0 invfault=0 elapsed=46s
-CORPUS n=136 new_pcs=1 seen=5197 verdict=reject genes=7 hi=1:15.1.2.10.32,0.1.2.2.63,5.2.2.14.3,12.2.1.1.57,11.2.1.1.18,11.1.2.12.24,13.2.2.13.21
-STATUS iters=54000 accept=37157 reject=16843 corpus=136 seen_pcs=5197 compared=297256 findings=0 trunc=1 prunepairs=6872 pruneflip=0 pruneartifact=0 invfault=0 elapsed=48s
-STATUS iters=56000 accept=38526 reject=17474 corpus=136 seen_pcs=5197 compared=308208 findings=0 trunc=1 prunepairs=7122 pruneflip=0 pruneartifact=0 invfault=0 elapsed=49s
-STATUS iters=58000 accept=39906 reject=18094 corpus=136 seen_pcs=5197 compared=319248 findings=0 trunc=1 prunepairs=7372 pruneflip=0 pruneartifact=0 invfault=0 elapsed=51s
-CORPUS n=137 new_pcs=1 seen=5198 verdict=reject genes=6 hi=1:15.1.2.10.32,0.1.2.2.63,12.2.1.1.57,11.2.1.1.18,11.1.2.12.24,13.2.2.13.21
-STATUS iters=60000 accept=41284 reject=18716 corpus=137 seen_pcs=5198 compared=330272 findings=0 trunc=1 prunepairs=7622 pruneflip=0 pruneartifact=0 invfault=0 elapsed=53s
-STATUS iters=62000 accept=42585 reject=19415 corpus=137 seen_pcs=5198 compared=340680 findings=0 trunc=1 prunepairs=7872 pruneflip=0 pruneartifact=0 invfault=0 elapsed=55s
-STATUS iters=64000 accept=43957 reject=20043 corpus=137 seen_pcs=5198 compared=351656 findings=0 trunc=1 prunepairs=8122 pruneflip=0 pruneartifact=0 invfault=0 elapsed=56s
-STATUS iters=66000 accept=45311 reject=20689 corpus=137 seen_pcs=5198 compared=362488 findings=0 trunc=1 prunepairs=8372 pruneflip=0 pruneartifact=0 invfault=0 elapsed=58s
-STATUS iters=68000 accept=46662 reject=21338 corpus=137 seen_pcs=5198 compared=373296 findings=0 trunc=1 prunepairs=8622 pruneflip=0 pruneartifact=0 invfault=0 elapsed=60s
-STATUS iters=70000 accept=47997 reject=22003 corpus=137 seen_pcs=5198 compared=383976 findings=0 trunc=1 prunepairs=8872 pruneflip=0 pruneartifact=0 invfault=0 elapsed=62s
-STATUS iters=72000 accept=49370 reject=22630 corpus=137 seen_pcs=5198 compared=394960 findings=0 trunc=1 prunepairs=9122 pruneflip=0 pruneartifact=0 invfault=0 elapsed=63s
-STATUS iters=74000 accept=50702 reject=23298 corpus=137 seen_pcs=5198 compared=405616 findings=0 trunc=1 prunepairs=9372 pruneflip=0 pruneartifact=0 invfault=0 elapsed=65s
-CORPUS n=138 new_pcs=1 seen=5199 verdict=accept genes=8 hi=1:10.2.1.2.7,12.1.0.10.27,15.2.2.7.3,7.2.0.8.30,8.0.1.14.14,8.0.1.2.0,12.2.1.7.10,9.0.2.1.20
-STATUS iters=76000 accept=52071 reject=23929 corpus=138 seen_pcs=5199 compared=416568 findings=0 trunc=1 prunepairs=9623 pruneflip=0 pruneartifact=0 invfault=0 elapsed=67s
-STATUS iters=78000 accept=53406 reject=24594 corpus=138 seen_pcs=5199 compared=427248 findings=0 trunc=1 prunepairs=9873 pruneflip=0 pruneartifact=0 invfault=0 elapsed=69s
-STATUS iters=80000 accept=54745 reject=25255 corpus=138 seen_pcs=5199 compared=437960 findings=0 trunc=1 prunepairs=10123 pruneflip=0 pruneartifact=0 invfault=0 elapsed=70s
-STATUS iters=82000 accept=56126 reject=25874 corpus=138 seen_pcs=5199 compared=449008 findings=0 trunc=1 prunepairs=10373 pruneflip=0 pruneartifact=0 invfault=0 elapsed=72s
-CORPUS n=139 new_pcs=1 seen=5200 verdict=accept genes=8 hi=1:10.2.2.12.46,13.1.1.10.11,7.2.0.8.17,8.1.1.1.14,8.0.1.2.41,0.1.2.12.8,5.1.2.7.10,9.0.2.1.42
-STATUS iters=84000 accept=57494 reject=26506 corpus=139 seen_pcs=5200 compared=459952 findings=0 trunc=1 prunepairs=10624 pruneflip=0 pruneartifact=0 invfault=0 elapsed=74s
-STATUS iters=86000 accept=58853 reject=27147 corpus=139 seen_pcs=5200 compared=470824 findings=0 trunc=1 prunepairs=10874 pruneflip=0 pruneartifact=0 invfault=0 elapsed=76s
-STATUS iters=88000 accept=60213 reject=27787 corpus=139 seen_pcs=5200 compared=481704 findings=0 trunc=1 prunepairs=11124 pruneflip=0 pruneartifact=0 invfault=0 elapsed=77s
-STATUS iters=90000 accept=61553 reject=28447 corpus=139 seen_pcs=5200 compared=492424 findings=0 trunc=1 prunepairs=11374 pruneflip=0 pruneartifact=0 invfault=0 elapsed=79s
-STATUS iters=92000 accept=62935 reject=29065 corpus=139 seen_pcs=5200 compared=503480 findings=0 trunc=1 prunepairs=11624 pruneflip=0 pruneartifact=0 invfault=0 elapsed=81s
-STATUS iters=94000 accept=64284 reject=29716 corpus=139 seen_pcs=5200 compared=514272 findings=0 trunc=1 prunepairs=11874 pruneflip=0 pruneartifact=0 invfault=0 elapsed=83s
-STATUS iters=96000 accept=65621 reject=30379 corpus=139 seen_pcs=5200 compared=524968 findings=0 trunc=1 prunepairs=12124 pruneflip=0 pruneartifact=0 invfault=0 elapsed=84s
-STATUS iters=98000 accept=67021 reject=30979 corpus=139 seen_pcs=5200 compared=536168 findings=0 trunc=1 prunepairs=12374 pruneflip=0 pruneartifact=0 invfault=0 elapsed=86s
-STATUS iters=100000 accept=68370 reject=31630 corpus=139 seen_pcs=5200 compared=546960 findings=0 trunc=1 prunepairs=12624 pruneflip=0 pruneartifact=0 invfault=0 elapsed=88s
-CORPUS n=140 new_pcs=31 seen=5231 verdict=accept genes=9 hi=1:16.0.1.1.21,10.0.0.3.14,8.1.2.14.20,16.0.1.8.6,10.1.0.2.25,15.1.0.5.14,3.1.2.2.20,6.2.2.2.9,2.0.2.4.21
-STATUS iters=102000 accept=69744 reject=32256 corpus=140 seen_pcs=5231 compared=557952 findings=0 trunc=1 prunepairs=12875 pruneflip=0 pruneartifact=0 invfault=0 elapsed=89s
-STATUS iters=104000 accept=71126 reject=32874 corpus=140 seen_pcs=5231 compared=569008 findings=0 trunc=1 prunepairs=13125 pruneflip=0 pruneartifact=0 invfault=0 elapsed=91s
-STATUS iters=106000 accept=72496 reject=33504 corpus=140 seen_pcs=5231 compared=579968 findings=0 trunc=1 prunepairs=13375 pruneflip=0 pruneartifact=0 invfault=0 elapsed=93s
-STATUS iters=108000 accept=73847 reject=34153 corpus=140 seen_pcs=5231 compared=590776 findings=0 trunc=1 prunepairs=13625 pruneflip=0 pruneartifact=0 invfault=0 elapsed=95s
-CORPUS n=141 new_pcs=22 seen=5253 verdict=reject genes=6 hi=0:0.2.1.6.21,15.2.1.14.51,11.2.0.2.60,15.2.2.13.52,3.1.0.3.0,14.2.2.11.45
-STATUS iters=110000 accept=75213 reject=34787 corpus=141 seen_pcs=5253 compared=601704 findings=0 trunc=1 prunepairs=13876 pruneflip=0 pruneartifact=0 invfault=0 elapsed=96s
-STATUS iters=112000 accept=76550 reject=35450 corpus=141 seen_pcs=5253 compared=612400 findings=0 trunc=1 prunepairs=14126 pruneflip=0 pruneartifact=0 invfault=0 elapsed=98s
-CORPUS n=142 new_pcs=2 seen=5255 verdict=reject genes=7 hi=1:10.0.1.8.47,12.1.1.6.43,10.0.1.13.34,13.1.1.4.56,5.2.0.9.8,12.0.2.4.48,15.0.1.9.34
-STATUS iters=114000 accept=77890 reject=36110 corpus=142 seen_pcs=5255 compared=623120 findings=0 trunc=1 prunepairs=14377 pruneflip=0 pruneartifact=0 invfault=0 elapsed=100s
-STATUS iters=116000 accept=79237 reject=36763 corpus=142 seen_pcs=5255 compared=633896 findings=0 trunc=1 prunepairs=14627 pruneflip=0 pruneartifact=0 invfault=0 elapsed=102s
-STATUS iters=118000 accept=80598 reject=37402 corpus=142 seen_pcs=5255 compared=644784 findings=0 trunc=1 prunepairs=14877 pruneflip=0 pruneartifact=0 invfault=0 elapsed=103s
-STATUS iters=120000 accept=81952 reject=38048 corpus=142 seen_pcs=5255 compared=655616 findings=0 trunc=1 prunepairs=15127 pruneflip=0 pruneartifact=0 invfault=0 elapsed=105s
-CORPUS n=143 new_pcs=5 seen=5260 verdict=accept genes=4 hi=0:2.0.1.10.44,4.2.2.9.1,13.0.0.11.25,0.1.0.5.60
-STATUS iters=122000 accept=83306 reject=38694 corpus=143 seen_pcs=5260 compared=666448 findings=0 trunc=1 prunepairs=15378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=107s
-STATUS iters=124000 accept=84647 reject=39353 corpus=143 seen_pcs=5260 compared=677176 findings=0 trunc=1 prunepairs=15628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=109s
-STATUS iters=126000 accept=85993 reject=40007 corpus=143 seen_pcs=5260 compared=687944 findings=0 trunc=1 prunepairs=15878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=111s
-STATUS iters=128000 accept=87349 reject=40651 corpus=143 seen_pcs=5260 compared=698792 findings=0 trunc=1 prunepairs=16128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=112s
-STATUS iters=130000 accept=88695 reject=41305 corpus=143 seen_pcs=5260 compared=709560 findings=0 trunc=1 prunepairs=16378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=114s
-STATUS iters=132000 accept=89992 reject=42008 corpus=143 seen_pcs=5260 compared=719936 findings=0 trunc=1 prunepairs=16628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=116s
-STATUS iters=134000 accept=91333 reject=42667 corpus=143 seen_pcs=5260 compared=730664 findings=0 trunc=1 prunepairs=16878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=118s
-STATUS iters=136000 accept=92721 reject=43279 corpus=143 seen_pcs=5260 compared=741768 findings=0 trunc=1 prunepairs=17128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=119s
-STATUS iters=138000 accept=94060 reject=43940 corpus=143 seen_pcs=5260 compared=752480 findings=0 trunc=1 prunepairs=17378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=121s
-STATUS iters=140000 accept=95419 reject=44581 corpus=143 seen_pcs=5260 compared=763352 findings=0 trunc=1 prunepairs=17628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=123s
-STATUS iters=142000 accept=96802 reject=45198 corpus=143 seen_pcs=5260 compared=774416 findings=0 trunc=1 prunepairs=17878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=125s
-STATUS iters=144000 accept=98160 reject=45840 corpus=143 seen_pcs=5260 compared=785280 findings=0 trunc=1 prunepairs=18128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=126s
-STATUS iters=146000 accept=99551 reject=46449 corpus=143 seen_pcs=5260 compared=796408 findings=0 trunc=1 prunepairs=18378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=128s
-STATUS iters=148000 accept=100894 reject=47106 corpus=143 seen_pcs=5260 compared=807152 findings=0 trunc=1 prunepairs=18628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=130s
-STATUS iters=150000 accept=102248 reject=47752 corpus=143 seen_pcs=5260 compared=817984 findings=0 trunc=1 prunepairs=18878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=131s
-STATUS iters=152000 accept=103583 reject=48417 corpus=143 seen_pcs=5260 compared=828664 findings=0 trunc=1 prunepairs=19128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=133s
-STATUS iters=154000 accept=104921 reject=49079 corpus=143 seen_pcs=5260 compared=839368 findings=0 trunc=1 prunepairs=19378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=135s
-STATUS iters=156000 accept=106291 reject=49709 corpus=143 seen_pcs=5260 compared=850328 findings=0 trunc=1 prunepairs=19628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=137s
-STATUS iters=158000 accept=107662 reject=50338 corpus=143 seen_pcs=5260 compared=861296 findings=0 trunc=1 prunepairs=19878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=138s
-STATUS iters=160000 accept=109031 reject=50969 corpus=143 seen_pcs=5260 compared=872248 findings=0 trunc=1 prunepairs=20128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=140s
-STATUS iters=162000 accept=110371 reject=51629 corpus=143 seen_pcs=5260 compared=882968 findings=0 trunc=1 prunepairs=20378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=142s
-STATUS iters=164000 accept=111701 reject=52299 corpus=143 seen_pcs=5260 compared=893608 findings=0 trunc=1 prunepairs=20628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=143s
-STATUS iters=166000 accept=113046 reject=52954 corpus=143 seen_pcs=5260 compared=904368 findings=0 trunc=1 prunepairs=20878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=145s
-STATUS iters=168000 accept=114390 reject=53610 corpus=143 seen_pcs=5260 compared=915120 findings=0 trunc=1 prunepairs=21128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=147s
-STATUS iters=170000 accept=115766 reject=54234 corpus=143 seen_pcs=5260 compared=926128 findings=0 trunc=1 prunepairs=21378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=148s
-STATUS iters=172000 accept=117091 reject=54909 corpus=143 seen_pcs=5260 compared=936728 findings=0 trunc=1 prunepairs=21628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=150s
-STATUS iters=174000 accept=118456 reject=55544 corpus=143 seen_pcs=5260 compared=947648 findings=0 trunc=1 prunepairs=21878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=152s
-STATUS iters=176000 accept=119819 reject=56181 corpus=143 seen_pcs=5260 compared=958552 findings=0 trunc=1 prunepairs=22128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=153s
-STATUS iters=178000 accept=121150 reject=56850 corpus=143 seen_pcs=5260 compared=969200 findings=0 trunc=1 prunepairs=22378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=155s
-STATUS iters=180000 accept=122485 reject=57515 corpus=143 seen_pcs=5260 compared=979880 findings=0 trunc=1 prunepairs=22628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=157s
-STATUS iters=182000 accept=123840 reject=58160 corpus=143 seen_pcs=5260 compared=990720 findings=0 trunc=1 prunepairs=22878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=159s
-STATUS iters=184000 accept=125187 reject=58813 corpus=143 seen_pcs=5260 compared=1001496 findings=0 trunc=1 prunepairs=23128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=160s
-STATUS iters=186000 accept=126541 reject=59459 corpus=143 seen_pcs=5260 compared=1012328 findings=0 trunc=1 prunepairs=23378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=162s
-STATUS iters=188000 accept=127864 reject=60136 corpus=143 seen_pcs=5260 compared=1022912 findings=0 trunc=1 prunepairs=23628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=164s
-STATUS iters=190000 accept=129246 reject=60754 corpus=143 seen_pcs=5260 compared=1033968 findings=0 trunc=1 prunepairs=23878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=165s
-STATUS iters=192000 accept=130647 reject=61353 corpus=143 seen_pcs=5260 compared=1045176 findings=0 trunc=1 prunepairs=24128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=167s
-STATUS iters=194000 accept=131993 reject=62007 corpus=143 seen_pcs=5260 compared=1055944 findings=0 trunc=1 prunepairs=24378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=169s
-STATUS iters=196000 accept=133346 reject=62654 corpus=143 seen_pcs=5260 compared=1066768 findings=0 trunc=1 prunepairs=24628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=170s
-STATUS iters=198000 accept=134653 reject=63347 corpus=143 seen_pcs=5260 compared=1077224 findings=0 trunc=1 prunepairs=24878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=172s
-STATUS iters=200000 accept=136011 reject=63989 corpus=143 seen_pcs=5260 compared=1088088 findings=0 trunc=1 prunepairs=25128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=174s
-STATUS iters=202000 accept=137363 reject=64637 corpus=143 seen_pcs=5260 compared=1098904 findings=0 trunc=1 prunepairs=25378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=176s
-STATUS iters=204000 accept=138721 reject=65279 corpus=143 seen_pcs=5260 compared=1109768 findings=0 trunc=1 prunepairs=25628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=177s
-STATUS iters=206000 accept=140051 reject=65949 corpus=143 seen_pcs=5260 compared=1120408 findings=0 trunc=1 prunepairs=25878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=179s
-STATUS iters=208000 accept=141421 reject=66579 corpus=143 seen_pcs=5260 compared=1131368 findings=0 trunc=1 prunepairs=26128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=181s
-STATUS iters=210000 accept=142784 reject=67216 corpus=143 seen_pcs=5260 compared=1142272 findings=0 trunc=1 prunepairs=26378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=182s
-STATUS iters=212000 accept=144140 reject=67860 corpus=143 seen_pcs=5260 compared=1153120 findings=0 trunc=1 prunepairs=26628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=184s
-STATUS iters=214000 accept=145519 reject=68481 corpus=143 seen_pcs=5260 compared=1164152 findings=0 trunc=1 prunepairs=26878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=186s
-STATUS iters=216000 accept=146913 reject=69087 corpus=143 seen_pcs=5260 compared=1175304 findings=0 trunc=1 prunepairs=27128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=188s
-STATUS iters=218000 accept=148283 reject=69717 corpus=143 seen_pcs=5260 compared=1186264 findings=0 trunc=1 prunepairs=27378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=189s
-STATUS iters=220000 accept=149647 reject=70353 corpus=143 seen_pcs=5260 compared=1197176 findings=0 trunc=1 prunepairs=27628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=191s
-STATUS iters=222000 accept=151001 reject=70999 corpus=143 seen_pcs=5260 compared=1208008 findings=0 trunc=1 prunepairs=27878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=193s
-STATUS iters=224000 accept=152358 reject=71642 corpus=143 seen_pcs=5260 compared=1218864 findings=0 trunc=1 prunepairs=28128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=194s
-STATUS iters=226000 accept=153726 reject=72274 corpus=143 seen_pcs=5260 compared=1229808 findings=0 trunc=1 prunepairs=28378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=196s
-STATUS iters=228000 accept=155049 reject=72951 corpus=143 seen_pcs=5260 compared=1240392 findings=0 trunc=1 prunepairs=28628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=198s
-STATUS iters=230000 accept=156413 reject=73587 corpus=143 seen_pcs=5260 compared=1251304 findings=0 trunc=1 prunepairs=28878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=199s
-STATUS iters=232000 accept=157760 reject=74240 corpus=143 seen_pcs=5260 compared=1262080 findings=0 trunc=1 prunepairs=29128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=201s
-STATUS iters=234000 accept=159103 reject=74897 corpus=143 seen_pcs=5260 compared=1272824 findings=0 trunc=1 prunepairs=29378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=203s
-STATUS iters=236000 accept=160455 reject=75545 corpus=143 seen_pcs=5260 compared=1283640 findings=0 trunc=1 prunepairs=29628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=205s
-STATUS iters=238000 accept=161820 reject=76180 corpus=143 seen_pcs=5260 compared=1294560 findings=0 trunc=1 prunepairs=29878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=206s
-STATUS iters=240000 accept=163192 reject=76808 corpus=143 seen_pcs=5260 compared=1305536 findings=0 trunc=1 prunepairs=30128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=208s
-STATUS iters=242000 accept=164548 reject=77452 corpus=143 seen_pcs=5260 compared=1316384 findings=0 trunc=1 prunepairs=30378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=210s
-STATUS iters=244000 accept=165895 reject=78105 corpus=143 seen_pcs=5260 compared=1327160 findings=0 trunc=1 prunepairs=30628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=211s
-STATUS iters=246000 accept=167233 reject=78767 corpus=143 seen_pcs=5260 compared=1337864 findings=0 trunc=1 prunepairs=30878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=213s
-STATUS iters=248000 accept=168579 reject=79421 corpus=143 seen_pcs=5260 compared=1348632 findings=0 trunc=1 prunepairs=31128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=215s
-STATUS iters=250000 accept=169938 reject=80062 corpus=143 seen_pcs=5260 compared=1359504 findings=0 trunc=1 prunepairs=31378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=217s
-STATUS iters=252000 accept=171302 reject=80698 corpus=143 seen_pcs=5260 compared=1370416 findings=0 trunc=1 prunepairs=31628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=218s
-STATUS iters=254000 accept=172616 reject=81384 corpus=143 seen_pcs=5260 compared=1380928 findings=0 trunc=1 prunepairs=31878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=220s
-STATUS iters=256000 accept=173979 reject=82021 corpus=143 seen_pcs=5260 compared=1391832 findings=0 trunc=1 prunepairs=32128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=222s
-STATUS iters=258000 accept=175345 reject=82655 corpus=143 seen_pcs=5260 compared=1402760 findings=0 trunc=1 prunepairs=32378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=223s
-STATUS iters=260000 accept=176696 reject=83304 corpus=143 seen_pcs=5260 compared=1413568 findings=0 trunc=1 prunepairs=32628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=225s
-STATUS iters=262000 accept=178034 reject=83966 corpus=143 seen_pcs=5260 compared=1424272 findings=0 trunc=1 prunepairs=32878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=227s
-STATUS iters=264000 accept=179394 reject=84606 corpus=143 seen_pcs=5260 compared=1435152 findings=0 trunc=1 prunepairs=33128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=228s
-STATUS iters=266000 accept=180782 reject=85218 corpus=143 seen_pcs=5260 compared=1446256 findings=0 trunc=1 prunepairs=33378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=230s
-STATUS iters=268000 accept=182151 reject=85849 corpus=143 seen_pcs=5260 compared=1457208 findings=0 trunc=1 prunepairs=33628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=232s
-STATUS iters=270000 accept=183488 reject=86512 corpus=143 seen_pcs=5260 compared=1467904 findings=0 trunc=1 prunepairs=33878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=234s
-STATUS iters=272000 accept=184867 reject=87133 corpus=143 seen_pcs=5260 compared=1478936 findings=0 trunc=1 prunepairs=34128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=235s
-STATUS iters=274000 accept=186205 reject=87795 corpus=143 seen_pcs=5260 compared=1489640 findings=0 trunc=1 prunepairs=34378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=237s
-STATUS iters=276000 accept=187560 reject=88440 corpus=143 seen_pcs=5260 compared=1500480 findings=0 trunc=1 prunepairs=34628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=239s
-STATUS iters=278000 accept=188908 reject=89092 corpus=143 seen_pcs=5260 compared=1511264 findings=0 trunc=1 prunepairs=34878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=240s
-STATUS iters=280000 accept=190238 reject=89762 corpus=143 seen_pcs=5260 compared=1521904 findings=0 trunc=1 prunepairs=35128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=242s
-STATUS iters=282000 accept=191578 reject=90422 corpus=143 seen_pcs=5260 compared=1532624 findings=0 trunc=1 prunepairs=35378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=244s
-STATUS iters=284000 accept=192960 reject=91040 corpus=143 seen_pcs=5260 compared=1543680 findings=0 trunc=1 prunepairs=35628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=246s
-STATUS iters=286000 accept=194320 reject=91680 corpus=143 seen_pcs=5260 compared=1554560 findings=0 trunc=1 prunepairs=35878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=247s
-STATUS iters=288000 accept=195693 reject=92307 corpus=143 seen_pcs=5260 compared=1565544 findings=0 trunc=1 prunepairs=36128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=249s
-STATUS iters=290000 accept=197038 reject=92962 corpus=143 seen_pcs=5260 compared=1576304 findings=0 trunc=1 prunepairs=36378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=251s
-STATUS iters=292000 accept=198386 reject=93614 corpus=143 seen_pcs=5260 compared=1587088 findings=0 trunc=1 prunepairs=36628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=252s
-STATUS iters=294000 accept=199705 reject=94295 corpus=143 seen_pcs=5260 compared=1597640 findings=0 trunc=1 prunepairs=36878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=254s
-STATUS iters=296000 accept=201044 reject=94956 corpus=143 seen_pcs=5260 compared=1608352 findings=0 trunc=1 prunepairs=37128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=256s
-STATUS iters=298000 accept=202399 reject=95601 corpus=143 seen_pcs=5260 compared=1619192 findings=0 trunc=1 prunepairs=37378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=258s
-STATUS iters=300000 accept=203765 reject=96235 corpus=143 seen_pcs=5260 compared=1630120 findings=0 trunc=1 prunepairs=37628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=259s
-STATUS iters=302000 accept=205130 reject=96870 corpus=143 seen_pcs=5260 compared=1641040 findings=0 trunc=1 prunepairs=37878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=261s
-STATUS iters=304000 accept=206488 reject=97512 corpus=143 seen_pcs=5260 compared=1651904 findings=0 trunc=1 prunepairs=38128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=263s
-STATUS iters=306000 accept=207794 reject=98206 corpus=143 seen_pcs=5260 compared=1662352 findings=0 trunc=1 prunepairs=38378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=264s
-STATUS iters=308000 accept=209164 reject=98836 corpus=143 seen_pcs=5260 compared=1673312 findings=0 trunc=1 prunepairs=38628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=266s
-STATUS iters=310000 accept=210528 reject=99472 corpus=143 seen_pcs=5260 compared=1684224 findings=0 trunc=1 prunepairs=38878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=268s
-STATUS iters=312000 accept=211861 reject=100139 corpus=143 seen_pcs=5260 compared=1694888 findings=0 trunc=1 prunepairs=39128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=269s
-STATUS iters=314000 accept=213191 reject=100809 corpus=143 seen_pcs=5260 compared=1705528 findings=0 trunc=1 prunepairs=39378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=271s
-STATUS iters=316000 accept=214538 reject=101462 corpus=143 seen_pcs=5260 compared=1716304 findings=0 trunc=1 prunepairs=39628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=273s
-STATUS iters=318000 accept=215927 reject=102073 corpus=143 seen_pcs=5260 compared=1727416 findings=0 trunc=1 prunepairs=39878 pruneflip=0 pruneartifact=0 invfault=0 elapsed=275s
-STATUS iters=320000 accept=217276 reject=102724 corpus=143 seen_pcs=5260 compared=1738208 findings=0 trunc=1 prunepairs=40128 pruneflip=0 pruneartifact=0 invfault=0 elapsed=276s
-STATUS iters=322000 accept=218657 reject=103343 corpus=143 seen_pcs=5260 compared=1749256 findings=0 trunc=1 prunepairs=40378 pruneflip=0 pruneartifact=0 invfault=0 elapsed=278s
-STATUS iters=324000 accept=220058 reject=103942 corpus=143 seen_pcs=5260 compared=1760464 findings=0 trunc=1 prunepairs=40628 pruneflip=0 pruneartifact=0 invfault=0 elapsed=280s
-CORPUS n=144 new_pcs=1 seen=5261 verdict=accept genes=5 hi=0:0.2.1.6.25,15.2.1.14.51,15.2.2.13.52,3.1.0.3.0,14.2.2.11.45
-STATUS iters=326000 accept=221412 reject=104588 corpus=144 seen_pcs=5261 compared=1771296 findings=0 trunc=1 prunepairs=40879 pruneflip=0 pruneartifact=0 invfault=0 elapsed=281s
-STATUS iters=328000 accept=222760 reject=105240 corpus=144 seen_pcs=5261 compared=1782080 findings=0 trunc=1 prunepairs=41129 pruneflip=0 pruneartifact=0 invfault=0 elapsed=283s
-STATUS iters=330000 accept=224103 reject=105897 corpus=144 seen_pcs=5261 compared=1792824 findings=0 trunc=1 prunepairs=41379 pruneflip=0 pruneartifact=0 invfault=0 elapsed=285s
-STATUS iters=332000 accept=225460 reject=106540 corpus=144 seen_pcs=5261 compared=1803680 findings=0 trunc=1 prunepairs=41629 pruneflip=0 pruneartifact=0 invfault=0 elapsed=287s
-STATUS iters=334000 accept=226821 reject=107179 corpus=144 seen_pcs=5261 compared=1814568 findings=0 trunc=1 prunepairs=41879 pruneflip=0 pruneartifact=0 invfault=0 elapsed=288s
-STATUS iters=336000 accept=228202 reject=107798 corpus=144 seen_pcs=5261 compared=1825616 findings=0 trunc=1 prunepairs=42129 pruneflip=0 pruneartifact=0 invfault=0 elapsed=290s
-STATUS iters=338000 accept=229534 reject=108466 corpus=144 seen_pcs=5261 compared=1836272 findings=0 trunc=1 prunepairs=42379 pruneflip=0 pruneartifact=0 invfault=0 elapsed=292s
-STATUS iters=340000 accept=230867 reject=109133 corpus=144 seen_pcs=5261 compared=1846936 findings=0 trunc=1 prunepairs=42629 pruneflip=0 pruneartifact=0 invfault=0 elapsed=293s
-STATUS iters=342000 accept=232189 reject=109811 corpus=144 seen_pcs=5261 compared=1857512 findings=0 trunc=1 prunepairs=42879 pruneflip=0 pruneartifact=0 invfault=0 elapsed=295s
-STATUS iters=344000 accept=233559 reject=110441 corpus=144 seen_pcs=5261 compared=1868472 findings=0 trunc=1 prunepairs=43129 pruneflip=0 pruneartifact=0 invfault=0 elapsed=297s
-STATUS iters=346000 accept=234909 reject=111091 corpus=144 seen_pcs=5261 compared=1879272 findings=0 trunc=1 prunepairs=43379 pruneflip=0 pruneartifact=0 invfault=0 elapsed=298s
-FUZZ done iters=347273 accept=235763 reject=111510 corpus=144 seen_pcs=5261 compared=1886104 findings=0 trunc=1 prunepairs=43538 pruneflip=0 pruneartifact=0 invfault=0 elapsed=300s
-[  301.901377] diffharness (72) used greatest stack depth: 24680 bytes left
+FUZZ start budget=240s corpus_max=4096
+CORPUS n=1 new_pcs=2806 seen=2806 verdict=reject genes=7 hi=0:15.2.1.6.21,15.2.1.14.51,8.2.0.2.60,12.0.2.13.52,2.1.0.3.0,1.0.1.2.16,4.2.2.11.45
+CORPUS n=2 new_pcs=1159 seen=3965 verdict=accept genes=8 hi=1:16.2.1.2.7,18.2.0.8.46,3.1.1.1.14,8.0.1.2.41,0.1.2.12.8,17.2.1.7.10,2.1.0.11.51,16.0.2.2.20
+CORPUS n=3 new_pcs=139 seen=4104 verdict=reject genes=5 hi=0:6.0.2.10.63,12.1.0.3.9,4.2.2.14.3,14.1.2.12.24,12.2.2.13.53
+CORPUS n=4 new_pcs=16 seen=4120 verdict=accept genes=8 hi=1:16.2.1.2.7,18.2.0.8.46,3.1.1.1.14,8.0.1.2.41,0.1.2.12.8,17.2.1.7.10,2.1.0.3.51,16.0.2.2.20
+CORPUS n=5 new_pcs=35 seen=4155 verdict=accept genes=8 hi=1:16.2.1.2.7,18.2.0.8.46,3.1.1.1.14,17.0.1.2.41,0.1.2.12.8,17.2.1.7.10,2.1.0.3.51,16.0.2.2.20
+CORPUS n=6 new_pcs=24 seen=4179 verdict=accept genes=7 hi=1:16.2.1.2.7,18.2.0.8.46,8.0.1.2.41,0.1.2.12.8,17.2.1.7.10,2.1.0.3.51,16.0.2.2.20
+CORPUS n=7 new_pcs=6 seen=4185 verdict=reject genes=7 hi=1:12.1.0.5.11,16.1.1.13.38,10.0.2.9.45,11.2.0.5.34,18.0.0.4.32,8.0.0.5.61,5.1.0.12.15
+CORPUS n=8 new_pcs=44 seen=4229 verdict=reject genes=5 hi=0:17.0.1.10.44,1.2.2.9.1,8.0.0.11.25,12.1.2.8.45,16.1.0.5.60
+CORPUS n=9 new_pcs=1 seen=4230 verdict=accept genes=7 hi=1:16.2.1.2.7,18.2.0.8.46,8.0.1.2.41,0.1.2.12.8,17.2.1.1.10,2.1.0.3.51,16.0.2.2.20
+CORPUS n=10 new_pcs=164 seen=4394 verdict=accept genes=6 hi=1:0.0.2.8.38,7.2.2.9.38,10.2.1.15.46,2.2.2.6.53,8.2.0.14.9,8.1.2.3.17
+CORPUS n=11 new_pcs=31 seen=4425 verdict=accept genes=7 hi=1:9.1.2.1.36,18.1.2.10.34,9.2.0.14.26,6.2.1.15.49,8.1.0.6.13,7.0.0.2.49,7.0.0.6.15
+CORPUS n=12 new_pcs=13 seen=4438 verdict=accept genes=4 hi=1:0.0.1.12.29,3.0.1.13.27,3.0.2.5.29,16.0.0.7.27
+CORPUS n=13 new_pcs=10 seen=4448 verdict=accept genes=8 hi=1:16.2.1.2.7,18.2.0.8.17,3.1.1.1.14,8.0.1.2.41,0.1.2.12.8,17.2.1.7.10,2.1.0.11.51,16.0.2.2.20
+CORPUS n=14 new_pcs=4 seen=4452 verdict=accept genes=8 hi=1:16.2.1.2.7,18.2.0.8.48,3.1.1.1.14,8.0.1.2.41,0.1.2.12.8,17.2.1.4.10,2.1.0.11.51,16.0.2.2.20
+CORPUS n=15 new_pcs=51 seen=4503 verdict=reject genes=4 hi=0:11.1.0.11.30,18.0.0.7.1,13.1.1.7.4,10.1.0.11.17
+CORPUS n=16 new_pcs=25 seen=4528 verdict=accept genes=7 hi=1:18.0.1.1.18,9.0.0.3.14,0.0.1.8.6,15.1.0.2.25,3.2.2.1.39,7.1.2.5.20,14.2.2.2.9
+CORPUS n=17 new_pcs=1 seen=4529 verdict=accept genes=7 hi=1:9.1.2.1.36,15.2.1.14.7,9.2.0.14.26,6.2.1.15.49,8.1.0.6.13,7.0.0.2.49,7.0.0.6.15
+CORPUS n=18 new_pcs=4 seen=4533 verdict=reject genes=5 hi=1:17.0.0.4.53,0.0.1.6.57,9.0.1.3.57,11.2.1.14.47,2.1.0.8.33
+CORPUS n=19 new_pcs=24 seen=4557 verdict=accept genes=8 hi=1:9.1.2.1.36,15.2.1.14.7,9.2.0.14.26,6.2.1.15.49,8.1.0.6.13,16.0.2.5.40,7.0.0.2.49,7.0.0.6.15
+CORPUS n=20 new_pcs=2 seen=4559 verdict=accept genes=4 hi=0:0.0.1.12.29,3.1.0.2.9,3.0.2.5.29,16.0.0.7.27
+CORPUS n=21 new_pcs=9 seen=4568 verdict=accept genes=7 hi=1:0.0.2.8.38,7.2.2.9.38,10.1.1.15.46,2.2.2.6.53,8.2.0.14.9,3.1.1.7.18,8.1.2.3.17
+CORPUS n=22 new_pcs=2 seen=4570 verdict=accept genes=6 hi=0:0.1.0.4.39,3.0.1.7.59,18.0.0.12.26,5.1.1.10.11,8.1.1.7.24,10.1.1.12.2
+CORPUS n=23 new_pcs=56 seen=4626 verdict=accept genes=8 hi=1:16.0.2.15.55,14.1.2.14.16,14.1.2.10.41,6.2.0.8.39,8.2.0.11.46,7.1.0.14.3,1.0.0.8.52,16.2.0.2.34
+CORPUS n=24 new_pcs=1 seen=4627 verdict=accept genes=7 hi=1:16.2.1.2.7,1.2.0.8.46,8.0.1.2.41,0.1.2.12.8,17.2.1.1.10,10.1.0.3.51,16.0.2.2.20
+CORPUS n=25 new_pcs=17 seen=4644 verdict=accept genes=8 hi=1:15.2.1.2.7,18.2.0.8.46,3.1.1.1.14,17.0.1.2.41,0.1.2.12.8,17.2.1.7.10,2.1.0.3.51,16.0.2.2.20
+CORPUS n=26 new_pcs=2 seen=4646 verdict=accept genes=9 hi=1:9.1.2.1.36,15.2.1.14.7,9.2.0.14.26,6.2.1.15.49,8.1.0.6.13,16.0.2.5.40,18.1.2.10.32,7.0.0.2.49,7.0.0.6.15
+CORPUS n=27 new_pcs=2 seen=4648 verdict=accept genes=8 hi=1:15.2.1.2.7,18.2.0.8.21,3.1.1.1.14,17.0.1.2.41,0.1.2.12.8,17.2.1.7.10,2.1.0.3.51,16.0.2.2.20
+CORPUS n=28 new_pcs=3 seen=4651 verdict=accept genes=7 hi=1:18.0.1.1.18,9.0.0.3.14,0.0.1.8.6,15.1.0.2.25,3.2.2.1.62,7.1.2.5.20,14.2.2.2.9
+CORPUS n=29 new_pcs=60 seen=4711 verdict=accept genes=8 hi=1:16.0.2.15.55,14.1.2.14.16,14.1.2.10.41,6.2.0.8.39,8.2.0.11.46,7.1.0.14.3,1.0.0.8.52,13.2.0.2.10
+CORPUS n=30 new_pcs=5 seen=4716 verdict=accept genes=5 hi=1:6.0.0.4.53,0.0.1.6.57,9.0.1.3.57,1.2.1.14.47,2.1.0.8.33
+CORPUS n=31 new_pcs=3 seen=4719 verdict=accept genes=7 hi=0:15.0.2.6.42,18.2.0.7.61,6.1.1.13.32,3.0.2.7.52,18.0.1.5.5,6.1.1.1.23,16.0.0.5.48
+CORPUS n=32 new_pcs=14 seen=4733 verdict=reject genes=7 hi=0:9.1.2.1.3,2.2.2.15.34,16.0.0.8.59,13.2.0.10.37,0.1.1.12.61,5.2.2.10.42,12.1.2.10.33
+CORPUS n=33 new_pcs=23 seen=4756 verdict=reject genes=3 hi=0:13.1.0.2.47,10.2.2.13.15,11.0.2.13.62
+CORPUS n=34 new_pcs=23 seen=4779 verdict=accept genes=8 hi=1:2.0.2.13.3,3.0.0.8.12,4.1.2.13.59,18.2.1.5.60,2.1.2.1.12,2.2.2.9.36,14.0.2.3.2,4.2.0.14.5
+CORPUS n=35 new_pcs=59 seen=4838 verdict=accept genes=5 hi=1:18.1.1.2.23,16.0.1.3.0,9.2.2.5.53,13.2.0.13.27,8.1.2.1.28
+CORPUS n=36 new_pcs=84 seen=4922 verdict=reject genes=8 hi=0:15.2.1.6.21,14.0.2.11.45,15.2.1.14.51,8.2.0.2.60,12.0.2.13.52,2.1.0.3.0,18.0.1.2.16,4.2.2.11.45
+CORPUS n=37 new_pcs=4 seen=4926 verdict=reject genes=3 hi=1:14.1.1.13.21,11.1.0.10.47,0.0.2.12.36
+CORPUS n=38 new_pcs=14 seen=4940 verdict=reject genes=8 hi=1:6.2.1.13.20,17.1.2.6.60,16.1.1.11.4,15.0.2.6.61,5.1.2.1.57,5.0.2.1.61,12.2.0.6.32,4.2.1.5.16
+CORPUS n=39 new_pcs=2 seen=4942 verdict=accept genes=7 hi=1:18.0.1.1.18,9.0.0.3.14,1.0.0.9.30,15.1.0.2.25,3.2.2.1.39,7.1.2.5.20,14.2.2.2.9
+CORPUS n=40 new_pcs=5 seen=4947 verdict=reject genes=5 hi=0:15.2.1.2.32,12.1.0.3.9,4.2.2.14.3,14.1.2.12.24,12.2.2.13.53
+CORPUS n=41 new_pcs=1 seen=4948 verdict=reject genes=8 hi=1:13.2.1.5.57,7.2.1.12.14,8.0.1.14.36,9.0.0.2.46,11.1.2.10.9,11.2.1.6.12,15.2.1.1.6,18.1.1.2.5
+CORPUS n=42 new_pcs=1 seen=4949 verdict=accept genes=7 hi=1:18.2.0.8.46,3.1.1.1.14,17.0.1.2.41,0.1.2.12.8,13.2.2.1.37,2.1.0.3.51,16.0.2.2.20
+CORPUS n=43 new_pcs=13 seen=4962 verdict=accept genes=8 hi=0:15.2.2.15.5,0.2.0.9.47,15.2.0.4.20,1.2.1.5.33,17.0.0.5.2,16.2.2.2.30,18.2.2.3.19,18.2.2.10.62
+CORPUS n=44 new_pcs=31 seen=4993 verdict=reject genes=8 hi=0:3.0.0.14.0,18.0.2.14.35,18.2.0.5.20,9.2.0.8.50,6.1.1.13.28,12.0.1.13.10,12.0.0.7.57,16.0.2.14.0
+CORPUS n=45 new_pcs=1 seen=4994 verdict=accept genes=6 hi=0:3.2.1.4.37,15.2.2.13.35,15.1.2.4.58,15.1.0.11.63,4.2.0.5.48,0.2.1.3.9
+CORPUS n=46 new_pcs=25 seen=5019 verdict=accept genes=3 hi=0:13.2.2.8.32,13.0.1.8.58,13.0.1.4.38
+CORPUS n=47 new_pcs=1 seen=5020 verdict=reject genes=4 hi=0:6.0.2.10.63,4.2.2.14.3,14.1.2.12.24,12.2.2.13.53
+CORPUS n=48 new_pcs=5 seen=5025 verdict=accept genes=3 hi=0:17.1.0.1.38,17.0.2.12.50,14.2.2.13.37
+CORPUS n=49 new_pcs=8 seen=5033 verdict=accept genes=6 hi=0:14.0.2.5.9,3.0.2.10.17,1.2.0.2.31,15.0.0.4.44,13.1.0.5.12,2.2.0.15.16
+CORPUS n=50 new_pcs=7 seen=5040 verdict=accept genes=7 hi=1:9.1.2.1.36,15.2.1.14.7,9.2.0.14.26,10.2.1.15.49,8.1.0.6.13,7.0.0.2.49,7.0.0.6.15
+CORPUS n=51 new_pcs=4 seen=5044 verdict=accept genes=5 hi=0:18.0.1.10.22,14.1.0.7.2,4.2.1.4.35,16.1.0.8.37,11.2.1.12.29
+CORPUS n=52 new_pcs=1 seen=5045 verdict=accept genes=5 hi=1:13.0.0.6.13,16.0.1.3.0,9.2.2.5.53,13.2.0.13.27,8.1.2.1.28
+CORPUS n=53 new_pcs=1 seen=5046 verdict=accept genes=8 hi=1:15.2.1.2.7,18.2.0.8.21,3.1.1.1.14,17.0.1.2.41,0.1.2.12.8,17.2.1.7.10,2.1.0.3.32,16.0.2.2.20
+CORPUS n=54 new_pcs=1 seen=5047 verdict=accept genes=7 hi=1:10.0.1.6.34,18.2.0.8.46,8.0.1.2.41,0.1.2.12.8,17.2.1.7.10,2.1.0.3.51,16.0.2.2.20
+CORPUS n=55 new_pcs=4 seen=5051 verdict=accept genes=9 hi=0:15.2.2.15.5,0.2.0.9.47,15.2.0.4.20,1.2.1.5.33,5.1.0.7.46,17.0.0.5.2,16.2.2.2.30,18.2.2.3.19,18.2.2.10.62
+CORPUS n=56 new_pcs=1 seen=5052 verdict=accept genes=8 hi=0:14.1.0.14.55,7.2.0.13.49,13.1.1.7.4,10.1.2.7.32,9.0.1.2.15,8.0.0.11.22,14.1.2.14.59,3.0.0.3.63
+CORPUS n=57 new_pcs=1 seen=5053 verdict=reject genes=7 hi=1:13.2.1.5.57,7.2.1.12.14,8.0.1.14.36,9.0.0.2.53,11.2.1.6.12,15.2.1.1.6,18.1.1.2.5
+CORPUS n=58 new_pcs=21 seen=5074 verdict=reject genes=7 hi=0:13.2.1.5.57,7.2.1.12.14,11.1.1.14.28,9.0.0.2.53,11.2.1.6.12,15.2.1.1.6,18.1.1.2.14
+CORPUS n=59 new_pcs=9 seen=5083 verdict=accept genes=7 hi=1:15.2.1.2.7,18.2.0.8.21,3.1.1.1.14,0.1.2.12.8,17.2.1.7.10,2.1.0.3.32,16.0.2.2.20
+CORPUS n=60 new_pcs=1 seen=5084 verdict=accept genes=8 hi=1:2.0.2.13.3,3.0.0.8.12,4.1.2.13.59,3.2.1.5.60,2.1.2.1.12,2.2.2.9.36,14.0.2.3.2,4.2.0.14.5
+CORPUS n=61 new_pcs=2 seen=5086 verdict=accept genes=5 hi=1:14.0.2.5.9,1.2.0.2.31,15.0.0.4.44,13.1.0.5.25,2.2.0.15.16
+CORPUS n=62 new_pcs=1 seen=5087 verdict=accept genes=7 hi=1:18.0.1.1.18,9.0.0.3.14,6.0.1.9.6,15.1.0.2.25,3.2.2.1.62,7.1.2.5.20,14.2.2.2.9
+CORPUS n=63 new_pcs=1 seen=5088 verdict=accept genes=7 hi=1:9.1.2.1.36,15.2.1.14.7,2.2.1.4.13,10.2.1.15.49,8.1.0.6.13,7.0.0.2.49,7.0.0.6.15
+CORPUS n=64 new_pcs=43 seen=5131 verdict=accept genes=7 hi=1:7.0.2.11.49,6.1.1.5.43,15.1.0.5.18,17.2.1.3.60,10.2.1.8.56,12.2.0.15.32,1.0.0.13.25
+CORPUS n=65 new_pcs=1 seen=5132 verdict=accept genes=7 hi=1:18.0.1.1.18,9.0.0.3.14,0.0.1.8.6,15.1.0.2.25,3.2.2.1.62,7.1.2.5.20,14.2.2.2.49
+CORPUS n=66 new_pcs=1 seen=5133 verdict=accept genes=6 hi=1:14.2.2.12.36,17.1.2.2.21,2.1.0.14.6,14.2.1.9.27,13.0.1.12.17,18.1.0.4.16
+CORPUS n=67 new_pcs=1 seen=5134 verdict=reject genes=6 hi=0:13.2.1.5.57,7.2.1.12.14,7.2.2.10.21,11.2.1.6.12,15.2.1.1.6,18.1.1.2.14
+CORPUS n=68 new_pcs=4 seen=5138 verdict=reject genes=8 hi=0:15.2.1.6.21,14.0.2.11.45,15.2.1.14.51,8.2.0.2.60,12.0.2.13.52,2.1.0.3.0,3.2.0.11.20,4.2.2.11.45
+CORPUS n=69 new_pcs=1 seen=5139 verdict=reject genes=7 hi=1:17.0.2.15.51,6.1.0.14.8,6.1.2.11.9,12.1.0.12.11,3.0.1.14.4,11.0.1.6.44,10.2.0.4.34
+CORPUS n=70 new_pcs=12 seen=5151 verdict=accept genes=9 hi=1:17.0.2.1.37,15.2.1.2.7,18.2.0.8.21,3.1.1.1.14,17.0.1.2.41,0.1.2.12.8,17.2.1.7.10,3.2.0.15.3,16.0.2.2.20
+CORPUS n=71 new_pcs=3 seen=5154 verdict=accept genes=8 hi=0:3.2.0.9.1,2.2.0.8.38,7.0.0.11.23,17.0.2.3.29,12.0.2.1.17,9.1.1.7.55,6.2.2.3.31,8.0.1.1.41
+CORPUS n=72 new_pcs=2 seen=5156 verdict=accept genes=7 hi=1:9.1.2.1.36,15.2.1.14.56,9.2.0.14.26,10.2.1.15.49,8.1.0.6.13,7.0.0.2.49,7.0.0.6.15
+CORPUS n=73 new_pcs=1 seen=5157 verdict=accept genes=8 hi=1:13.2.1.5.57,15.1.0.12.28,7.2.1.12.14,8.0.1.14.36,9.0.0.2.53,14.0.0.2.5,15.2.1.1.6,18.1.1.2.5
+CORPUS n=74 new_pcs=2 seen=5159 verdict=reject genes=6 hi=1:0.1.1.4.57,7.0.0.10.31,2.2.2.10.14,8.0.1.7.63,12.2.2.13.35,0.1.2.11.11
+CORPUS n=75 new_pcs=1 seen=5160 verdict=accept genes=7 hi=1:14.2.2.12.36,17.1.2.2.21,2.1.0.14.6,14.2.1.9.27,18.2.1.8.47,13.0.1.12.17,18.1.0.4.16
+CORPUS n=76 new_pcs=3 seen=5163 verdict=accept genes=9 hi=1:14.2.1.2.7,18.2.0.8.48,3.1.1.1.14,8.0.1.2.41,3.0.1.9.25,0.1.2.12.8,17.2.1.4.10,2.1.0.11.51,16.0.2.2.20
+CORPUS n=77 new_pcs=1 seen=5164 verdict=accept genes=8 hi=0:8.0.2.14.14,17.1.0.5.30,14.2.0.9.50,18.0.1.7.34,0.2.0.10.56,6.2.1.12.10,14.1.2.10.63,10.2.0.15.62
+CORPUS n=78 new_pcs=1 seen=5165 verdict=accept genes=5 hi=0:4.2.2.8.36,0.0.2.14.7,7.0.1.2.13,1.0.0.6.54,6.0.2.4.42
+CORPUS n=79 new_pcs=1 seen=5166 verdict=accept genes=4 hi=0:15.1.0.11.30,18.0.0.7.1,13.1.1.7.4,10.1.0.11.17
+CORPUS n=80 new_pcs=5 seen=5171 verdict=accept genes=8 hi=1:18.0.1.1.18,9.0.0.3.14,6.0.1.9.6,15.1.0.2.25,17.0.1.14.3,3.2.2.1.62,7.1.2.5.20,14.2.2.2.9
+CORPUS n=81 new_pcs=1 seen=5172 verdict=accept genes=7 hi=0:16.2.1.2.7,1.2.0.8.46,8.0.1.2.31,0.1.2.12.8,17.2.1.1.10,10.1.0.3.51,16.0.2.2.20
+CORPUS n=82 new_pcs=1 seen=5173 verdict=reject genes=5 hi=0:3.0.2.10.63,12.1.0.3.9,4.2.2.14.37,14.1.2.12.24,12.2.2.13.53
+CORPUS n=83 new_pcs=1 seen=5174 verdict=accept genes=5 hi=1:13.0.0.6.23,16.1.0.3.0,9.2.2.5.53,13.2.0.13.27,8.1.2.1.28
+CORPUS n=84 new_pcs=3 seen=5177 verdict=accept genes=7 hi=0:18.0.1.1.18,9.0.2.3.14,0.0.1.6.6,15.1.0.2.25,3.2.2.1.39,7.1.2.5.20,14.2.2.2.9
+CORPUS n=85 new_pcs=1 seen=5178 verdict=accept genes=8 hi=0:15.2.2.15.5,0.2.0.9.47,15.2.0.4.20,1.2.1.5.33,9.0.0.5.2,16.2.2.2.30,18.2.2.3.19,14.2.1.5.45
+CORPUS n=86 new_pcs=1 seen=5179 verdict=accept genes=8 hi=0:14.1.0.14.55,7.2.0.13.49,13.1.1.7.4,10.1.2.7.32,9.0.1.2.16,8.0.0.11.22,14.1.2.14.59,3.0.0.3.63
+CORPUS n=87 new_pcs=2 seen=5181 verdict=accept genes=8 hi=0:15.2.2.15.5,14.0.0.1.44,15.2.0.4.20,1.2.1.5.33,17.0.0.5.2,16.2.2.2.30,18.2.2.3.60,18.2.2.10.62
+CORPUS n=88 new_pcs=5 seen=5186 verdict=reject genes=3 hi=0:13.1.0.2.47,10.2.2.13.15,11.0.2.13.63
+CORPUS n=89 new_pcs=1 seen=5187 verdict=reject genes=7 hi=0:7.0.2.11.49,6.1.1.5.43,15.1.0.5.18,0.2.0.15.37,10.2.1.8.56,12.2.0.15.32,1.0.0.13.25
+CORPUS n=90 new_pcs=1 seen=5188 verdict=accept genes=8 hi=1:15.2.2.15.5,0.2.0.9.47,15.2.0.4.20,3.1.1.7.26,9.0.0.5.2,16.2.2.2.30,18.2.2.3.19,14.2.1.5.45
+CORPUS n=91 new_pcs=1 seen=5189 verdict=accept genes=8 hi=0:10.2.2.4.61,17.2.2.4.39,5.2.1.5.40,18.0.2.4.16,17.2.2.9.2,6.2.2.9.38,10.2.1.13.35,7.2.1.11.55
+CORPUS n=92 new_pcs=4 seen=5193 verdict=accept genes=8 hi=0:16.2.1.10.18,18.0.1.6.26,13.0.0.5.62,16.2.2.7.2,1.2.0.8.53,3.2.1.2.53,17.0.0.5.16,14.1.2.4.37
+CORPUS n=93 new_pcs=1 seen=5194 verdict=reject genes=7 hi=1:18.0.1.1.18,9.0.0.3.14,6.0.1.9.6,15.1.0.2.25,3.2.2.1.62,7.1.2.5.20,11.1.2.10.19
+CORPUS n=94 new_pcs=1 seen=5195 verdict=reject genes=8 hi=1:6.1.0.13.20,17.1.2.6.60,16.1.1.11.4,15.0.2.6.61,5.1.2.1.57,5.0.2.1.61,12.2.0.6.32,4.2.1.5.16
+CORPUS n=95 new_pcs=1 seen=5196 verdict=accept genes=6 hi=1:14.2.2.12.36,17.1.2.2.21,2.1.0.14.6,14.2.1.9.58,13.2.2.12.17,18.1.0.4.16
+CORPUS n=96 new_pcs=1 seen=5197 verdict=accept genes=8 hi=1:15.2.1.2.7,18.2.0.8.46,3.1.1.1.14,17.0.1.2.41,0.2.0.12.8,17.2.1.7.10,2.1.0.3.51,10.0.2.2.20
+CORPUS n=97 new_pcs=8 seen=5205 verdict=reject genes=8 hi=0:3.2.2.6.3,10.1.2.12.0,13.0.0.12.43,0.1.1.2.4,1.2.0.4.56,6.1.0.6.55,9.1.1.13.47,12.1.0.7.29
+STATUS iters=2000 accept=1390 reject=610 corpus=97 seen_pcs=5205 compared=11120 findings=0 trunc=0 prunepairs=335 pruneflip=0 pruneartifact=0 maxstates=6/18 avgstates=2 invfault=0 elapsed=2s
+CORPUS n=98 new_pcs=1 seen=5206 verdict=accept genes=5 hi=1:10.1.2.6.57,7.1.1.7.53,14.0.2.3.38,4.1.2.1.11,1.0.0.15.33
+CORPUS n=99 new_pcs=1 seen=5207 verdict=accept genes=7 hi=0:0.1.0.4.39,7.0.1.7.59,18.0.0.12.26,5.1.1.10.11,8.1.1.7.24,10.1.1.12.2,15.0.0.9.30
+CORPUS n=100 new_pcs=1 seen=5208 verdict=accept genes=7 hi=1:18.0.1.1.18,9.0.0.3.14,0.0.1.8.6,15.1.0.2.13,3.2.2.1.39,7.1.2.5.20,14.2.2.2.9
+CORPUS n=101 new_pcs=1 seen=5209 verdict=reject genes=5 hi=0:17.0.1.10.44,1.2.2.9.1,8.0.0.1.25,12.0.0.8.45,16.1.0.5.60
+CORPUS n=102 new_pcs=14 seen=5223 verdict=accept genes=9 hi=1:16.2.1.2.7,18.2.0.8.46,3.1.1.1.14,17.0.1.2.41,0.1.2.12.8,17.2.1.7.10,1.0.2.11.54,2.1.0.3.51,16.0.2.2.20
+CORPUS n=103 new_pcs=1 seen=5224 verdict=accept genes=9 hi=0:17.0.1.7.43,16.2.1.2.7,18.2.0.8.17,3.1.1.1.14,8.0.1.2.41,0.1.2.12.8,17.2.1.7.10,2.1.0.11.51,1.0.2.2.20
+CORPUS n=104 new_pcs=1 seen=5225 verdict=accept genes=7 hi=0:10.2.2.9.57,1.1.1.2.41,12.2.1.11.15,8.2.2.5.19,4.1.2.5.27,9.0.2.15.12,12.2.1.14.17
+CORPUS n=105 new_pcs=1 seen=5226 verdict=accept genes=9 hi=1:15.2.2.15.5,18.1.0.5.17,15.2.0.4.20,1.2.1.5.33,5.1.0.7.46,17.0.0.5.2,16.2.2.2.30,18.2.2.3.19,18.2.2.10.62
+CORPUS n=106 new_pcs=15 seen=5241 verdict=accept genes=9 hi=1:15.2.2.15.5,18.1.0.5.17,15.2.0.4.20,1.2.1.5.33,5.1.0.7.46,16.2.2.2.30,18.2.2.3.19,15.2.2.5.55,18.2.2.10.62
+CORPUS n=107 new_pcs=1 seen=5242 verdict=reject genes=5 hi=0:17.0.1.10.44,1.2.2.9.1,8.0.0.1.23,12.0.0.8.45,16.1.0.5.60
+CORPUS n=108 new_pcs=21 seen=5263 verdict=reject genes=8 hi=1:18.0.1.1.18,9.0.0.3.14,0.0.1.8.6,15.1.0.2.25,3.2.2.1.62,7.1.2.5.20,13.0.1.6.52,11.2.2.2.9
+CORPUS n=109 new_pcs=7 seen=5270 verdict=accept genes=8 hi=0:3.2.0.9.8,2.2.0.8.38,7.0.0.11.23,17.0.2.3.29,12.0.2.1.17,9.1.1.7.55,6.0.2.3.31,8.0.1.1.41
+CORPUS n=110 new_pcs=5 seen=5275 verdict=accept genes=3 hi=0:10.0.2.1.24,4.1.2.9.37,0.0.0.5.59
+CORPUS n=111 new_pcs=2 seen=5277 verdict=accept genes=6 hi=1:16.1.0.8.28,5.1.2.1.55,15.2.2.9.34,6.0.2.7.33,0.2.0.12.53,5.1.1.15.43
+CORPUS n=112 new_pcs=1 seen=5278 verdict=accept genes=9 hi=1:16.2.1.2.7,18.2.0.8.46,3.1.1.1.14,17.0.1.2.41,0.1.2.12.8,17.2.1.7.10,1.0.2.11.54,2.1.0.3.43,16.0.2.2.20
+STATUS iters=4000 accept=2763 reject=1237 corpus=112 seen_pcs=5278 compared=22104 findings=0 trunc=0 prunepairs=598 pruneflip=0 pruneartifact=0 maxstates=6/19 avgstates=2 invfault=0 elapsed=4s
+CORPUS n=113 new_pcs=1 seen=5279 verdict=accept genes=7 hi=0:7.0.2.11.49,6.2.0.5.43,15.1.0.5.18,0.2.0.15.37,10.2.1.8.56,14.0.1.9.25,1.0.0.13.25
+CORPUS n=114 new_pcs=1 seen=5280 verdict=accept genes=3 hi=0:1.2.0.8.19,17.1.0.10.43,15.0.1.10.23
+CORPUS n=115 new_pcs=1 seen=5281 verdict=reject genes=8 hi=1:6.0.2.13.20,17.1.2.6.60,16.2.2.11.4,15.0.2.6.61,5.1.2.1.57,5.0.2.1.61,12.2.0.6.32,4.2.1.5.16
+CORPUS n=116 new_pcs=1 seen=5282 verdict=accept genes=5 hi=1:6.0.0.4.53,0.0.1.6.55,9.0.1.3.57,1.2.1.14.47,2.1.0.8.33
+CORPUS n=117 new_pcs=18 seen=5300 verdict=accept genes=6 hi=0:16.2.1.2.7,1.2.0.8.46,8.0.1.2.41,0.1.2.12.8,17.2.1.1.10,16.0.2.2.20
+CORPUS n=118 new_pcs=3 seen=5303 verdict=reject genes=6 hi=1:15.0.1.12.28,12.0.0.7.0,8.2.0.3.27,14.2.1.5.35,8.0.1.11.22,1.2.0.2.35
+STATUS iters=6000 accept=4203 reject=1797 corpus=118 seen_pcs=5303 compared=33624 findings=0 trunc=0 prunepairs=854 pruneflip=0 pruneartifact=0 maxstates=6/19 avgstates=2 invfault=0 elapsed=6s
+CORPUS n=119 new_pcs=1 seen=5304 verdict=accept genes=10 hi=1:15.2.2.15.5,18.1.0.5.17,13.0.0.4.46,15.2.0.4.20,1.2.1.5.33,6.0.1.10.1,17.0.0.5.2,16.2.2.2.30,18.2.2.3.19,18.2.2.10.62
+CORPUS n=120 new_pcs=7 seen=5311 verdict=accept genes=10 hi=1:15.2.2.15.5,18.1.0.5.17,13.0.0.4.46,15.2.0.4.20,1.2.1.5.33,6.0.1.10.24,17.0.0.5.2,16.2.2.2.30,18.2.2.3.19,1.1.2.15.24
+CORPUS n=121 new_pcs=3 seen=5314 verdict=reject genes=8 hi=0:13.0.2.4.35,2.0.2.15.45,17.2.1.9.62,15.0.0.2.4,8.1.2.14.9,12.0.0.5.44,5.2.0.7.49,17.1.0.3.27
+CORPUS n=122 new_pcs=1 seen=5315 verdict=accept genes=7 hi=1:18.0.1.1.18,9.0.0.3.14,0.0.1.8.6,15.0.1.2.13,3.2.2.1.39,7.1.2.5.20,14.2.2.2.9
+CORPUS n=123 new_pcs=1 seen=5316 verdict=accept genes=3 hi=0:2.2.1.3.60,5.2.2.8.26,13.0.2.3.35
+CORPUS n=124 new_pcs=2 seen=5318 verdict=accept genes=6 hi=1:6.2.1.3.30,14.2.2.9.16,15.2.2.9.33,13.0.2.7.56,15.0.2.15.7,3.1.1.2.15
+CORPUS n=125 new_pcs=1 seen=5319 verdict=reject genes=3 hi=0:13.1.0.2.47,10.2.2.13.15,11.0.2.13.32
+CORPUS n=126 new_pcs=1 seen=5320 verdict=accept genes=7 hi=0:17.1.0.5.30,14.2.0.9.50,18.0.1.7.34,0.2.0.10.56,6.2.1.12.10,14.1.2.10.63,10.2.0.15.62
+CORPUS n=127 new_pcs=2 seen=5322 verdict=accept genes=8 hi=1:7.0.2.11.49,6.2.1.1.17,6.1.1.5.43,15.1.0.5.18,17.2.1.3.60,10.2.1.8.56,12.2.0.15.32,1.0.0.13.25
+STATUS iters=8000 accept=5608 reject=2392 corpus=127 seen_pcs=5322 compared=44864 findings=0 trunc=0 prunepairs=1113 pruneflip=0 pruneartifact=0 maxstates=6/22 avgstates=2 invfault=0 elapsed=8s
+CORPUS n=128 new_pcs=1 seen=5323 verdict=reject genes=5 hi=0:15.2.1.2.32,12.1.0.3.9,4.2.2.14.3,14.1.2.12.24,15.1.2.14.29
+CORPUS n=129 new_pcs=1 seen=5324 verdict=reject genes=7 hi=1:15.0.1.12.28,15.1.1.14.23,12.0.0.7.0,8.2.0.3.27,14.2.1.5.35,8.0.1.11.22,1.2.0.2.35
+STATUS iters=10000 accept=6979 reject=3021 corpus=129 seen_pcs=5324 compared=55832 findings=0 trunc=0 prunepairs=1364 pruneflip=0 pruneartifact=0 maxstates=6/24 avgstates=2 invfault=0 elapsed=10s
+CORPUS n=130 new_pcs=3 seen=5327 verdict=accept genes=3 hi=0:10.2.1.3.60,5.2.2.8.26,13.0.2.3.35
+CORPUS n=131 new_pcs=2 seen=5329 verdict=accept genes=8 hi=1:9.1.2.1.36,17.1.1.15.35,15.2.1.14.7,9.2.0.14.26,10.2.1.15.49,8.1.0.6.13,7.0.0.2.49,7.0.0.6.15
+STATUS iters=12000 accept=8393 reject=3607 corpus=131 seen_pcs=5329 compared=67144 findings=0 trunc=0 prunepairs=1616 pruneflip=0 pruneartifact=0 maxstates=6/24 avgstates=2 invfault=0 elapsed=11s
+CORPUS n=132 new_pcs=8 seen=5337 verdict=accept genes=8 hi=1:1.0.2.8.18,8.1.1.12.8,2.1.1.15.51,2.0.2.6.13,17.2.0.8.12,8.0.1.13.46,15.1.0.10.3,8.0.0.12.25
+STATUS iters=14000 accept=9791 reject=4209 corpus=132 seen_pcs=5337 compared=78328 findings=0 trunc=0 prunepairs=1866 pruneflip=0 pruneartifact=0 maxstates=8/29 avgstates=2 invfault=0 elapsed=13s
+STATUS iters=16000 accept=11158 reject=4842 corpus=132 seen_pcs=5337 compared=89264 findings=0 trunc=0 prunepairs=2116 pruneflip=0 pruneartifact=0 maxstates=8/29 avgstates=2 invfault=0 elapsed=15s
+STATUS iters=18000 accept=12542 reject=5458 corpus=132 seen_pcs=5337 compared=100336 findings=0 trunc=0 prunepairs=2366 pruneflip=0 pruneartifact=0 maxstates=8/29 avgstates=2 invfault=0 elapsed=17s
+CORPUS n=133 new_pcs=1 seen=5338 verdict=accept genes=8 hi=1:16.2.1.2.7,18.2.0.8.46,3.1.1.1.14,17.0.1.2.41,0.1.2.12.47,17.2.1.7.10,2.1.0.3.51,16.0.2.2.20
+CORPUS n=134 new_pcs=4 seen=5342 verdict=accept genes=7 hi=1:16.0.2.15.55,14.1.2.14.16,14.1.2.10.41,6.2.0.8.39,8.2.0.11.46,13.1.0.14.3,1.0.0.8.52
+CORPUS n=135 new_pcs=1 seen=5343 verdict=accept genes=8 hi=0:8.0.2.14.14,17.1.1.5.3,14.2.0.9.50,18.0.1.7.34,0.2.0.10.56,6.2.1.12.10,14.1.2.10.63,10.2.0.15.62
+CORPUS n=136 new_pcs=2 seen=5345 verdict=accept genes=7 hi=0:15.0.0.9.37,3.1.2.5.40,9.1.0.7.7,17.1.0.12.3,5.1.0.6.18,9.1.1.3.44,16.1.1.11.62
+STATUS iters=20000 accept=13966 reject=6034 corpus=136 seen_pcs=5345 compared=111728 findings=0 trunc=0 prunepairs=2620 pruneflip=0 pruneartifact=0 maxstates=8/29 avgstates=2 invfault=0 elapsed=19s
+STATUS iters=22000 accept=15348 reject=6652 corpus=136 seen_pcs=5345 compared=122784 findings=0 trunc=0 prunepairs=2870 pruneflip=0 pruneartifact=0 maxstates=8/29 avgstates=2 invfault=0 elapsed=21s
+CORPUS n=137 new_pcs=2 seen=5347 verdict=accept genes=9 hi=1:17.0.2.1.37,18.2.1.2.7,18.2.0.8.21,3.1.1.1.14,17.0.1.2.41,0.1.2.12.8,17.2.1.7.10,3.2.0.15.3,16.0.2.2.20
+STATUS iters=24000 accept=16777 reject=7223 corpus=137 seen_pcs=5347 compared=134216 findings=0 trunc=0 prunepairs=3121 pruneflip=0 pruneartifact=0 maxstates=8/29 avgstates=2 invfault=0 elapsed=23s
+STATUS iters=26000 accept=18170 reject=7830 corpus=137 seen_pcs=5347 compared=145360 findings=0 trunc=0 prunepairs=3371 pruneflip=0 pruneartifact=0 maxstates=8/29 avgstates=2 invfault=0 elapsed=25s
+CORPUS n=138 new_pcs=1 seen=5348 verdict=accept genes=9 hi=0:17.0.2.12.27,8.0.2.14.14,17.1.1.5.3,14.2.0.9.50,18.0.1.7.12,0.2.0.10.56,6.2.1.12.10,14.1.2.10.63,10.2.0.15.62
+STATUS iters=28000 accept=19571 reject=8429 corpus=138 seen_pcs=5348 compared=156568 findings=0 trunc=0 prunepairs=3622 pruneflip=0 pruneartifact=0 maxstates=8/29 avgstates=2 invfault=0 elapsed=27s
+CORPUS n=139 new_pcs=2 seen=5350 verdict=reject genes=8 hi=0:17.0.1.6.54,13.0.2.6.58,4.2.0.12.29,13.0.2.10.46,12.2.1.3.57,1.0.2.6.14,18.2.2.1.6,5.1.0.3.12
+CORPUS n=140 new_pcs=2 seen=5352 verdict=accept genes=8 hi=1:9.1.2.1.36,15.2.1.14.7,2.2.1.4.13,10.2.1.15.49,8.1.0.6.13,2.0.0.8.41,7.0.0.2.49,7.0.0.6.15
+STATUS iters=30000 accept=20911 reject=9089 corpus=140 seen_pcs=5352 compared=167288 findings=0 trunc=0 prunepairs=3873 pruneflip=0 pruneartifact=0 maxstates=8/29 avgstates=2 invfault=0 elapsed=29s
+CORPUS n=141 new_pcs=1 seen=5353 verdict=accept genes=7 hi=1:16.2.1.2.7,18.2.0.8.46,3.1.1.1.14,17.0.1.2.41,17.2.1.7.10,2.1.0.3.13,16.0.2.2.20
+CORPUS n=142 new_pcs=1 seen=5354 verdict=accept genes=8 hi=0:15.2.1.2.7,18.2.0.8.46,3.1.1.1.14,17.0.1.2.41,0.1.2.12.8,17.2.1.15.10,2.1.0.3.51,16.0.2.2.20
+STATUS iters=32000 accept=22354 reject=9646 corpus=142 seen_pcs=5354 compared=178832 findings=0 trunc=0 prunepairs=4124 pruneflip=0 pruneartifact=0 maxstates=8/29 avgstates=2 invfault=0 elapsed=31s
+STATUS iters=34000 accept=23795 reject=10205 corpus=142 seen_pcs=5354 compared=190360 findings=0 trunc=0 prunepairs=4374 pruneflip=0 pruneartifact=0 maxstates=8/29 avgstates=2 invfault=0 elapsed=33s
+STATUS iters=36000 accept=25214 reject=10786 corpus=142 seen_pcs=5354 compared=201712 findings=0 trunc=0 prunepairs=4624 pruneflip=0 pruneartifact=0 maxstates=8/29 avgstates=2 invfault=0 elapsed=35s
+STATUS iters=38000 accept=26645 reject=11355 corpus=142 seen_pcs=5354 compared=213160 findings=0 trunc=0 prunepairs=4874 pruneflip=0 pruneartifact=0 maxstates=8/29 avgstates=2 invfault=0 elapsed=37s
+STATUS iters=40000 accept=28079 reject=11921 corpus=142 seen_pcs=5354 compared=224632 findings=0 trunc=0 prunepairs=5124 pruneflip=0 pruneartifact=0 maxstates=8/29 avgstates=2 invfault=0 elapsed=39s
+STATUS iters=42000 accept=29492 reject=12508 corpus=142 seen_pcs=5354 compared=235936 findings=0 trunc=0 prunepairs=5374 pruneflip=0 pruneartifact=0 maxstates=8/29 avgstates=2 invfault=0 elapsed=41s
+CORPUS n=143 new_pcs=1 seen=5355 verdict=reject genes=8 hi=0:3.2.2.6.3,10.1.2.12.0,5.0.0.12.43,0.1.1.2.4,1.2.0.4.56,6.1.0.6.55,9.1.1.13.47,12.1.0.7.29
+STATUS iters=44000 accept=30911 reject=13089 corpus=143 seen_pcs=5355 compared=247288 findings=0 trunc=0 prunepairs=5624 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=43s
+[   46.322046] clocksource: Watchdog remote CPU 1 read timed out
+STATUS iters=46000 accept=32331 reject=13669 corpus=143 seen_pcs=5355 compared=258648 findings=0 trunc=0 prunepairs=5874 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=45s
+STATUS iters=48000 accept=33724 reject=14276 corpus=143 seen_pcs=5355 compared=269792 findings=0 trunc=0 prunepairs=6124 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=46s
+STATUS iters=50000 accept=35131 reject=14869 corpus=143 seen_pcs=5355 compared=281048 findings=0 trunc=0 prunepairs=6374 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=48s
+STATUS iters=52000 accept=36516 reject=15484 corpus=143 seen_pcs=5355 compared=292128 findings=0 trunc=0 prunepairs=6624 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=50s
+CORPUS n=144 new_pcs=1 seen=5356 verdict=accept genes=8 hi=1:7.1.1.14.46,17.0.1.12.55,5.0.1.11.15,15.2.2.15.15,18.0.2.8.33,17.1.1.11.17,3.2.2.13.22,4.0.2.8.61
+STATUS iters=54000 accept=37928 reject=16072 corpus=144 seen_pcs=5356 compared=303424 findings=0 trunc=0 prunepairs=6875 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=52s
+STATUS iters=56000 accept=39338 reject=16662 corpus=144 seen_pcs=5356 compared=314704 findings=0 trunc=0 prunepairs=7125 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=54s
+STATUS iters=58000 accept=40711 reject=17289 corpus=144 seen_pcs=5356 compared=325688 findings=0 trunc=0 prunepairs=7375 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=56s
+STATUS iters=60000 accept=42131 reject=17869 corpus=144 seen_pcs=5356 compared=337048 findings=0 trunc=0 prunepairs=7625 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=58s
+STATUS iters=62000 accept=43575 reject=18425 corpus=144 seen_pcs=5356 compared=348600 findings=0 trunc=0 prunepairs=7875 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=60s
+STATUS iters=64000 accept=44940 reject=19060 corpus=144 seen_pcs=5356 compared=359520 findings=0 trunc=0 prunepairs=8125 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=62s
+STATUS iters=66000 accept=46360 reject=19640 corpus=144 seen_pcs=5356 compared=370880 findings=0 trunc=0 prunepairs=8375 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=64s
+STATUS iters=68000 accept=47748 reject=20252 corpus=144 seen_pcs=5356 compared=381984 findings=0 trunc=0 prunepairs=8625 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=66s
+STATUS iters=70000 accept=49107 reject=20893 corpus=144 seen_pcs=5356 compared=392856 findings=0 trunc=0 prunepairs=8875 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=68s
+STATUS iters=72000 accept=50502 reject=21498 corpus=144 seen_pcs=5356 compared=404016 findings=0 trunc=0 prunepairs=9125 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=70s
+STATUS iters=74000 accept=51908 reject=22092 corpus=144 seen_pcs=5356 compared=415264 findings=0 trunc=0 prunepairs=9375 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=72s
+STATUS iters=76000 accept=53337 reject=22663 corpus=144 seen_pcs=5356 compared=426696 findings=0 trunc=0 prunepairs=9625 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=74s
+STATUS iters=78000 accept=54783 reject=23217 corpus=144 seen_pcs=5356 compared=438264 findings=0 trunc=0 prunepairs=9875 pruneflip=0 pruneartifact=0 maxstates=8/30 avgstates=2 invfault=0 elapsed=76s
+STATUS iters=80000 accept=56189 reject=23811 corpus=144 seen_pcs=5356 compared=449512 findings=0 trunc=0 prunepairs=10125 pruneflip=0 pruneartifact=0 maxstates=8/34 avgstates=2 invfault=0 elapsed=77s
+CORPUS n=145 new_pcs=2 seen=5358 verdict=accept genes=8 hi=0:6.2.1.1.38,4.0.0.6.24,13.2.2.5.32,6.2.1.11.8,6.2.2.3.21,18.2.0.10.43,3.2.0.2.27,13.2.0.6.38
+STATUS iters=82000 accept=57642 reject=24358 corpus=145 seen_pcs=5358 compared=461136 findings=0 trunc=0 prunepairs=10376 pruneflip=0 pruneartifact=0 maxstates=8/34 avgstates=2 invfault=0 elapsed=79s
+STATUS iters=84000 accept=59039 reject=24961 corpus=145 seen_pcs=5358 compared=472312 findings=0 trunc=0 prunepairs=10626 pruneflip=0 pruneartifact=0 maxstates=8/34 avgstates=2 invfault=0 elapsed=81s
+CORPUS n=146 new_pcs=1 seen=5359 verdict=accept genes=10 hi=1:15.2.2.15.5,18.1.0.5.17,15.2.0.4.20,17.0.2.14.3,1.2.1.5.33,5.1.0.7.46,16.2.2.2.30,18.2.2.3.19,15.2.2.5.55,17.0.2.11.33
+STATUS iters=86000 accept=60470 reject=25530 corpus=146 seen_pcs=5359 compared=483760 findings=0 trunc=0 prunepairs=10877 pruneflip=0 pruneartifact=0 maxstates=8/34 avgstates=2 invfault=0 elapsed=83s
+STATUS iters=88000 accept=61879 reject=26121 corpus=146 seen_pcs=5359 compared=495032 findings=0 trunc=0 prunepairs=11127 pruneflip=0 pruneartifact=0 maxstates=8/34 avgstates=2 invfault=0 elapsed=85s
+STATUS iters=90000 accept=63267 reject=26733 corpus=146 seen_pcs=5359 compared=506136 findings=0 trunc=0 prunepairs=11377 pruneflip=0 pruneartifact=0 maxstates=8/34 avgstates=2 invfault=0 elapsed=87s
+STATUS iters=92000 accept=64636 reject=27364 corpus=146 seen_pcs=5359 compared=517088 findings=0 trunc=0 prunepairs=11627 pruneflip=0 pruneartifact=0 maxstates=8/34 avgstates=2 invfault=0 elapsed=89s
+STATUS iters=94000 accept=66041 reject=27959 corpus=146 seen_pcs=5359 compared=528328 findings=0 trunc=0 prunepairs=11877 pruneflip=0 pruneartifact=0 maxstates=8/34 avgstates=2 invfault=0 elapsed=91s
+STATUS iters=96000 accept=67433 reject=28567 corpus=146 seen_pcs=5359 compared=539464 findings=0 trunc=0 prunepairs=12127 pruneflip=0 pruneartifact=0 maxstates=8/34 avgstates=2 invfault=0 elapsed=93s
+CORPUS n=147 new_pcs=1 seen=5360 verdict=accept genes=4 hi=1:18.1.2.14.38,5.2.1.7.3,3.1.0.2.22,16.2.0.11.24
+STATUS iters=98000 accept=68825 reject=29175 corpus=147 seen_pcs=5360 compared=550600 findings=0 trunc=0 prunepairs=12377 pruneflip=0 pruneartifact=0 maxstates=8/34 avgstates=2 invfault=0 elapsed=94s
+CORPUS n=148 new_pcs=2 seen=5362 verdict=accept genes=8 hi=1:15.2.1.2.7,18.2.0.4.21,3.0.0.1.14,17.0.1.2.41,0.1.2.12.8,17.2.1.7.10,2.1.0.3.32,16.0.2.2.20
+STATUS iters=100000 accept=70264 reject=29736 corpus=148 seen_pcs=5362 compared=562112 findings=0 trunc=0 prunepairs=12628 pruneflip=0 pruneartifact=0 maxstates=8/34 avgstates=2 invfault=0 elapsed=96s
+STATUS iters=102000 accept=71668 reject=30332 corpus=148 seen_pcs=5362 compared=573344 findings=0 trunc=0 prunepairs=12878 pruneflip=0 pruneartifact=0 maxstates=8/34 avgstates=2 invfault=0 elapsed=98s
+STATUS iters=104000 accept=73072 reject=30928 corpus=148 seen_pcs=5362 compared=584576 findings=0 trunc=0 prunepairs=13128 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=100s
+STATUS iters=106000 accept=74467 reject=31533 corpus=148 seen_pcs=5362 compared=595736 findings=0 trunc=0 prunepairs=13378 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=102s
+STATUS iters=108000 accept=75868 reject=32132 corpus=148 seen_pcs=5362 compared=606944 findings=0 trunc=0 prunepairs=13628 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=104s
+STATUS iters=110000 accept=77333 reject=32667 corpus=148 seen_pcs=5362 compared=618664 findings=0 trunc=0 prunepairs=13878 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=106s
+STATUS iters=112000 accept=78754 reject=33246 corpus=148 seen_pcs=5362 compared=630032 findings=0 trunc=0 prunepairs=14128 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=108s
+STATUS iters=114000 accept=80180 reject=33820 corpus=148 seen_pcs=5362 compared=641440 findings=0 trunc=0 prunepairs=14378 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=110s
+STATUS iters=116000 accept=81606 reject=34394 corpus=148 seen_pcs=5362 compared=652848 findings=0 trunc=0 prunepairs=14628 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=112s
+STATUS iters=118000 accept=83018 reject=34982 corpus=148 seen_pcs=5362 compared=664144 findings=0 trunc=0 prunepairs=14878 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=114s
+STATUS iters=120000 accept=84464 reject=35536 corpus=148 seen_pcs=5362 compared=675712 findings=0 trunc=0 prunepairs=15128 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=115s
+STATUS iters=122000 accept=85876 reject=36124 corpus=148 seen_pcs=5362 compared=687008 findings=0 trunc=0 prunepairs=15378 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=117s
+STATUS iters=124000 accept=87288 reject=36712 corpus=148 seen_pcs=5362 compared=698304 findings=0 trunc=0 prunepairs=15628 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=119s
+STATUS iters=126000 accept=88714 reject=37286 corpus=148 seen_pcs=5362 compared=709712 findings=0 trunc=0 prunepairs=15878 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=121s
+STATUS iters=128000 accept=90130 reject=37870 corpus=148 seen_pcs=5362 compared=721040 findings=0 trunc=0 prunepairs=16128 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=123s
+STATUS iters=130000 accept=91567 reject=38433 corpus=148 seen_pcs=5362 compared=732536 findings=0 trunc=0 prunepairs=16378 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=125s
+STATUS iters=132000 accept=92987 reject=39013 corpus=148 seen_pcs=5362 compared=743896 findings=0 trunc=0 prunepairs=16628 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=127s
+STATUS iters=134000 accept=94405 reject=39595 corpus=148 seen_pcs=5362 compared=755240 findings=0 trunc=0 prunepairs=16878 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=129s
+STATUS iters=136000 accept=95785 reject=40215 corpus=148 seen_pcs=5362 compared=766280 findings=0 trunc=0 prunepairs=17128 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=131s
+STATUS iters=138000 accept=97202 reject=40798 corpus=148 seen_pcs=5362 compared=777616 findings=0 trunc=0 prunepairs=17378 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=133s
+STATUS iters=140000 accept=98640 reject=41360 corpus=148 seen_pcs=5362 compared=789120 findings=0 trunc=0 prunepairs=17628 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=135s
+STATUS iters=142000 accept=100074 reject=41926 corpus=148 seen_pcs=5362 compared=800592 findings=0 trunc=0 prunepairs=17878 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=137s
+STATUS iters=144000 accept=101498 reject=42502 corpus=148 seen_pcs=5362 compared=811984 findings=0 trunc=0 prunepairs=18128 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=139s
+STATUS iters=146000 accept=102900 reject=43100 corpus=148 seen_pcs=5362 compared=823200 findings=0 trunc=0 prunepairs=18378 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=140s
+STATUS iters=148000 accept=104324 reject=43676 corpus=148 seen_pcs=5362 compared=834592 findings=0 trunc=0 prunepairs=18628 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=142s
+STATUS iters=150000 accept=105753 reject=44247 corpus=148 seen_pcs=5362 compared=846024 findings=0 trunc=0 prunepairs=18878 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=144s
+STATUS iters=152000 accept=107176 reject=44824 corpus=148 seen_pcs=5362 compared=857408 findings=0 trunc=0 prunepairs=19128 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=146s
+CORPUS n=149 new_pcs=31 seen=5393 verdict=accept genes=7 hi=1:9.1.2.1.36,15.2.1.14.56,9.2.0.14.26,10.2.1.15.49,8.1.0.6.13,7.0.0.2.49,2.0.0.6.15
+STATUS iters=154000 accept=108600 reject=45400 corpus=149 seen_pcs=5393 compared=868800 findings=0 trunc=0 prunepairs=19379 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=148s
+STATUS iters=156000 accept=110013 reject=45987 corpus=149 seen_pcs=5393 compared=880104 findings=0 trunc=0 prunepairs=19629 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=150s
+STATUS iters=158000 accept=111444 reject=46556 corpus=149 seen_pcs=5393 compared=891552 findings=0 trunc=0 prunepairs=19879 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=151s
+CORPUS n=150 new_pcs=2 seen=5395 verdict=accept genes=9 hi=1:7.1.1.14.46,17.0.1.12.55,5.0.1.11.15,15.2.2.15.15,17.2.0.9.7,18.0.2.8.33,17.1.1.11.17,3.2.2.13.22,4.1.2.6.44
+STATUS iters=160000 accept=112870 reject=47130 corpus=150 seen_pcs=5395 compared=902960 findings=0 trunc=0 prunepairs=20130 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=153s
+STATUS iters=162000 accept=114289 reject=47711 corpus=150 seen_pcs=5395 compared=914312 findings=0 trunc=0 prunepairs=20380 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=155s
+CORPUS n=151 new_pcs=5 seen=5400 verdict=accept genes=10 hi=1:15.2.2.15.5,18.1.0.5.17,13.0.0.4.46,15.2.0.4.20,1.2.1.5.33,6.0.1.10.1,13.1.1.14.63,16.2.2.2.30,18.2.2.3.19,18.2.2.10.62
+STATUS iters=164000 accept=115692 reject=48308 corpus=151 seen_pcs=5400 compared=925536 findings=0 trunc=0 prunepairs=20631 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=157s
+STATUS iters=166000 accept=117104 reject=48896 corpus=151 seen_pcs=5400 compared=936832 findings=0 trunc=0 prunepairs=20881 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=159s
+STATUS iters=168000 accept=118510 reject=49490 corpus=151 seen_pcs=5400 compared=948080 findings=0 trunc=0 prunepairs=21131 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=161s
+STATUS iters=170000 accept=119909 reject=50091 corpus=151 seen_pcs=5400 compared=959272 findings=0 trunc=0 prunepairs=21381 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=162s
+STATUS iters=172000 accept=121300 reject=50700 corpus=151 seen_pcs=5400 compared=970400 findings=0 trunc=0 prunepairs=21631 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=164s
+STATUS iters=174000 accept=122723 reject=51277 corpus=151 seen_pcs=5400 compared=981784 findings=0 trunc=0 prunepairs=21881 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=166s
+STATUS iters=176000 accept=124102 reject=51898 corpus=151 seen_pcs=5400 compared=992816 findings=0 trunc=0 prunepairs=22131 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=168s
+STATUS iters=178000 accept=125499 reject=52501 corpus=151 seen_pcs=5400 compared=1003992 findings=0 trunc=0 prunepairs=22381 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=170s
+STATUS iters=180000 accept=126890 reject=53110 corpus=151 seen_pcs=5400 compared=1015120 findings=0 trunc=0 prunepairs=22631 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=172s
+STATUS iters=182000 accept=128322 reject=53678 corpus=151 seen_pcs=5400 compared=1026576 findings=0 trunc=0 prunepairs=22881 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=173s
+STATUS iters=184000 accept=129748 reject=54252 corpus=151 seen_pcs=5400 compared=1037984 findings=0 trunc=0 prunepairs=23131 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=175s
+STATUS iters=186000 accept=131165 reject=54835 corpus=151 seen_pcs=5400 compared=1049320 findings=0 trunc=0 prunepairs=23381 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=177s
+STATUS iters=188000 accept=132618 reject=55382 corpus=151 seen_pcs=5400 compared=1060944 findings=0 trunc=0 prunepairs=23631 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=179s
+STATUS iters=190000 accept=134059 reject=55941 corpus=151 seen_pcs=5400 compared=1072472 findings=0 trunc=0 prunepairs=23881 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=181s
+STATUS iters=192000 accept=135472 reject=56528 corpus=151 seen_pcs=5400 compared=1083776 findings=0 trunc=0 prunepairs=24131 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=183s
+STATUS iters=194000 accept=136878 reject=57122 corpus=151 seen_pcs=5400 compared=1095024 findings=0 trunc=0 prunepairs=24381 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=184s
+STATUS iters=196000 accept=138263 reject=57737 corpus=151 seen_pcs=5400 compared=1106104 findings=0 trunc=0 prunepairs=24631 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=186s
+CORPUS n=152 new_pcs=2 seen=5402 verdict=accept genes=9 hi=1:7.1.1.14.46,17.0.1.12.55,5.0.1.11.15,15.2.2.15.15,17.2.0.9.7,18.0.2.8.56,17.1.1.11.17,3.2.2.13.22,8.0.0.1.48
+STATUS iters=198000 accept=139677 reject=58323 corpus=152 seen_pcs=5402 compared=1117416 findings=0 trunc=0 prunepairs=24882 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=188s
+STATUS iters=200000 accept=141104 reject=58896 corpus=152 seen_pcs=5402 compared=1128832 findings=0 trunc=0 prunepairs=25132 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=190s
+CORPUS n=153 new_pcs=1 seen=5403 verdict=reject genes=7 hi=1:15.0.1.12.28,15.1.1.14.23,16.0.1.9.61,12.0.0.7.0,8.2.0.3.27,8.0.1.11.22,1.2.0.2.35
+STATUS iters=202000 accept=142524 reject=59476 corpus=153 seen_pcs=5403 compared=1140192 findings=0 trunc=0 prunepairs=25383 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=192s
+STATUS iters=204000 accept=143958 reject=60042 corpus=153 seen_pcs=5403 compared=1151664 findings=0 trunc=0 prunepairs=25633 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=194s
+STATUS iters=206000 accept=145394 reject=60606 corpus=153 seen_pcs=5403 compared=1163152 findings=0 trunc=0 prunepairs=25883 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=196s
+STATUS iters=208000 accept=146814 reject=61186 corpus=153 seen_pcs=5403 compared=1174512 findings=0 trunc=0 prunepairs=26133 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=197s
+STATUS iters=210000 accept=148226 reject=61774 corpus=153 seen_pcs=5403 compared=1185808 findings=0 trunc=0 prunepairs=26383 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=199s
+STATUS iters=212000 accept=149643 reject=62357 corpus=153 seen_pcs=5403 compared=1197144 findings=0 trunc=0 prunepairs=26633 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=201s
+STATUS iters=214000 accept=151030 reject=62970 corpus=153 seen_pcs=5403 compared=1208240 findings=0 trunc=0 prunepairs=26883 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=203s
+STATUS iters=216000 accept=152425 reject=63575 corpus=153 seen_pcs=5403 compared=1219400 findings=0 trunc=0 prunepairs=27133 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=205s
+STATUS iters=218000 accept=153831 reject=64169 corpus=153 seen_pcs=5403 compared=1230648 findings=0 trunc=0 prunepairs=27383 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=207s
+CORPUS n=154 new_pcs=3 seen=5406 verdict=reject genes=8 hi=1:6.1.2.7.50,15.0.1.12.28,15.1.1.14.23,16.0.1.9.61,12.0.0.7.0,8.2.0.3.27,8.0.1.11.22,1.2.0.2.35
+STATUS iters=220000 accept=155252 reject=64748 corpus=154 seen_pcs=5406 compared=1242016 findings=0 trunc=0 prunepairs=27634 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=209s
+STATUS iters=222000 accept=156690 reject=65310 corpus=154 seen_pcs=5406 compared=1253520 findings=0 trunc=0 prunepairs=27884 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=211s
+STATUS iters=224000 accept=158080 reject=65920 corpus=154 seen_pcs=5406 compared=1264640 findings=0 trunc=0 prunepairs=28134 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=212s
+STATUS iters=226000 accept=159511 reject=66489 corpus=154 seen_pcs=5406 compared=1276088 findings=0 trunc=0 prunepairs=28384 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=214s
+STATUS iters=228000 accept=160916 reject=67084 corpus=154 seen_pcs=5406 compared=1287328 findings=0 trunc=0 prunepairs=28634 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=216s
+STATUS iters=230000 accept=162318 reject=67682 corpus=154 seen_pcs=5406 compared=1298544 findings=0 trunc=0 prunepairs=28884 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=218s
+STATUS iters=232000 accept=163730 reject=68270 corpus=154 seen_pcs=5406 compared=1309840 findings=0 trunc=0 prunepairs=29134 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=220s
+STATUS iters=234000 accept=165111 reject=68889 corpus=154 seen_pcs=5406 compared=1320888 findings=0 trunc=0 prunepairs=29384 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=222s
+STATUS iters=236000 accept=166528 reject=69472 corpus=154 seen_pcs=5406 compared=1332224 findings=0 trunc=0 prunepairs=29634 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=224s
+STATUS iters=238000 accept=167958 reject=70042 corpus=154 seen_pcs=5406 compared=1343664 findings=0 trunc=0 prunepairs=29884 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=226s
+STATUS iters=240000 accept=169380 reject=70620 corpus=154 seen_pcs=5406 compared=1355040 findings=0 trunc=0 prunepairs=30134 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=228s
+STATUS iters=242000 accept=170799 reject=71201 corpus=154 seen_pcs=5406 compared=1366392 findings=0 trunc=0 prunepairs=30384 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=230s
+STATUS iters=244000 accept=172199 reject=71801 corpus=154 seen_pcs=5406 compared=1377592 findings=0 trunc=0 prunepairs=30634 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=232s
+STATUS iters=246000 accept=173581 reject=72419 corpus=154 seen_pcs=5406 compared=1388648 findings=0 trunc=0 prunepairs=30884 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=234s
+STATUS iters=248000 accept=175033 reject=72967 corpus=154 seen_pcs=5406 compared=1400264 findings=0 trunc=0 prunepairs=31134 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=236s
+STATUS iters=250000 accept=176475 reject=73525 corpus=154 seen_pcs=5406 compared=1411800 findings=0 trunc=0 prunepairs=31384 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=238s
+FUZZ done iters=251593 accept=177581 reject=74012 corpus=154 seen_pcs=5406 compared=1420648 findings=0 trunc=0 prunepairs=31583 pruneflip=0 pruneartifact=0 maxstates=9/34 avgstates=2 invfault=0 elapsed=240s
+[  241.860227] diffharness (71) used greatest stack depth: 24920 bytes left
