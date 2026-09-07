@@ -276,3 +276,54 @@ fn the_finding_points_at_r2_at_the_jump() {
     assert!(f.observed.contains("0x003"), "kernel mask: {}", f.observed);
     assert!(f.observed.contains("0x007"), "independent mask: {}", f.observed);
 }
+
+// ===========================================================================================
+// PAIR TEN — 871ef8d50e7c: the OTHER direction, and the oracle must stay silent
+// ===========================================================================================
+//
+// `compute_insn_live_regs()` had no `case BPF_JCOND:`, so `may_goto` fell through to the
+// generic conditional-jump arm, which for a BPF_K jump reads the destination register — and
+// may_goto's dst_reg field is 0. The commit's words: "thus unnecessarily marking r0 as used".
+//
+// This is the direction `check_liveness_gate` deliberately does NOT report: the kernel
+// comparing a register it did not have to costs precision and risks nothing. Reporting it
+// would be reporting conservatism as unsoundness.
+//
+// A silence is only evidence when the thing it is silent about actually happened, so the
+// arms below assert BOTH: the two kernels' printed tables really do differ, and the pipeline
+// really did compare cells. Program and expectation are the maintainers' own `may_goto` case
+// from tools/testing/selftests/bpf/progs/compute_live_registers.c.
+
+const MG_BUGGY: &str = include_str!("fixtures/calibration/maygotolive-871ef8d50e7c-buggy.log");
+const MG_FIXED: &str = include_str!("fixtures/calibration/maygotolive-871ef8d50e7c-fixed.log");
+const MG_TIP: &str = include_str!("fixtures/calibration/maygotolive-871ef8d50e7c-tip.log");
+
+/// THE BOUNDARY: the kernel over-approximates liveness and the oracle says nothing — on a
+/// non-zero denominator, so the silence is a measurement rather than an absence.
+#[test]
+fn an_over_approximated_liveness_gate_is_not_a_finding() {
+    for (text, tag) in [(MG_BUGGY, "mg-b"), (MG_FIXED, "mg-f"), (MG_TIP, "mg-t")] {
+        let (norm, out) = run(text, tag);
+        assert_eq!(norm.records.len(), 2, "{tag}");
+        // Both arms must LOAD: a rejected control is a weaker control, which is why the
+        // program initialises r0 up front.
+        assert_eq!(text.matches("RESULT decision=accept").count(), 2, "{tag}");
+        assert_eq!(out.summary.finding_count, 0, "{tag}: {:?}", out.findings);
+        assert_eq!(out.summary.liveness_gate_checked, 10, "{tag}");
+    }
+}
+
+/// AND THE DIFFERENCE IS REAL. The buggy kernel marks r0 live at the may_goto; the fix
+/// removes it; the control arm — the same program with `r0 += r1` instead of `r0 = r1`, so
+/// r0 is genuinely read — does not move on either kernel. Without this the test above would
+/// hold just as well for two identical captures.
+#[test]
+fn the_two_kernels_really_do_disagree_about_r0_at_the_may_goto() {
+    assert!(MG_BUGGY.contains(" 2: 01........ (e5) may_goto"), "buggy must mark r0 live");
+    assert!(MG_FIXED.contains(" 2: .1........ (e5) may_goto"), "the fix must drop it");
+    assert!(MG_TIP.contains(" 2: .1........ (e5) may_goto"), "and it stays dropped");
+    // The control's row is the same on both kernels — twice in the buggy capture (both arms
+    // print `01........` there) but only once in the fixed one.
+    assert_eq!(MG_BUGGY.matches(" 2: 01........ (e5) may_goto").count(), 2);
+    assert_eq!(MG_FIXED.matches(" 2: 01........ (e5) may_goto").count(), 1);
+}

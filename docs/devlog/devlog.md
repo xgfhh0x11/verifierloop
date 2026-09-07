@@ -6690,3 +6690,75 @@ Ve `871ef8d50e7c` ters yönü ölçmek için duruyor: oracle'ın orada **susmas�
 turun sınır kolu.
 
 Workspace 361 yeşil.
+
+## 0090 — Toplu tur, birinci taksit: sınır kolu, ve referansın kendi hatası
+
+### 1. Referansı yargılamadan önce yargıla — ve bu sefer referans kaybetti
+
+Toplu tura başlarken kernel'in kendi `compute_live_registers.c` selftest'ini açtım: **19
+program, 101 beklenen canlılık maskesi**, bakımcıların elinden. `bpfref.h`'in `--probe-ref`
+ile aldığı 16 tuzağın canlılık karşılığı, üstelik beklentileri yazılı geliyor.
+
+Listeyi okurken bir vaka gözüme çarptı: **`gotol`**. Ve `bpflive.h` onu yanlış yürüyordu.
+
+`gotol` = `BPF_JMP32 | BPF_JA`, ve yer değiştirmesini `off` alanında değil **`imm`**'de
+taşır — uzun atlama. Modelim `.off` okuyordu, orada 0 buluyordu, ve atlamayı bir
+fall-through sanıyordu. Sonuç: o komuttan sonraki her instruction'ın canlılığı sessizce
+yanlış. Düzeltme tek satır (`disp = (cls == BL_JMP32) ? imm : off`), regresyon temiz
+(gen-spill 12/12, 571 hücre, 0 bulgu — düzeltme öncesiyle birebir).
+
+**Hiçbir aile `gotol` üretmiyor, yani bu hata bizim korpusumuzda hiç görünmezdi.** Kernel'in
+kendi test dosyasının *içindekiler listesi* onu buldu. Bağımsız bir referansın neden
+bağımsız bir kalibrasyona ihtiyacı olduğunun ders kitabı örneği.
+
+### 2. Onuncu çift: oracle'ın SUSMASI gereken yön
+
+`871ef8d50e7c` (2025-03-05, "correct use/def for may_goto instruction") —
+`compute_insn_live_regs`'te `case BPF_JCOND:` yoktu, dolayısıyla `may_goto` genel koşullu
+atlama koluna düşüyor ve o kol BPF_K bir atlamanın hedef register'ını okunmuş sayıyordu.
+may_goto'nun `dst_reg` alanı 0, yani **r0 her may_goto'da fazladan canlı** işaretleniyordu.
+
+Bu, `check_liveness_gate`'in bilerek raporlamadığı yön: kernel'in gereğinden fazla register
+karşılaştırması **muhafazakârlıktır**, hata değil. Onu bulgu saymak, temkini
+sağlamsızlık diye raporlamak olurdu.
+
+Program bakımcıların kendi vakası; kontrol kolu `r0 = r1` yerine `r0 += r1` — böylece r0
+gerçekten okunuyor ve satır iki kernelde de kımıldamamalı.
+
+```
+                       insn 2 (may_goto) canlı maskesi
+buggy (871ef8d50e7c~1)   mov 01........      add 01........
+fixed (871ef8d50e7c)     mov .1........      add 01........
+tip   (bugün)            mov .1........      add 01........
+bizim iddiamız           mov 0x002           add 0x003
+```
+
+| | buggy | fixed | tip |
+|---|---|---|---|
+| `liveness_gate_checked` | 10 | 10 | 10 |
+| `finding_count` | 0 | 0 | 0 |
+
+**Sessizlik ancak sustuğu şey gerçekten olduysa kanıttır**, o yüzden test iki şeyi birden
+çiviliyor: tablolar gerçekten farklı (buggy'de o satır iki kez `01........`, fixed'de bir
+kez), ve payda sıfır değil. Kontrol kolunun satırı kımıldamıyor.
+
+Bir ayrıntı düzeltildi: ilk sürümde kontrol kolu `R0 !read_ok` ile **reddediliyordu**, çünkü
+r0 hiç başlatılmamıştı. Reddedilen bir kontrol zayıf kontroldür — programın başına `r0 = 0`
+kondu, ikisi de kabul ediliyor.
+
+### 3. Turun geri kalanı, ve kanal doğrulamalarının sonucu
+
+Üç aday paralel olarak elle doğrulandı; **ikisinin kanalı tahminimden farklı çıktı:**
+
+| aday | tahmin | elle doğrulama |
+|---|---|---|
+| `bc308be380c1` | store-konumu / intent | **write-safety** — ıraksama 2³², sentinel 64 baytlık değerde hiç görünmüyor, `store_off=none` yoluna gidiyor |
+| `2f2ec8e7730e` | — | **pruning differential** — diff yalnızca `check_scalar_ids()`'e dokunuyor, 16 satır, değer alanında sıfır etki |
+| `871ef8d50e7c` | canlılık kapısı sınırı | doğrulandı (bu bacak) |
+
+`2f2ec8e7730e` turun en değerli parçası, ve gerekçesi projenin kendi kuralı: pruning
+differential'ın **43,379 çifti ve sıfır flip'i var** — yani o oracle hiç ateşlenmedi ve
+"korpusta hata yok" ile "oracle ölü" ayırt edilemiyor. Bu commit, değer alanına hiç
+dokunmadığı için mümkün olan en temiz pozitif kontrol.
+
+Workspace 363 yeşil.

@@ -221,7 +221,12 @@ static int bpflive_succ(const struct bpf_insn *ins, int n, int i, int *succ) {
     case BL_EXIT: return 0;                    /* single frame: exit leaves the program */
     case BL_CALL: if (next >= n) return -1; succ[k++] = next; return k;
     case BL_JA: {
-        int t = i + 1 + ins[i].off;
+        /* `gotol` is BPF_JMP32|BPF_JA and carries its offset in imm, not off — a long jump.
+           Reading `off` there yields 0 and makes the jump look like a fall-through, which
+           silently mis-computes liveness for every instruction after it. Found by reading
+           the kernel's own compute_live_registers.c selftest, which has a `gotol` case. */
+        int disp = (cls == BL_JMP32) ? ins[i].imm : ins[i].off;
+        int t = i + 1 + disp;
         if (t < 0 || t >= n) return -1;
         succ[k++] = t; return k;
     }

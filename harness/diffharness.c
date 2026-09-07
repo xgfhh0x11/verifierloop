@@ -5186,6 +5186,91 @@ static void run_probe_jsetlive(void) {
     }
 }
 
+// ---- calibration probe: may_goto's spurious r0 use (--probe-maygotolive) ---------------
+// Calibration pair TEN (871ef8d50e7c, "bpf: correct use/def for may_goto instruction",
+// 2025-03-05) — and the pair is here to measure a SILENCE, not a finding.
+//
+// THE BUG, one missing case label, in the same function 3157f7e29996 later fixed elsewhere:
+//
+//       case BPF_JA:
+//     + case BPF_JCOND:
+//               def = 0; use = 0; break;
+//
+// Without it `may_goto` fell through to the generic conditional-jump arm, which for a BPF_K
+// jump reads the destination register — and may_goto's dst_reg field is 0. So the analysis
+// marked **r0 as used** at every may_goto. The commit's words: "thus unnecessarily marking
+// r0 as used".
+//
+// WHY THIS PAIR IS A BOUNDARY AND MUST STAY ONE. check_liveness_gate reports one direction
+// only: the kernel calling DEAD what the independent analysis calls LIVE, because that is
+// the register `func_states_equal` then never compares. This bug is the OTHER direction —
+// the kernel calls LIVE something that is dead, so it compares a register it did not have
+// to. That costs precision and risks nothing, and an oracle that reported it would be
+// reporting conservatism as unsoundness.
+//
+// So the wanted result is: the two kernels' printed tables DIFFER, and the pipeline is
+// silent on both. A silence is only evidence when the thing it is silent about actually
+// happened, which is why this probe prints the table row that changes.
+//
+// THE PROGRAM is the maintainers' own `may_goto` case from
+// tools/testing/selftests/bpf/progs/compute_live_registers.c, whose fixed expectation is
+// pinned there as `1: .1........ (e5) may_goto pc+1` — r1 live, r0 NOT.
+//
+//     0: r1 = 1
+//     1: may_goto +1        <- the row under test
+//     2: goto -3            (back to 0; the may_goto budget ends the loop)
+//     3: r0 <OP> r1
+//     4: exit
+//
+// THE ARMS DIFFER IN ONE INSTRUCTION, and it is the one that decides whether r0 is dead at
+// the may_goto at all:
+//   mov  `r0 = r1`  -- r0 is DEAD before insn 3, so the spurious use is visible
+//   add  `r0 += r1` -- r0 is genuinely READ at insn 3, so it is live at the may_goto on
+//                      BOTH kernels and the row cannot differ. If the control's row moved
+//                      too, the difference would not be about the missing case label.
+static void run_probe_maygotolive(void) {
+    static const struct { const char *name; int add; } ARMS[] = {
+        {"mov", 0},   /* trigger: r0 dead at the may_goto */
+        {"add", 1},   /* control: r0 live there on both kernels */
+    };
+    for (unsigned a = 0; a < sizeof(ARMS) / sizeof(ARMS[0]); a++) {
+        struct bpf_insn ins[8];
+        int n = 0;
+        /* r0 is initialised up front so BOTH arms load: the control READS r0 at the end,
+           and without this it would reject with "R0 !read_ok" — a rejected control is a
+           weaker control, and this project pairs every shape with an ACCEPTED one. The
+           loop below re-enters at insn 1, so this runs once and changes nothing else. */
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_1, 1);
+        ins[n++] = BPF_MAY_GOTO_INSN(1);
+        ins[n++] = BPF_JMP_A(-3);
+        ins[n++] = ARMS[a].add ? BPF_ALU64_REG(BPF_ADD, BPF_REG_0, BPF_REG_1)
+                               : BPF_MOV64_REG(BPF_REG_0, BPF_REG_1);
+        ins[n++] = BPF_EXIT_INSN();
+
+        g_log[0] = '\0';
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 2;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        int lerr = errno;
+
+        printf("===PROG maygotolive#871ef8d50e7c#%s type=socket_filter ===\n", ARMS[a].name);
+        printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+               fd >= 0 ? "accept" : "reject", fd >= 0 ? 1 : -1, fd >= 0 ? 0 : lerr);
+        bpflive_print_claim(ins, n);
+        if (fd >= 0)
+            close(fd);
+        printf("---LOG---\n%s\n---END---\n", g_log);
+    }
+}
+
 // ---- calibration probe: the fake_reg corruption (--probe-fakereg) -----------
 // The SECOND kind of calibration. 0061 tested the oracle against a bug whose inconsistent
 // state the commit message printed, so no kernel had to be built. This one cannot work
@@ -8640,6 +8725,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-jsetlive") == 0) {
         run_probe_jsetlive();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-maygotolive") == 0) {
+        run_probe_maygotolive();
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--fuzz") == 0) {
