@@ -182,3 +182,97 @@ fn only_the_cells_that_could_fire_are_counted() {
         out.summary.liveness_gate_checked
     );
 }
+
+// ===========================================================================================
+// PAIR NINE — 3157f7e29996: the gate oracle calibrated against a real kernel bug
+// ===========================================================================================
+//
+// `can_jump()` enumerates the conditional-jump opcodes whose taken edge `insn_successors()`
+// reports, and BPF_JSET was not in the list — one missing `case` label. So the CFG the
+// liveness analysis walks lost an edge, and the commit says exactly what that costs:
+// "a jump to (5) would be missed and r2 won't be marked as alive at (3)".
+//
+// A register the verifier calls dead is never compared by `func_states_equal`, so a liveness
+// that is too SMALL is a prune that never had to justify itself. That is the direction
+// `check_liveness_gate` reports, and this is the bug that proves it fires on a real one.
+//
+// All three halves are real captures from `--probe-jsetlive`. `buggy` is 3157f7e29996~1 and
+// `fixed` is 3157f7e29996 itself, built from BYTE-IDENTICAL .config files: the two kernels
+// differ in one case label and nothing else. `tip` is today's bpf-next, kept separate because
+// the whole analysis moved into `kernel/bpf/liveness.c` after this commit.
+
+const JS_BUGGY: &str = include_str!("fixtures/calibration/jsetlive-3157f7e29996-buggy.log");
+const JS_FIXED: &str = include_str!("fixtures/calibration/jsetlive-3157f7e29996-fixed.log");
+const JS_TIP: &str = include_str!("fixtures/calibration/jsetlive-3157f7e29996-tip.log");
+
+/// Findings paired with the program label they belong to, so an arm can be named.
+fn labelled_findings(text: &str, tag: &str) -> Vec<(String, String)> {
+    let (norm, out) = run(text, tag);
+    out.findings
+        .iter()
+        .map(|f| {
+            let label = f
+                .record_index
+                .and_then(|i| norm.records.get(i as usize))
+                .and_then(|r| r.source_label.clone())
+                .unwrap_or_default();
+            (label, f.kind.clone())
+        })
+        .collect()
+}
+
+/// THE CALIBRATION: the oracle fires on the kernel that had the bug and is silent on the one
+/// that fixed it — with the SAME denominator on both sides, so the zero is a real zero.
+#[test]
+fn the_gate_oracle_fires_on_the_kernel_that_had_the_missing_jset_edge() {
+    let (_, buggy) = run(JS_BUGGY, "js-b");
+    let (_, fixed) = run(JS_FIXED, "js-f");
+    let (_, tip) = run(JS_TIP, "js-t");
+
+    assert_eq!(
+        buggy.findings.iter().filter(|f| f.kind == "liveness_gate_overreach").count(),
+        1,
+        "{:?}",
+        buggy.findings
+    );
+    assert_eq!(fixed.summary.finding_count, 0, "{:?}", fixed.findings);
+    assert_eq!(tip.summary.finding_count, 0, "{:?}", tip.findings);
+    for (name, s) in
+        [("buggy", &buggy.summary), ("fixed", &fixed.summary), ("tip", &tip.summary)]
+    {
+        assert_eq!(s.liveness_gate_checked, 20, "{name}");
+    }
+}
+
+/// THE CONTROL: the two arms are the same program with one token changed — the comparison
+/// opcode. `jne` was in the buggy `can_jump()` and `jset` was not, so only the jset arm may
+/// diverge. If the control fired too, the finding would be about the shape.
+#[test]
+fn only_the_jset_arm_diverges_and_only_on_the_buggy_kernel() {
+    let hits = labelled_findings(JS_BUGGY, "js-b-arm");
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert!(hits[0].0.ends_with("jset"), "{hits:?}");
+    assert_eq!(hits[0].1, "liveness_gate_overreach");
+
+    // Straight out of the captures: the buggy kernel drops r2 at the jump in the jset arm
+    // and keeps it in the jne arm, on the very same kernel.
+    assert!(JS_BUGGY.contains(" 4: 01........ (45) if r1 & 0x7"), "jset arm must lose r2");
+    assert!(JS_BUGGY.contains(" 4: 012....... (55) if r1 != 0x7"), "jne control must keep it");
+    assert!(JS_FIXED.contains(" 4: 012....... (45) if r1 & 0x7"), "the fix restores it");
+}
+
+/// The finding names the register the commit named, and the instruction it named.
+#[test]
+fn the_finding_points_at_r2_at_the_jump() {
+    let (_, buggy) = run(JS_BUGGY, "js-b-txt");
+    let f = buggy
+        .findings
+        .iter()
+        .find(|f| f.kind == "liveness_gate_overreach")
+        .expect("the finding must exist");
+    assert!(f.observed.contains("insn 4"), "{}", f.observed);
+    assert!(f.observed.contains("r2"), "{}", f.observed);
+    // The masks are reported side by side so triage never has to re-derive them.
+    assert!(f.observed.contains("0x003"), "kernel mask: {}", f.observed);
+    assert!(f.observed.contains("0x007"), "independent mask: {}", f.observed);
+}

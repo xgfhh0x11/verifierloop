@@ -5104,6 +5104,88 @@ static void run_probe_deltalink(void) {
     close(map_out);
 }
 
+// ---- calibration probe: the missing JSET edge (--probe-jsetlive) ------------------------
+// Calibration pair NINE (3157f7e29996, "bpf: handle jset (if a & b ...) as a jump in CFG
+// computation", 2025-06-13, reported by syzbot) — and the first pair aimed at the LIVENESS
+// GATE, the cross-state channel 0088 built.
+//
+// THE BUG, one missing case label. `can_jump()` enumerates the conditional-jump opcodes
+// whose taken edge `insn_successors()` reports, and BPF_JSET was not in the list:
+//
+//     case BPF_JSLT: case BPF_JSLE: case BPF_JCOND:
+//   + case BPF_JSET:
+//             return true;
+//
+// So the CFG the liveness analysis walks is MISSING an edge, and the commit says exactly
+// what that costs: "a jump to (5) would be missed and r2 won't be marked as alive at (3)".
+//
+// WHY THIS IS THE GATE'S OWN PAIR, and why the DIRECTION is the whole point. A register the
+// verifier calls dead is never compared by `func_states_equal` — so a liveness that is too
+// SMALL is a prune that never had to justify itself. That is precisely the direction
+// `check_liveness_gate` reports and `bpflive.h` is built to be trusted in: independent
+// analysis says LIVE, kernel says DEAD.
+//
+// THE PROGRAM is the commit's own reproducer, with an unknown scalar in front so the branch
+// is real rather than folded:
+//
+//     r0 = call get_prandom_u32 ; r1 = r0      -- an unknown scalar to test
+//     r0 = 1 ; r2 = 2
+//     if r1 <OP> 0x7 goto +1                   -- the edge under test
+//     exit                                     -- fall-through returns r0 = 1
+//     r0 = r2 ; exit                           -- taken branch READS r2, returns 2
+//
+// At the jump, r2 is live because the taken branch reads it. On the buggy kernel the taken
+// edge does not exist, so the table prints r2 as dead there — one cell, and it is the cell
+// the oracle is built to find.
+//
+// THE ARMS DIFFER IN ONE THING: the comparison opcode.
+//   jset  BPF_JSET -- absent from the buggy can_jump(): the taken edge is invisible
+//   jne   BPF_JNE  -- present in BOTH kernels' can_jump(), so the edge is seen on both and
+//                     the two analyses must agree. If the control diverged too, the finding
+//                     would be about the shape rather than about the missing case label.
+static void run_probe_jsetlive(void) {
+    static const struct { const char *name; int op; } ARMS[] = {
+        {"jset", BPF_JSET},   /* the trigger: the opcode can_jump() forgot */
+        {"jne",  BPF_JNE},    /* control: an opcode it never forgot        */
+    };
+    for (unsigned a = 0; a < sizeof(ARMS) / sizeof(ARMS[0]); a++) {
+        struct bpf_insn ins[12];
+        int n = 0;
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_get_prandom_u32);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_0);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_2, 2);
+        ins[n++] = BPF_JMP_IMM(ARMS[a].op, BPF_REG_1, 0x7, 1);
+        ins[n++] = BPF_EXIT_INSN();
+        ins[n++] = BPF_MOV64_REG(BPF_REG_0, BPF_REG_2);
+        ins[n++] = BPF_EXIT_INSN();
+
+        g_log[0] = '\0';
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 2;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        int lerr = errno;
+
+        printf("===PROG jsetlive#3157f7e29996#%s type=socket_filter ===\n", ARMS[a].name);
+        printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+               fd >= 0 ? "accept" : "reject", fd >= 0 ? 1 : -1, fd >= 0 ? 0 : lerr);
+        /* No EXPECT: the branch is decided by get_prandom_u32, so the generator has no
+           claim to make about the return value and 0072's rule forbids inventing one.
+           This pair's channel is the liveness table, and that is printed either way. */
+        bpflive_print_claim(ins, n);
+        if (fd >= 0)
+            close(fd);
+        printf("---LOG---\n%s\n---END---\n", g_log);
+    }
+}
+
 // ---- calibration probe: the fake_reg corruption (--probe-fakereg) -----------
 // The SECOND kind of calibration. 0061 tested the oracle against a bug whose inconsistent
 // state the commit message printed, so no kernel had to be built. This one cannot work
@@ -8554,6 +8636,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-deltalink") == 0) {
         run_probe_deltalink();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-jsetlive") == 0) {
+        run_probe_jsetlive();
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--fuzz") == 0) {

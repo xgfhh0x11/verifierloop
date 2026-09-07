@@ -6606,3 +6606,87 @@ YAKALAYACAĞINI göstermiyor — o bir sonraki bacağın işi, ve çift sekizin 
 kanalı sertifikaladığı ayrıca söylenecek.
 
 Workspace 358 yeşil.
+
+## 0089 — Dokuzuncu çift: kapı-oracle'ı kalibre edildi, ve seçtiğim ilk aday yanlış kanaldaydı
+
+### 1. Kendi kuralımı kendime uygulamak
+
+0087, üç kez tekrarlanan bir kalıptan sonra bir kural bırakmıştı: **bir şey inşa etmeden önce
+kanalı elle doğrula — hatanın özetini değil, oracle'ın karşılaştırmasını oku.** 0088'in
+sonunda kalibrasyon adayı olarak `ecdd4fd8a54c`'yi (2026-04, "fix arg tracking for
+imprecise/multi-offset BPF_ST/STX") önermiştim, çünkü `liveness.c`'de gerçek bir `Fixes:`.
+
+**Kuralı uyguladım ve aday düştü.** `Fixes: bf0c571f7feb ("introduce forward arg-tracking
+dataflow analysis")` — düzelttiği şey `arg_track` / `at_stack` / `ARG_IMPRECISE`, yani
+**subprogram argümanlarının stack canlılığı**. Bizim oracle'ımız `live_regs_before`'ı
+denetliyor; arg-track ise `stack_arg_regs`'i besliyor, ki `print_verifier_state` onu hiç
+basmıyor. Üstelik bug subprogram argümanlarıyla ilgili, ve `bpflive.h` subprog çağrılarını
+zaten reddediyor. Çift sınır.
+
+Dördüncü kez bir başlık yanlış kanalı işaret etti — ve bu sefer seçen bendim. Kuralın
+işlediği yer tam olarak burası: **hiçbir kernel build edilmeden düştü.**
+
+### 2. Doğru aday, ve neden bu
+
+`14c8552db644`'ü (canlılık analizinin girişi) düzelten iki commit var, ikisi de tam kanalda:
+
+| commit | ne | yön |
+|---|---|---|
+| `871ef8d50e7c` (2025-03) | may_goto use/def: r0 gereksiz yere kullanılmış sayılıyor | kernel CANLI / biz ÖLÜ — **muhafazakâr**, oracle bilerek raporlamıyor |
+| `3157f7e29996` (2025-06) | `can_jump()` BPF_JSET'i tanımıyor → CFG'de eksik kenar | kernel ÖLÜ / biz CANLI — **bulgu yönü** |
+
+İkincisi seçildi, ve commit gerekçeyi kendi cümlesiyle veriyor: *"a jump to (5) would be
+missed and **r2 won't be marked as alive** at (3)"*. Fix tek satır: `case BPF_JSET:`.
+
+Bu bir tesadüf değil, kanalın tanımı: verifier'ın ÖLÜ dediği register `func_states_equal`
+tarafından hiç karşılaştırılmıyor, yani **fazla küçük bir canlılık, kendini savunmak zorunda
+kalmamış bir prune** demek.
+
+### 3. Program ve kontrol
+
+Commit'in kendi reprodüktörü, önüne bilinmeyen bir skaler konarak:
+
+```
+0: call get_prandom_u32 ; 1: r1 = r0
+2: r0 = 1 ; 3: r2 = 2
+4: if r1 <OP> 0x7 goto +1     <- test edilen kenar
+5: exit                        (fall-through: r0 = 1)
+6: r0 = r2 ; 7: exit           (taken: r2'yi OKUR)
+```
+
+insn 4'te r2 canlıdır, çünkü alınan dal onu okur. **İki kol tek bir token'da ayrılıyor:**
+`jset` buggy `can_jump()`'ta yok, `jne` var — ve `jne`'nin varlığı kaynaktan doğrulandı
+(liste: JA, JEQ, JNE, JLT, JLE, JGT, JGE, JSGT, JSGE, JSLT, JSLE, JCOND).
+
+### 4. Ölçüm
+
+```
+                       insn 4'te kernel'in canlı maskesi
+buggy (3157f7e29996~1)   jset 01........      jne 012.......
+fixed (3157f7e29996)     jset 012.......      jne 012.......
+tip   (bugün)            jset 012.......      jne 012.......
+bağımsız analiz (her üçünde, her iki kolda)   0x007 = r0|r1|r2
+```
+
+| | buggy | fixed | tip |
+|---|---|---|---|
+| `liveness_gate_checked` | 20 | 20 | 20 |
+| `finding_count` | **1** | 0 | 0 |
+
+Bulgu tek hücre: **insn 4, r2** — commit'in adlandırdığı register, adlandırdığı komutta.
+Kontrol kolu aynı buggy kernel'de temiz. Payda üç kernelde de aynı, yani sıfırlar gerçek.
+
+İki kernel byte-byte aynı `.config` ile kuruldu: aralarındaki fark **tek bir `case` etiketi.**
+
+### 5. Ne sertifikalandı, ne sertifikalanmadı
+
+0088 kanalı kurmuştu ve dürüst kapsam notu şuydu: *"gerçek bir canlılık hatasını
+yakalayacağını GÖSTERMİYOR"*. Bu bacak onu gösteriyor — **LIVENESS-GATE kanalı için, ve
+başka hiçbir şey için.** Kanal sayımı: parsed-state ×3, verdict ×1, temiz teyit ×1, sınır ×1,
+runtime-intent ×1, store-konumu ×1, **canlılık-kapısı ×1**.
+
+Ve `871ef8d50e7c` ters yönü ölçmek için duruyor: oracle'ın orada **susması** gerekiyor,
+çünkü kernel'in fazla register karşılaştırması muhafazakârlıktır, hata değil. O bir sonraki
+turun sınır kolu.
+
+Workspace 361 yeşil.
