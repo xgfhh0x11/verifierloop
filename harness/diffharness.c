@@ -5769,6 +5769,159 @@ static void run_probe_livetraps(void)
     if (map_fd >= 0)
         close(map_fd);
 }
+// ---- calibration probe: the unmapped BASE id (--probe-idbase) --------------------------
+// Calibration pair ELEVEN (2f2ec8e7730e, "bpf: Enforce regsafe base id consistency for
+// BPF_ADD_CONST scalars", 2026-04-11) — and the first positive control the PRUNING
+// differential has ever had.
+//
+// WHY THIS PAIR MATTERS MORE THAN ANOTHER VALUE-TRACKING BUG. 0083 gave that differential
+// its denominator and 0085 pushed it to 43,379 pairs; every one of them agreed. A zero on an
+// oracle that has never fired cannot be read: "no unsound prunes in the corpus" and "the
+// detector is dead" produce the identical number. This commit is the cleanest possible
+// positive control, because its diff touches NOTHING but `check_scalar_ids()` — sixteen
+// lines, no value-domain effect at all. The buggy kernel's only difference from the fixed one
+// is a prune it should not take.
+//
+// THE BUG, in the commit's own words: "old has r2.id=A, r3.id=A|flag (r3 = r2 + delta), cur
+// has r2.id=B, r3.id=C|flag (r3 derived from unrelated r4). Without the base check, idmap
+// gets two independent entries A->B and A|flag->C|flag, missing that A->C conflicts with
+// A->B." So two states whose LINK STRUCTURE differs compare equal.
+//
+// THE SHAPE. Two paths reach one instruction with the same registers but a different link:
+//
+//     r6 = prandom ; r7 = prandom          -- two independent unknowns
+//     if <selector> goto L2
+//        r2 = r6 ; r3 = r6 ; r3 += 1       -- r3 LINKED to r2   (id A, A|ADD_CONST)
+//        goto MERGE
+//     L2: r2 = r6 ; r3 = r7 ; r3 += 1      -- r3 linked to r7   (id A, C|ADD_CONST)
+//     MERGE:
+//     if r2 > 7 goto out                   -- narrows r2, and in the LINKED state r3 with it
+//     *(u8 *)(map_value + r3) = 0xFF       -- safe only if r3 was narrowed
+//
+// The store is safe on the linked path and not on the unlinked one. If the two states are
+// wrongly merged, the unlinked path is never walked and the program is accepted.
+//
+// THE DETECTOR IS THE FLAG DIFFERENTIAL, and its direction is what makes this work. The
+// default checkpoint heuristic (>=2 jumps AND >=8 insns) may place no checkpoint at MERGE, so
+// both paths get walked and the unsafe one is rejected. BPF_F_TEST_STATE_FREQ forces a
+// checkpoint there, the buggy `check_scalar_ids` accepts the merge, and the rejection
+// disappears. Flagged ACCEPT with default REJECT is exactly the soundness direction
+// check_prune_differential reports as `prune_soundness_desync`; the reverse direction is
+// counted as a resource artefact and never as a finding.
+//
+// THE ARMS DIFFER IN ONE REGISTER. The trigger's second path derives r3 from r7; the
+// control's derives it from r6, so BOTH paths carry the same link and no id conflict exists.
+// If the control flipped too, the flip would be about the merge, not about the base id.
+static void run_probe_idbase(void) {
+    static const struct { const char *name; int src; } ARMS[] = {
+        {"unlinked", BPF_REG_7},   /* trigger: r3 tied to a DIFFERENT base on path 2 */
+        {"linked",   BPF_REG_6},   /* control: same base on both paths                */
+    };
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = RTW_VALUE_SIZE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_out < 0) {
+        printf("===PROG idbase#2f2ec8e7730e type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+
+    for (unsigned a = 0; a < sizeof(ARMS) / sizeof(ARMS[0]); a++) {
+        struct bpf_insn ins[48];
+        int n = 0, jexit[3], nx = 0;
+
+        /* THE MAP VALUE POINTER FIRST, and it lives in a callee-saved register. A helper
+           call clobbers r0-r5, so a lookup placed after the link is built would destroy the
+           very register the store uses — which is exactly what the first version of this
+           probe did, and the verifier said so: "R3 !read_ok". 0087's deltalink probe
+           carries the same note; the rule had to be relearned once. */
+        ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+        ins[n++] = (struct bpf_insn){0};
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+        jexit[nx++] = n;
+        ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_9, BPF_REG_0);   /* map value ptr, callee-saved */
+
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_get_prandom_u32);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_6, BPF_REG_0);
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_get_prandom_u32);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_0);
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_get_prandom_u32);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_8, BPF_REG_0);   /* path selector */
+
+        const int jsel = n;
+        ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_8, 0, 0);
+        /* path 1: r3 is r6 + 1, so r3 and r2 share a base id */
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_6);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_3, BPF_REG_6);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_3, 1);
+        const int jmerge = n;
+        ins[n++] = BPF_JMP_A(0);
+        /* path 2: the arm's whole difference is which register r3 comes from */
+        ins[jsel].off = n - jsel - 1;
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_6);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_3, ARMS[a].src);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_3, 1);
+        ins[jmerge].off = n - jmerge - 1;
+
+        /* MERGE. Narrowing r2 narrows r3 too -- but only where they are actually linked. */
+        jexit[nx++] = n;
+        ins[n++] = BPF_JMP_IMM(BPF_JGT, BPF_REG_2, 7, 0);
+
+        ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_9, BPF_REG_3);
+        const int store_insn = n;
+        ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_9, 0, -1);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);
+        ins[n++] = BPF_EXIT_INSN();
+        const int exit0 = n;
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+        ins[n++] = BPF_EXIT_INSN();
+        for (int i = 0; i < nx; i++) ins[jexit[i]].off = exit0 - jexit[i] - 1;
+
+        struct prune_load base = prune_load_once(ins, n, 0, g_log, sizeof(g_log));
+        struct prune_load freq = prune_load_once(ins, n, BPF_F_TEST_STATE_FREQ,
+                                                 g_log2, sizeof(g_log2));
+        struct prune_load inv  = prune_load_once(ins, n, BPF_F_TEST_REG_INVARIANTS,
+                                                 g_log2, sizeof(g_log2));
+
+        g_log[0] = '\0';
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 2;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        int lerr = errno;
+
+        printf("===PROG idbase#2f2ec8e7730e#%s type=socket_filter ===\n", ARMS[a].name);
+        printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+               fd >= 0 ? "accept" : "reject", fd >= 0 ? 1 : -1, fd >= 0 ? 0 : lerr);
+        printf("STORE insn=%d reg=9 off=0 size=1\n", store_insn);
+        printf("PRUNE fall=idbase taken=%s fall_safe=1 taken_safe=%d stack=0"
+               " base_verdict=%s base_errno=%d base_states=%lu base_reason=%s"
+               " freq_verdict=%s freq_errno=%d freq_states=%lu freq_reason=%s"
+               " inv_verdict=%s inv_errno=%d inv_reason=%s\n",
+               ARMS[a].name, ARMS[a].src == BPF_REG_6,
+               base.accept ? "accept" : "reject", base.err, base.states, base.reason,
+               freq.accept ? "accept" : "reject", freq.err, freq.states, freq.reason,
+               inv.accept ? "accept" : "reject", inv.err, inv.reason);
+        if (fd >= 0) close(fd);
+        bpflive_print_claim(ins, n);
+        printf("---LOG---\n%s\n---END---\n", g_log);
+    }
+    close(map_out);
+}
+
 // ---- calibration probe: the fake_reg corruption (--probe-fakereg) -----------
 // The SECOND kind of calibration. 0061 tested the oracle against a bug whose inconsistent
 // state the commit message printed, so no kernel had to be built. This one cannot work
@@ -9231,6 +9384,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-livetraps") == 0) {
         run_probe_livetraps();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-idbase") == 0) {
+        run_probe_idbase();
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--fuzz") == 0) {

@@ -6829,3 +6829,77 @@ Kernel build'leri paralel koşabilir (dosya sistemine dokunmuyorlar); **VM koşu
 koşamaz.** Bu bir harness sınırı, ve [[harness-gotchas]]'a yazıldı.
 
 Workspace 365 yeşil.
+
+## 0092 — Pozitif kontrol olarak kurulmuş, sınır olarak dönmüş: pruning differential ne göremez
+
+### 1. Sorulan soru
+
+`check_prune_differential`'ın **43,379 çifti ve sıfır flip'i** var (0083, 0085). Bir oracle
+hiç ateşlenmediyse o sıfır okunamaz: "korpusta sağlamsız prune yok" ile "dedektör ölü" aynı
+sayıyı üretir. Toplu turun en değerli parçası bunu ölçmekti.
+
+Aday `2f2ec8e7730e` (2026-04-11, "Enforce regsafe base id consistency for BPF_ADD_CONST
+scalars"), ve mümkün olan en temiz test olmasının sebebi diff'i: **yalnız `check_scalar_ids()`,
+on altı satır, değer alanında sıfır etki.** Buggy kernel'in tek farkı almaması gereken bir
+prune'u alması.
+
+### 2. Önce korpus, ve dürüst bir negatif
+
+896 programlık korpus, hatanın bulunduğu kernel üzerinde: `prune_pairs_checked=896`,
+`finding_count=0`. Korpus tetikleyici şekli üretmiyor. Bu bilgilendirici ama sonucu vermiyor.
+
+(Bu koşuyu bir kez kaybettim: arka planda korpus koşarken ikinci bir VM başlattım ve ikisi
+aynı rootfs'in init script'ini birbirinin altından değiştirdi — 0091'e yazıldı.)
+
+### 3. Hedefli probe, ve tetikleyicinin gerçekten çalıştığının kanıtı
+
+`--probe-idbase`, commit'in kendi yorumundan: iki yol aynı komutta buluşuyor, aynı
+register'larla ama **farklı bağ yapısıyla** — birinde `r3 = r6 + 1` (r2 ile bağlı), diğerinde
+`r3 = r7 + 1` (bağsız). Sonra `if r2 > 7` r2'yi daraltıyor; bağlı durumda r3 de daralıyor,
+bağsızda daralmıyor, ve `map_value + r3` store'u yalnız bağlı yolda güvenli.
+
+```
+buggy  unlinked base=accept freq=accept   linked base=accept freq=accept
+fixed  unlinked base=REJECT freq=REJECT   linked base=accept freq=accept
+tip    unlinked base=REJECT freq=REJECT   linked base=accept freq=accept
+```
+
+Tetikleyici **buggy'de kabul, iki sonraki kernelde red**: sağlamsızlık gerçek ve şekil
+çalışıyor. Kontrol kolu (tek register farkla, ikinci yolda r3 yine r6'dan) her yerde kabul —
+yani fark buluşmadan değil, taban id'sinden.
+
+Bir ara adım: ilk sürüm her kernelde `R3 !read_ok` ile reddediliyordu, çünkü bağı kurduktan
+sonra `map_lookup_elem` çağırıyordum ve helper çağrısı r0–r5'i eziyor. 0087'nin deltalink
+probe'unda **aynı notu ben yazmıştım**; kural bir kez yeniden öğrenildi.
+
+### 4. Sonuç: dedektör koştu ve sustu, ve sebebi yapısal
+
+Buggy kernel'de:
+
+| | |
+|---|---|
+| `prune_pairs_checked` | **2** — payda gerçek: bayrak state uzayını 2 → 8 büyüttü |
+| `prune_resource_artifacts` | 0 |
+| `finding_count` | **0** |
+
+Differential, bir sonraki kernel'in reddettiği bir programda, gerçek bir paydayla koştu ve
+hiçbir şey söylemedi. **Sebep korpus değil, kusur da değil:**
+
+`BPF_F_TEST_STATE_FREQ` pruning'i yalnızca **daha agresif** yapar. Sağlamsızlık yönü
+`freq ACCEPT && base REJECT` gerektiriyor — yani fazladan checkpoint'lerin *var olmayan* bir
+prune'u ortaya çıkarması. **Varsayılan checkpoint'lemenin zaten aldığı sağlamsız bir prune,
+bayrağın iki tarafında da aynı kabul verdict'ini üretir ve bir bayrak farkına
+YAPISAL OLARAK görünmezdir.**
+
+Yani 43,379 sıfır, korpusun sağlamsız prune'dan arınmış olduğunun kanıtı değil. **Yalnızca
+bayrağın kendi yarattığı prune'ları görebilen bir dedektör hakkında bilgi.**
+
+Bu sınıfı gören kanal sürümler-arası verdict — ve beşinci çift (0068) onun *kalibre ettiğini,
+avlayamadığını* saptamıştı. Aynı sınır burada ikinci kez, farklı bir oracle için ölçüldü.
+
+### 5. Kanal sayımı
+
+parsed-state ×3, verdict ×1, temiz teyit ×1, sınır ×**3** (af9e89d8dd39, 871ef8d50e7c,
+2f2ec8e7730e), runtime-intent ×1, store-konumu ×1, canlılık-kapısı ×1.
+
+Workspace 367 yeşil.

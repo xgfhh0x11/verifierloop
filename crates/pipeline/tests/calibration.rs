@@ -1149,3 +1149,86 @@ fn deltalink_every_block_parses_on_all_three_kernels() {
         );
     }
 }
+
+// ===========================================================================================
+// PAIR ELEVEN — 2f2ec8e7730e: the pruning differential's BOUNDARY, measured
+// ===========================================================================================
+//
+// `check_scalar_ids()` mapped the compound id `base|BPF_ADD_CONST` but never the base id, so
+// two states whose LINK STRUCTURE differs compared equal: the commit's own words are "old has
+// r2.id=A, r3.id=A|flag ... cur has r2.id=B, r3.id=C|flag (r3 derived from unrelated r4).
+// Without the base check, idmap gets two independent entries A->B and A|flag->C|flag."
+//
+// THIS PAIR WAS BUILT AS A POSITIVE CONTROL AND CAME BACK A BOUNDARY. `check_prune_differential`
+// had 43,379 pairs and had never fired (devlog 0083/0085), so its false-negative rate was
+// unmeasured: "no unsound prunes in the corpus" and "the detector is dead" give the same
+// number. This commit is the cleanest possible test of that, because its diff touches nothing
+// but `check_scalar_ids()` — sixteen lines, no value-domain effect whatsoever.
+//
+// THE MEASUREMENT SETTLES IT, AND STRUCTURALLY. The differential ran with a real denominator
+// (the flag widened the state space 2 -> 8 states) on a program the very next kernel rejects,
+// and reported nothing. The reason is not the corpus and not a defect: `BPF_F_TEST_STATE_FREQ`
+// only makes pruning MORE aggressive. Its soundness direction needs `freq ACCEPT && base
+// REJECT` — the extra checkpoints introducing a prune that was not there. A bug where the
+// DEFAULT checkpointing already takes the unsound prune produces the same accepting verdict on
+// both sides of the flag, and is invisible to a flag differential BY CONSTRUCTION.
+//
+// So the 43,379 zeros are not evidence that the corpus is free of unsound prunes. They are
+// evidence about a detector that can only see prunes the flag itself creates.
+//
+// All three halves are real captures. buggy = 2f2ec8e7730e~1, fixed = 2f2ec8e7730e, configs
+// byte-identical.
+
+const IB_BUGGY: &str = include_str!("fixtures/calibration/idbase-2f2ec8e7730e-buggy.log");
+const IB_FIXED: &str = include_str!("fixtures/calibration/idbase-2f2ec8e7730e-fixed.log");
+const IB_TIP: &str = include_str!("fixtures/calibration/idbase-2f2ec8e7730e-tip.log");
+
+/// THE TRIGGER IS REAL: the buggy kernel accepts a program both later kernels reject, and the
+/// control — the same program with the second path's r3 derived from the SAME base — is
+/// accepted everywhere. Without this the boundary below would just be a program nothing
+/// happened to.
+#[test]
+fn the_unsound_prune_is_real_and_the_control_isolates_it() {
+    let b = decisions(IB_BUGGY, "ib-b");
+    let f = decisions(IB_FIXED, "ib-f");
+    let t = decisions(IB_TIP, "ib-t");
+    for d in [&b, &f, &t] {
+        assert_eq!(d.len(), 2, "{d:?}");
+        assert!(d[0].0.ends_with("unlinked") && d[1].0.ends_with("linked"), "{d:?}");
+    }
+    assert_eq!(b[0].1, "Accept", "the buggy kernel must accept the trigger");
+    assert_ne!(f[0].1, "Accept", "the fix must reject it: {:?}", f[0]);
+    assert_ne!(t[0].1, "Accept", "and tip still does: {:?}", t[0]);
+    // The control carries no id conflict, so it is accepted on every kernel.
+    for (name, d) in [("buggy", &b), ("fixed", &f), ("tip", &t)] {
+        assert_eq!(d[1].1, "Accept", "{name}: the control must not move");
+    }
+}
+
+/// THE BOUNDARY: the flag differential ran, with a denominator, and was silent — on the very
+/// kernel that has the unsound prune.
+#[test]
+fn the_flag_differential_cannot_see_a_prune_the_baseline_already_takes() {
+    let (_, buggy) = run_diff(IB_BUGGY, "ib-b-pd");
+    assert_eq!(
+        buggy.summary.prune_pairs_checked, 2,
+        "the denominator must be real: the flag has to have widened the state space"
+    );
+    assert_eq!(buggy.summary.prune_resource_artifacts, 0);
+    assert!(
+        !buggy.findings.iter().any(|f| f.kind.starts_with("prune_")),
+        "{:?}",
+        buggy.findings
+    );
+    assert_eq!(buggy.summary.finding_count, 0, "{:?}", buggy.findings);
+
+    // And the mechanism, straight out of the capture: both sides of the flag ACCEPT, because
+    // the default checkpointing already takes the prune. `freq ACCEPT && base REJECT` — the
+    // only direction the check reports — cannot arise here.
+    assert!(IB_BUGGY.contains("base_verdict=accept"), "{IB_BUGGY:.0}");
+    assert!(IB_BUGGY.contains("freq_verdict=accept"));
+    assert!(
+        IB_BUGGY.contains("base_states=2") && IB_BUGGY.contains("freq_states=8"),
+        "the flag must demonstrably have changed the state space"
+    );
+}
