@@ -6469,3 +6469,140 @@ vmlinux'a dokunulmadı) — yanlış olan rapordu, ki 0085'in kaybettiği ölç�
 olarak buydu: yanlış imaj hakkında bir rapor.
 
 Workspace 350 yeşil.
+
+## 0088 — Durumlar-arası oracle: kararı denetleyemiyoruz, ama kararın KAPISINI denetleyebiliyoruz
+
+### 1. Önce ölçüm: prune kararı denetlenebilir mi?
+
+Kalibre edilmemiş tek kanal durumlar-arasıydı, ve [[fuzzing-loop]]'un tavanı da orada:
+21 tarihsel hatanın tetiklenebilir-ama-görünmez üçü, tek-durumlu hiçbir kontrolün
+göremeyeceği pruning kusurları.
+
+İlk fikir doğal olanıydı: kernel'in `states_equal` kararını kabul etmek yerine, birleştirdiği
+iki durumu logdan okuyup **içerilme ilişkisini kendimiz türetmek** — 0073'ün `bpfref.h`
+hamlesinin `states.c` versiyonu. 0077'nin kuralı gereği inşa etmeden önce ölçtüm.
+
+**Cevap hayır, ve sebebi kaynakta.** `verifier.c:18379-18396`:
+
+```c
+if (err == 1) {                    /* found equivalent state, can prune */
+    if (env->log.level & BPF_LOG_LEVEL) {
+        if (do_print_state) verbose(env, "\nfrom %d to %d%s: safe\n", ...);
+        else                verbose(env, "%d: safe\n", env->insn_idx);
+    }
+```
+
+Prune duyurusu **hiçbir durum taşımıyor**, yalnızca nerede olduğunu. 896'lık korpusta
+iki formdan **2038 prune olayı** var; her iki tarafı birden elde edilen oran **~%0.6**.
+
+Ve daha derini: log yüklemin **alanını ifade edemiyor.**
+
+| yüklemin okuduğu | logun bastığı |
+|---|---|
+| `range_within` = `cnum{base,size}` yay-içerilmesi | 8 türetilmiş projeksiyon; `{base=10, size=U64_MAX-1}` hepsinde ekstremde → **hiç basılmıyor**, sınırsızdan ayırt edilemiyor |
+| `precise` — kontrolün yapılıp yapılmayacağına karar veren bayrak | yalnız `P` ön-eki, ve sabit skalerlerde o da yok; üstelik checkpoint saklanmadan önce `mark_all_scalars_imprecise()` koşuyor |
+| `id`'nin ADD_CONST32/64 ayrımı — `regsafe`'te sert uyuşmazlık | `id` maskelenmiş basılıyor |
+| `stack_arg_regs`, `callback_depth`, kilitler, `allocated_stack`, `map_uid` | hiç basılmıyor |
+| hangi `exact_level` seçildi | basılmıyor (OI-14'ü teyit ediyor) |
+
+Checkpoint dökümü ayrıca `clean_verifier_state`'den **sonra** basılıyor: aynı insn'de eşleşen
+5288 çiftte ortalama 1.18 slot daha az, 1904'ünde kesin olarak daha az. Kernel'in prune
+kararını, o kararın dayandığı temizlemeden geçmiş bir logla denetleyemezsiniz.
+
+Kernel'in her iki tarafı da bastığı tek yer sonsuz döngü **reddi** (`states.c:1378-1381`) —
+bir prune değil, bir hata yolu.
+
+**Bu [[oracle-reference-problem]]'in en keskin hali: referans kör noktayı belirler, ve burada
+referansın kendisi yok.**
+
+### 2. Dönüş: kapı denetlenebilir
+
+`0fb3cf6110a5` (2025-03) beri `func_states_equal` yalnızca verifier'ın CANLI saydığı
+register'ları karşılaştırıyor:
+
+```c
+u16 live_regs = env->insn_aux_data[insn_idx].live_regs_before;
+for (i = 0; i < MAX_BPF_REG; i++)
+        if (((1 << i) & live_regs) && !regsafe(env, &old->regs[i], &cur->regs[i], ...))
+                return false;
+```
+
+**Ölü işaretli register hiç karşılaştırılmıyor.** Yani canlılık her prune kararının
+**kapısı**, ve yanlış canlılık, kendini hiç savunmak zorunda kalmamış bir prune demek.
+
+Karardan farklı olarak kapı **basılıyor** (`liveness.c:2312`, LEVEL2) — ve karardan farklı
+olarak yalnızca komut akışının bir özelliği, yani ikinci bir implementasyon onu yeniden
+hesaplayabilir.
+
+Korpusta: **554,490 (insn × register) hücre**, bunların **398,678'i (%71.9) ÖLÜ** —
+karşılaştırmadan hariç tutulmuş, ve bugüne kadar denetlenmemiş.
+
+### 3. `bpflive.h` — ikinci implementasyon
+
+`bpfref.h`'in iki kuralına uyuyor: emitlenen **baytları** tüketiyor (jeneratörün niyetini
+değil), ve hiçbir emitter'la — ve kernel'in `liveness.c`'siyle — kod paylaşmıyor. Geriye
+doğru veri akışı: `live_before[i] = use[i] | (live_after[i] & ~def[i])`.
+
+**Model dışı bir şeyi reddediyor, tahmin etmiyor.** Bu bir nezaket değil, tasarımın kendisi:
+bulgu yönü aynı zamanda **kaba bir analizin** ürettiği yön, yani bir subprog çağrısını
+yaklaşıklamak bulguları modelin kendi cehaletinden imal etmek olurdu.
+
+**Yön:**
+
+| | anlamı | sayılır mı |
+|---|---|---|
+| kernel CANLI, biz ÖLÜ | verifier gereksiz yere karşılaştırmış: muhafazakâr, risksiz | hayır — ateşlenemez |
+| kernel ÖLÜ, biz CANLI | okunabilir bir register eşitlik testinden düşürülmüş | **bulgu** |
+
+Payda da bu yüzden tüm tablo değil: yalnızca **bizim CANLI dediğimiz** hücreler, çünkü
+yalnız orada kernel'in ÖLÜ demesi bir şey ifade edebilir. `order_checkable` kuralının aynısı.
+
+### 4. Kendi ölçümümdeki hata
+
+İlk karşılaştırmam %85 uyum dedi. Yanlıştı. `liveness.c` indeksten önce opsiyonel bir SCC id
+basıyor (`%3d ` sonra `%3d: `), ve regex'im ön-eki açgözlü yutuyordu: SCC 2'deki 20. komut
+`0` olarak okunuyor, programdaki her satır yanlış insn'e atfediliyor — ve dışarı gayet makul
+görünen bir oran çıkıyor. Tell, bulgu satırındaki **metnin indeksle uyuşmamasıydı.**
+
+Parser artık iki noktadan önceki son token'ı alıyor, ve tuzak
+`the_scc_prefix_is_not_part_of_the_instruction_index` testinde çivili.
+
+### 5. Sonuç
+
+```
+--gen-comp   896 program: modellenen 562, reddedilen 334
+             341,190 hücre karşılaştırıldı, UYUM %100
+             liveness_gate_checked = 92,784      finding_count = 0
+--gen-prune   16 program: 16/16 modellendi,  491 hücre, 0 bulgu
+--gen-spill   12 program: 12/12 modellendi,  571 hücre, 0 bulgu
+```
+
+**92,784 — projenin en geniş paydası, ikinci sıradakinin (`bounds_order_checked`, 45,668)
+iki katı.** Ve iki yönde de sıfır uyuşmazlık: bağımsız analiz kernel'le birebir.
+
+### 6. Reddetmelerin adı var, ve bu bir sonuç
+
+İlk koşuda 896 programın **823'ü** reddedildi. Tek sebep vardı: kayıtsız bir kfunc
+(`bpf_dynptr_slice`). Model tahmin etmediği için boşluk **görünür** kaldı; kfunc arity'leri
+kaydedilince 823 → 334'e düştü ve kalan 334'ün hepsi `call pc+26`, yani subprog çağrısı —
+prosedürler-arası, ve bilerek kapsam dışı.
+
+**Bir modelin sessizce yaklaşıklaması ile açıkça reddetmesi arasındaki fark tam olarak bu:
+ikincisinde kapsam bir sayı olarak duruyor ve kapatılabiliyor.**
+
+### 7. Neden bu yüzey
+
+[[coverage-fraction]] "kfunc'lara git" derken ikinci bir şey daha söylüyordu: oracle'ların
+güçlü olduğu skaler yüzey doymuş. `liveness.o` **443/876 = %50.6** — doymuş değil, 433 nokta
+hiç ulaşılmamış, doğrulama geçişinin ~%8.6'sı. Ve 2340 satırlık bu altsistem 2025-09'da
+doğdu, hâlâ değişiyor (`2658a1720a19`, 2026-03). Hakkında tek bir oracle yoktu.
+
+Kalibrasyon adayı da hazır: **`ecdd4fd8a54c`** (2026-04, "fix arg tracking for
+imprecise/multi-offset BPF_ST/STX") — `liveness.c`'de gerçek bir `Fixes:`.
+
+**Dürüst kapsam:** bu bacak bir oracle ve onun paydasını kuruyor, ve bağımsız referansın
+kernel'le anlaştığını 341 bin hücrede ölçüyor. Referansın gerçek bir canlılık hatasını
+YAKALAYACAĞINI göstermiyor — o bir sonraki bacağın işi, ve çift sekizin kuralı gereği hangi
+kanalı sertifikaladığı ayrıca söylenecek.
+
+Workspace 358 yeşil.

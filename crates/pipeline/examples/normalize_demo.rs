@@ -63,6 +63,7 @@ impl RecordParser for DemoParser {
                     multi_path: None,
                     store_site: None,
                     prune_probe: None,
+                    liveness_gate: None,
                     helper_arg_violations: if accepted {
                         Vec::new()
                     } else {

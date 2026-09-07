@@ -193,6 +193,7 @@ impl RecordParser for ReferenceParser {
                     multi_path: None,
                     store_site: None,
                     prune_probe: None,
+                    liveness_gate: None,
                     helper_arg_violations: if buggy {
                         vec![HelperArgViolation {
                             helper: "bpf_map_lookup_elem".to_string(),
@@ -355,6 +356,7 @@ mod tests {
                         multi_path: None,
                         store_site: None,
                         prune_probe: None,
+                        liveness_gate: None,
                         helper_arg_violations: Vec::new(),
                     }
                 })

@@ -233,6 +233,32 @@ pub struct CoreMetrics {
     /// The pruning-soundness differential for this program, when the harness ran one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prune_probe: Option<PruneProbe>,
+    /// The register-liveness GATE on state equality, from two independent sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liveness_gate: Option<LivenessGate>,
+}
+
+/// Register liveness at each instruction — the gate `func_states_equal` applies before it
+/// compares anything (`states.c`: `if (((1 << i) & live_regs) && !regsafe(...))`). A
+/// register the verifier calls dead is never compared, so a wrong liveness is a prune that
+/// never had to justify itself.
+///
+/// Two independent sources are carried side by side and never merged: the kernel's own
+/// printed table and the harness's `bpflive.h` recomputation from the EMITTED instruction
+/// bytes. Masks use bit j for r_j, r0..r9 — r10 is the frame pointer and the kernel does
+/// not track it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LivenessGate {
+    /// The harness's own analysis, one mask per instruction index. `None` when the harness
+    /// declared the program outside its model rather than guessing at it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<Vec<u16>>,
+    /// The harness's status verbatim (`ok`, or `unsupported: <why>`), so an absent claim is
+    /// always distinguishable from a claim that was never emitted.
+    pub claim_status: String,
+    /// The kernel's `live_regs_before`, as (insn_idx, mask). Sparse: the table skips the
+    /// second slot of an LD_IMM64, exactly as `liveness.c` prints it.
+    pub kernel: Vec<(u32, u16)>,
 }
 
 /// The store instruction's coordinates, declared by the program generator.

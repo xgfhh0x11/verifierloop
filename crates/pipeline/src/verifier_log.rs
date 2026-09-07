@@ -88,6 +88,7 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
     let mut jitdiff_lines: Vec<&str> = Vec::new();
     let mut store_line: Option<&str> = None;
     let mut prune_line: Option<&str> = None;
+    let mut liveness_line: Option<&str> = None;
 
     for line in repaired.iter().map(|l| l.as_ref()) {
         if line.starts_with("RESULT ") {
@@ -102,6 +103,8 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
             store_line = Some(line);
         } else if line.starts_with("PRUNE ") {
             prune_line = Some(line);
+        } else if line.starts_with("LIVENESS ") {
+            liveness_line = Some(line);
         } else if line.starts_with("---LOG---") {
             in_log = true;
         } else if line.starts_with("---END---") {
@@ -178,6 +181,7 @@ fn classify_block(block: &str) -> Result<ParsedRecord, UnparsedBlock> {
         }),
         store_site: store_line.and_then(parse_store_site),
         prune_probe: prune_line.and_then(parse_prune_probe),
+        liveness_gate: parse_liveness_gate(liveness_line, &log),
     };
 
     // Record-level parse notes: partial-parse caveats (lower confidence, NOT anomalies).
@@ -1543,6 +1547,63 @@ processed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_stat
         assert!(parse_register_evolution(&["from 33 to 15: safe"]).is_empty());
     }
 
+    /// THE TRAP THIS PARSER EXISTS TO AVOID. `liveness.c` prints an optional SCC id before
+    /// the instruction index (`%3d ` then `%3d: `), so a row for instruction 20 inside SCC 2
+    /// reads `"  2  20: ..."`. Treating the SCC field as an optional leading run of digits
+    /// makes the index parse as 0 — every row in the program mis-attributed, with a
+    /// perfectly plausible-looking agreement rate coming out the other end. It was measured
+    /// wrong exactly once, by taking the FIRST digits instead of the last token.
+    #[test]
+    fn the_scc_prefix_is_not_part_of_the_instruction_index() {
+        assert_eq!(
+            parse_liveness_row("      0: .1........ (7b) *(u64 *)(r10 -16) = r1"),
+            Some((0, 0b0000000010))
+        );
+        assert_eq!(
+            parse_liveness_row("  2  20: .......7.. (72) *(u8 *)(r7 +0) = -1"),
+            Some((20, 0b0010000000))
+        );
+        // A column is the register's own number when live, so the DIGIT is redundant with
+        // the position. The position is what is read.
+        assert_eq!(
+            parse_liveness_row("     13: ..2.4..7.. (04) w2 += 1073741824"),
+            Some((13, 0b0010010100))
+        );
+        assert_eq!(parse_liveness_row("     16: .......... (05) goto pc+6"), Some((16, 0)));
+        // Not table rows.
+        assert!(parse_liveness_row("Live regs before insn:").is_none());
+        assert!(parse_liveness_row("      R0=scalar() R10=fp0").is_none());
+        assert!(parse_liveness_row("     16: ......... (05) goto pc+6").is_none()); // 9 cols
+    }
+
+    #[test]
+    fn a_liveness_claim_without_a_matching_length_is_refused_not_padded() {
+        let table = ["Live regs before insn:", "      0: 0......... (95) exit"];
+        // Well-formed: two instructions, three hex digits each.
+        let g = parse_liveness_gate(Some("LIVENESS status=ok n=2 mask=001000"), &table).unwrap();
+        assert_eq!(g.claim_status, "ok");
+        assert_eq!(g.claim.unwrap(), vec![0x001, 0x000]);
+        assert_eq!(g.kernel, vec![(0, 1)]);
+
+        // Ragged: n says three instructions, the mask carries two. Padding it would invent
+        // a disagreement with the kernel on the instruction that is missing.
+        let g = parse_liveness_gate(Some("LIVENESS status=ok n=3 mask=001000"), &table).unwrap();
+        assert!(g.claim.is_none());
+        assert_eq!(g.claim_status, "malformed");
+
+        // The harness declining to model a program is recorded, never silently dropped.
+        let g = parse_liveness_gate(
+            Some("LIVENESS status=unsupported n=9 at=4 why=opcode_outside_the_model"),
+            &table,
+        )
+        .unwrap();
+        assert!(g.claim.is_none());
+        assert!(g.claim_status.starts_with("unsupported: "));
+
+        // No claim at all: nothing to compare against, so no gate is recorded.
+        assert!(parse_liveness_gate(None, &table).is_none());
+    }
+
     #[test]
     fn the_caller_state_at_a_subprogram_return_is_read_from_its_indented_dump() {
         // `to caller at %d:` states the index; print_verifier_state then emits the state on
@@ -2106,4 +2167,108 @@ processed 2 insns (limit 1000000) total_states 3 peak_states 0
         assert_eq!(console_timestamp_at("[    2.301324] real"), Some(0));
         assert_eq!(console_timestamp_at("tail[12345.000001] real"), Some(4));
     }
+}
+
+/// Parse the kernel's `Live regs before insn:` table together with the harness's own
+/// `LIVENESS` claim about the same program.
+///
+/// The table (liveness.c:2312, BPF_LOG_LEVEL2) is printed as
+/// `[%3d ]%3d: <10 columns> <disassembly>[; zext]`, where the optional first field is the
+/// instruction's SCC id. **The instruction index is the last whitespace-separated token
+/// before the colon, never a leading run of digits** — a regex that treats the SCC prefix
+/// as optional will parse `" 2  20: ..."` as instruction 0 and silently mis-attribute every
+/// row in the program. That mistake was made once while measuring this channel and is the
+/// reason this function splits on the colon instead.
+///
+/// Returns `None` when the harness emitted no claim at all: without the second source there
+/// is nothing to compare, and a table on its own is not evidence about anything.
+fn parse_liveness_gate(
+    claim_line: Option<&str>,
+    log: &[&str],
+) -> Option<metrics::core::LivenessGate> {
+    let claim_line = claim_line?;
+    let mut claim = None;
+    let mut status = String::from("absent");
+    if claim_line.contains("status=ok") {
+        if let Some(hex) = claim_line.split_whitespace().find_map(|t| t.strip_prefix("mask=")) {
+            let n = claim_line
+                .split_whitespace()
+                .find_map(|t| t.strip_prefix("n="))
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            // Three hex digits per instruction, ten meaningful bits. A short or ragged
+            // string is refused rather than padded: a truncated claim that parsed would be
+            // a silent disagreement with the kernel on every missing instruction.
+            if n > 0 && hex.len() == n * 3 {
+                let mut v = Vec::with_capacity(n);
+                let mut ok = true;
+                for i in 0..n {
+                    match u16::from_str_radix(&hex[i * 3..i * 3 + 3], 16) {
+                        Ok(m) => v.push(m & 0x03ff),
+                        Err(_) => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok {
+                    status = String::from("ok");
+                    claim = Some(v);
+                }
+            }
+        }
+        if claim.is_none() {
+            status = String::from("malformed");
+        }
+    } else if claim_line.contains("status=unsupported") {
+        let why = claim_line
+            .split_whitespace()
+            .find_map(|t| t.strip_prefix("why="))
+            .unwrap_or("unstated");
+        status = format!("unsupported: {why}");
+    }
+
+    let mut kernel = Vec::new();
+    let mut in_table = false;
+    for line in log {
+        if line.trim() == "Live regs before insn:" {
+            in_table = true;
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        match parse_liveness_row(line) {
+            Some(row) => kernel.push(row),
+            // The table is one contiguous block; the first row that does not parse ends it.
+            None => in_table = false,
+        }
+    }
+
+    Some(metrics::core::LivenessGate { claim, claim_status: status, kernel })
+}
+
+/// One row of the liveness table -> (insn_idx, mask). See `parse_liveness_gate` for why the
+/// index is taken from the end of the head rather than the start.
+fn parse_liveness_row(line: &str) -> Option<(u32, u16)> {
+    if !line.starts_with(' ') {
+        return None;
+    }
+    let (head, rest) = line.split_once(':')?;
+    let idx: u32 = head.split_whitespace().last()?.parse().ok()?;
+    let rest = rest.strip_prefix(' ')?;
+    let cols = rest.get(..10)?;
+    if cols.len() != 10 || !cols.bytes().all(|b| b == b'.' || b.is_ascii_digit()) {
+        return None;
+    }
+    // A column is the register's own index when live and '.' when dead, so position is the
+    // register number and the printed digit is redundant. Reading the position rather than
+    // the digit keeps this independent of that redundancy.
+    let mut mask = 0u16;
+    for (j, c) in cols.bytes().enumerate() {
+        if c != b'.' {
+            mask |= 1 << j;
+        }
+    }
+    Some((idx, mask))
 }

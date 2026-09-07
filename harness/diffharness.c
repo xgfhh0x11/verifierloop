@@ -74,6 +74,7 @@
 #endif
 
 #include "bpfref.h"
+#include "bpflive.h"
 
 #define BPF_JMP32_IMM(OP, DST, IMM, OFF)                                       \
     ((struct bpf_insn){.code = BPF_JMP32 | BPF_OP(OP) | BPF_K,                 \
@@ -2926,6 +2927,7 @@ static void run_prune_prog(enum prune_shaper fall, enum prune_shaper taken,
            base.accept ? "accept" : "reject", base.err, base.states, base.reason,
            freq.accept ? "accept" : "reject", freq.err, freq.states, freq.reason,
            inv.accept ? "accept" : "reject", inv.err, inv.reason);
+    bpflive_print_claim(ins, n);
     printf("---LOG---\n%s\n---END---\n", g_log);
 }
 
@@ -5096,6 +5098,7 @@ static void run_probe_deltalink(void) {
             }
             close(fd);
         }
+        bpflive_print_claim(ins, n);
         printf("---LOG---\n%s\n---END---\n", g_log);
     }
     close(map_out);
@@ -5891,6 +5894,7 @@ static void run_comp_prog(const struct iter_ids *ids, int slice_id, uint32_t see
         }
         close(fd);
     }
+    bpflive_print_claim(ins, n);
     printf("---LOG---\n%s\n---END---\n", g_log);
 }
 
@@ -5927,6 +5931,17 @@ static void run_generated_comp_family(void) {
     }
     printf("CHANNEL btf=ok slice_rdwr=%d slice_ro=%d from_skb=%d ringbuf_fd=%d\n",
            slice_id, g_slice_ro_id, g_from_skb_id, g_ringbuf_fd);
+    /* Teach the independent liveness model the arity of every kfunc this family emits.
+       The ids come from the BTF walk this harness already does; the ARITIES come from the
+       kfuncs' published signatures, not from the kernel's liveness analysis. A kfunc left
+       out here is refused by the model rather than approximated -- which is how 0088 found
+       that one unregistered kfunc was silently costing 823 of 896 programs. */
+    bpflive_register_kfunc(ids.new_id, 3);      /* bpf_iter_num_new(it, start, end)      */
+    bpflive_register_kfunc(ids.next_id, 1);     /* bpf_iter_num_next(it)                 */
+    bpflive_register_kfunc(ids.destroy_id, 1);  /* bpf_iter_num_destroy(it)              */
+    bpflive_register_kfunc(slice_id, 4);        /* bpf_dynptr_slice_rdwr(p,off,buf,szk)  */
+    bpflive_register_kfunc(g_slice_ro_id, 4);   /* bpf_dynptr_slice(p,off,buf,szk)       */
+    bpflive_register_kfunc(g_from_skb_id, 3);   /* bpf_dynptr_from_skb(skb,flags,ptr)    */
     memset(g_seen_pair, 0, sizeof(g_seen_pair));
     memset(g_seen_triple, 0, sizeof(g_seen_triple));
     /* Fixed seeds: the walk is random but the CORPUS is reproducible, which is what a
@@ -7009,6 +7024,7 @@ static void run_spill_prog(enum spill_shape shape, int link_fall, int link_taken
         }
         close(fd);
     }
+    bpflive_print_claim(ins, n);
     printf("---LOG---\n%s\n---END---\n", g_log);
 }
 

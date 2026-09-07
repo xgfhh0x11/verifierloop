@@ -230,6 +230,13 @@ pub struct DiffSummary {
     /// could, which is a strictly stronger question.
     #[serde(default)]
     pub store_locations_checked: u64,
+    /// Liveness-gate cells the check could actually have FIRED on: one per
+    /// (instruction, register) where the independent analysis says the register is LIVE,
+    /// because only there can the kernel calling it dead be a finding. Cells our own
+    /// analysis calls dead are compared but cannot fail, so counting them would inflate the
+    /// denominator with comparisons that prove nothing — the `order_checkable` rule.
+    #[serde(default)]
+    pub liveness_gate_checked: u64,
     /// Pruning differentials the check could actually EVALUATE — the denominator for
     /// the kernel-vs-kernel leg. A pair only counts once it is known that the flag
     /// CHANGED the state space (`freq_states > base_states`); if the flagged load
@@ -265,6 +272,7 @@ impl DiffSummary {
             "runtime_writes_checked" => self.runtime_writes_checked,
             "store_locations_checked" => self.store_locations_checked,
             "prune_pairs_checked" => self.prune_pairs_checked,
+            "liveness_gate_checked" => self.liveness_gate_checked,
             _ => return None,
         })
     }
@@ -343,6 +351,7 @@ pub fn run(
     let mut reg_invariants_checked = 0u64;
     let mut jit_interp_checked = 0u64;
     let mut runtime_intent_checked = 0u64;
+    let mut liveness_gate_checked = 0u64;
     let mut runtime_checked = 0u64;
     let mut runtime_writes_checked = 0u64;
     let mut store_locations_checked = 0u64;
@@ -369,6 +378,7 @@ pub fn run(
         );
         check_runtime_ground_truth(idx, record, &mut findings, &mut runtime_checked);
         check_runtime_intent(idx, record, &mut findings, &mut runtime_intent_checked);
+        check_liveness_gate(idx, record, &mut findings, &mut liveness_gate_checked);
         check_runtime_write_safety(idx, record, &mut findings, &mut runtime_writes_checked);
         check_store_location(idx, record, &mut findings, &mut store_locations_checked);
         check_prune_differential(
@@ -411,6 +421,7 @@ pub fn run(
         reg_invariants_checked,
         jit_interp_checked,
         runtime_intent_checked,
+        liveness_gate_checked,
         runtime_checked,
         runtime_writes_checked,
         store_locations_checked,
@@ -806,6 +817,7 @@ pub const INVARIANT_DENOMINATORS: &[(&str, &str)] = &[
     ("documented_message_drift", "documented_cases_checked"),
     ("helper_arg_type_mismatch", "helper_args_checked"),
     ("jit_interp_divergence", "jit_interp_checked"),
+    ("liveness_gate_overreach", "liveness_gate_checked"),
     ("prune_soundness_desync", "prune_pairs_checked"),
     ("prune_verdict_disagreement", "prune_pairs_checked"),
     ("reg32_reg64_inconsistent", "reg32_checked"),
@@ -1484,6 +1496,7 @@ mod tests {
                 multi_path: None,
                 store_site: None,
                 prune_probe: None,
+                liveness_gate: None,
                 helper_arg_violations: Vec::new(),
             },
             counterfactual: CounterfactualLayer::default(),
@@ -1689,6 +1702,88 @@ fn check_runtime_intent(
                 expected: format!("retval == {intended} (the program's own semantics)"),
                 observed: format!("retval={} on input 0x{:x}", s.retval, s.input),
                 detail: "an accepted program returned something its source cannot produce"
+                    .to_string(),
+            });
+        }
+    }
+}
+
+/// (Independent reference) The GATE on every pruning decision.
+///
+/// Since `0fb3cf6110a5` (2025-03) `func_states_equal` compares only the registers the
+/// verifier believes are live where two states meet:
+///
+/// ```text
+/// u16 live_regs = env->insn_aux_data[insn_idx].live_regs_before;
+/// for (i = 0; i < MAX_BPF_REG; i++)
+///         if (((1 << i) & live_regs) && !regsafe(env, &old->regs[i], &cur->regs[i], ...))
+///                 return false;
+/// ```
+///
+/// A register marked dead is not compared at all, so a register wrongly called dead is a
+/// prune that never had to justify itself. 0088 measured that the pruning DECISION is not
+/// auditable from the log — the prune record carries neither state, and the log cannot even
+/// express `range_within`'s domain — but the GATE is printed, and unlike the decision it is
+/// a property of the instruction stream alone. So this is the first cross-state check whose
+/// reference is neither the verifier nor a second kernel: it is `bpflive.h`, a second
+/// implementation of the analysis run over the EMITTED bytes.
+///
+/// THE PREDICATE IS DIRECTIONAL, and the direction is the whole design:
+///   * kernel says LIVE where we say DEAD — the verifier compared a register it did not
+///     have to. Conservative, costs precision, risks nothing. Not a finding, and counted
+///     nowhere: it cannot fail.
+///   * kernel says DEAD where we say LIVE — a register that can still be read was dropped
+///     from the equality test. That is the finding, and it is ALSO the direction a coarser
+///     reference produces, which is why `bpflive.h` refuses whole programs (subprogram
+///     calls, unregistered kfuncs, unknown opcodes) rather than approximating them. An
+///     `UNSUPPORTED` claim contributes nothing here instead of contributing noise.
+fn check_liveness_gate(
+    idx: u64,
+    record: &MetricRecord,
+    out: &mut Vec<DivergenceFinding>,
+    checked: &mut u64,
+) {
+    let gate = match &record.core.liveness_gate {
+        Some(g) => g,
+        None => return,
+    };
+    // No independent claim means no comparison. The kernel's table on its own says only
+    // what the kernel already believes.
+    let claim = match &gate.claim {
+        Some(c) => c,
+        None => return,
+    };
+    for (insn, kmask) in &gate.kernel {
+        let ours = match claim.get(*insn as usize) {
+            Some(m) => *m,
+            // The table is authoritative about which instructions exist; an index past the
+            // claim is a truncated claim, not a disagreement.
+            None => continue,
+        };
+        for reg in 0..10u16 {
+            let bit = 1u16 << reg;
+            if ours & bit == 0 {
+                continue; // we say dead: the kernel cannot overreach here
+            }
+            *checked += 1;
+            if kmask & bit != 0 {
+                continue; // both live: agreement
+            }
+            out.push(DivergenceFinding {
+                record_index: Some(idx),
+                source: GroundTruthSource::LogicalInvariant,
+                kind: "liveness_gate_overreach".to_string(),
+                aspect: "pruning".to_string(),
+                expected: format!(
+                    "r{reg} is live before insn {insn}, so state equality must compare it"
+                ),
+                observed: format!(
+                    "the verifier's live_regs_before at insn {insn} excludes r{reg} \
+                     (kernel mask 0x{kmask:03x}, independent mask 0x{ours:03x})"
+                ),
+                detail: "a register dropped from the liveness gate is never compared by \
+                         func_states_equal, so any prune at this instruction did not have \
+                         to account for it"
                     .to_string(),
             });
         }
