@@ -46,16 +46,25 @@ fn measure_whole_capture() {
 
     eprintln!("MEASURE ==========================================");
     eprintln!("MEASURE records={} (accept={accept} reject={reject})", norm.records.len());
-    eprintln!("MEASURE reg32_checked={}", out.summary.reg32_checked);
-    eprintln!("MEASURE runtime_checked={}", out.summary.runtime_checked);
-    eprintln!("MEASURE runtime_writes_checked={}", out.summary.runtime_writes_checked);
-    eprintln!("MEASURE store_locations_checked={}", out.summary.store_locations_checked);
-    eprintln!("MEASURE prune_pairs_checked={}", out.summary.prune_pairs_checked);
+    // EVERY registered denominator, derived from the registry rather than listed here.
+    // A hand-written list is exactly how six of the thirteen went unprinted for twenty
+    // legs: the tool used to decide "is this family measured?" was itself hiding half the
+    // measurement. Deriving it means a new invariant's denominator cannot be forgotten.
+    let mut fields: Vec<&str> = diff::INVARIANT_DENOMINATORS.iter().map(|(_, f)| *f).collect();
+    fields.sort_unstable();
+    fields.dedup();
+    for f in fields {
+        match out.summary.denominator(f) {
+            Some(v) => eprintln!("MEASURE {f}={v}"),
+            // Unreachable while denominator_guard passes; printed rather than skipped so
+            // a registry entry that stops resolving is visible here too.
+            None => eprintln!("MEASURE {f}=UNRESOLVED"),
+        }
+    }
     eprintln!(
         "MEASURE prune_resource_artifacts={}",
         out.summary.prune_resource_artifacts
     );
-    eprintln!("MEASURE tnum_bounds_checked={}", out.summary.tnum_bounds_checked);
     eprintln!("MEASURE finding_count={}", out.summary.finding_count);
     eprintln!("MEASURE parser_unrecognized={unrecognized}");
     for f in &out.findings {

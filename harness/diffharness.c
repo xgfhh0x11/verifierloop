@@ -4909,6 +4909,198 @@ static void run_probe_spill(void) {
     }
 }
 
+// ---- calibration probe: the 32-bit delta replayed as 64-bit (--probe-deltalink) ------
+// Calibration pair EIGHT (3878ae04e9fc, "bpf: Fix incorrect delta propagation between
+// linked registers", 2024-10-16) -- and the first pair aimed at the STORE-LOCATION
+// channel, which 0041 called "the hunt" and which no real bug had ever exercised.
+//
+// THE BUG, one missing condition. `adjust_reg_min_max_vals()` stamped BPF_ADD_CONST and
+// recorded `dst_reg->off = val` for a 32-BIT add as readily as for a 64-bit one, but the
+// record keeps only id+off -- it does not remember the width. `sync_linked_regs()` then
+// replays the delta in FULL 64-BIT arithmetic:
+//     __mark_reg_known(&fake_reg, (s32)reg->off - (s32)known_reg->off);
+//     copy_register_state(reg, known_reg); scalar_min_max_add(reg, &fake_reg);
+// When the original add was alu32 the CPU zero-extends, so the true value can never carry
+// out of the low word -- but a negative delta added in 64 bits BORROWS into the upper
+// word. The fix adds `&& !alu32`, unlinking such registers entirely.
+//
+// WHY THIS PAIR IS THE STORE-LOCATION ONE. The resulting state is self-consistent: a
+// pinned constant with tnum and bounds in agreement. Every internal-consistency invariant
+// is silent by construction, and the verdict is ACCEPT on both kernels. What is wrong is
+// only the RELATION to reality -- the verifier's constant is not the CPU's -- and the one
+// oracle whose reference is the runtime landing site is check_store_location.
+//
+// THE SHAPE is the divergence generator from the maintainers' own selftest
+// (`verifier_linked_scalars.c`, added by db123e42304d in the same series), with its
+// pointer-arithmetic amplification replaced by a SMALL in-bounds store. The selftest
+// drives the store to fp+0x7FFFFFFE, which is a wild write that would take the VM with
+// it; here the divergent bit is narrowed to one bit and scaled to 8 bytes, so BOTH the
+// proven and the real landing site sit inside the same 64-byte map value. That is the
+// difference between a crash and an observation.
+//
+//     r1 = <base> ll ; r1 /= 1        -- value-preserving; drops the constant so r1 gets an id
+//     r2 = r1 ; r4 = r1               -- LINK: one id, three members
+//     w2 += 0x40000000                -- alu32: stamps ADD_CONST, off=0x40000000
+//     w4 += 0                         -- alu32: stamps ADD_CONST, off=0
+//     if r2 == <cmp> goto L1          -- pins known_reg, fires sync_linked_regs
+//   L1: r4 >>= 63                     -- the divergent bit, and nothing else
+//     r4 <<= 3 ; r7 += r4             -- 0 or 8 bytes into the map value
+//     *(u8 *)(r7 + 0) = 0xFF          -- THE STORE
+//
+// THE ARMS DIFFER IN ONE THING: whether the 32-bit add WRAPS.
+//   wrap   base=0xC0000001 -> w2 wraps to 1; known_reg=1, delta=-0x40000000, and the
+//          64-bit replay borrows: the verifier believes r4=0xFFFFFFFFC0000001, so
+//          r4>>63 = 1 and it proves the store at map_value+8. The CPU has r4=0xC0000001,
+//          r4>>63 = 0, and stores at map_value+0.
+//   nowrap base=0x00000001 -> w2 = 0x40000001, no wrap; known_reg=0x40000001 is above the
+//          delta so the replay does not borrow, r4=1 on both sides, and proven == real.
+// 0062 added this bug's LINK shape to --gen-spill but explicitly not its wraparound
+// trigger; the control arm is that missing ingredient isolated as a variable.
+static void run_probe_deltalink(void) {
+    static const struct { const char *name; unsigned int base; int cmp; } ARMS[] = {
+        {"wrap",   0xC0000001u, 0x00000001},  /* trigger: the 32-bit add wraps to 1  */
+        {"nowrap", 0x00000001u, 0x40000001},  /* control: same shape, no wraparound  */
+    };
+    const int ADD = 0x40000000;   /* same in both arms, and <= (u32)S32_MAX so the
+                                     BPF_ADD_CONST stamp is not declined */
+
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4;
+    m.value_size = RTW_VALUE_SIZE;
+    m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_out < 0) {
+        printf("===PROG deltalink#3878ae04e9fc type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n",
+               errno);
+        return;
+    }
+
+    for (unsigned a = 0; a < sizeof(ARMS) / sizeof(ARMS[0]); a++) {
+        struct bpf_insn ins[32];
+        int n = 0, jexit[2], nx = 0;
+
+        /* The map value pointer FIRST: r1-r5 are caller-saved, so no helper call may
+           follow the divergence block that lives in them. */
+        ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+        ins[n++] = (struct bpf_insn){0};
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+        jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_0);
+
+        /* A full 64-bit immediate load: BPF_MOV64_IMM would SIGN-extend 0xC0000001 and
+           the base would not be the one this arm names. */
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = 0, .off = 0, .imm = (int)ARMS[a].base};
+        ins[n++] = (struct bpf_insn){0};              /* high word = 0 */
+        ins[n++] = BPF_ALU64_IMM(BPF_DIV, BPF_REG_1, 1);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_1);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_4, BPF_REG_1);
+        ins[n++] = BPF_ALU32_IMM(BPF_ADD, BPF_REG_2, ADD);
+        ins[n++] = BPF_ALU32_IMM(BPF_ADD, BPF_REG_4, 0);
+        const int jeq = n;
+        ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_2, ARMS[a].cmp, 0);
+        jexit[nx++] = n; ins[n++] = BPF_JMP_A(0);     /* r2 != cmp: unreachable at runtime */
+        ins[jeq].off = n - jeq - 1;
+
+        ins[n++] = BPF_ALU64_IMM(BPF_RSH, BPF_REG_4, 63);
+        ins[n++] = BPF_ALU64_IMM(BPF_LSH, BPF_REG_4, 3);
+        ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_7, BPF_REG_4);
+        const int store_insn = n;
+        ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_7, 0, -1);   /* -1 == RTW_SENTINEL byte */
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);
+        ins[n++] = BPF_EXIT_INSN();
+        const int exit0 = n;
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+        ins[n++] = BPF_EXIT_INSN();
+        for (int i = 0; i < nx; i++)
+            ins[jexit[i]].off = exit0 - jexit[i] - 1;
+
+        struct prune_load base = prune_load_once(ins, n, 0, g_log, sizeof(g_log));
+        struct prune_load freq = prune_load_once(ins, n, BPF_F_TEST_STATE_FREQ,
+                                                 g_log2, sizeof(g_log2));
+        struct prune_load inv  = prune_load_once(ins, n, BPF_F_TEST_REG_INVARIANTS,
+                                                 g_log2, sizeof(g_log2));
+
+        g_log[0] = '\0';
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 2;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        int lerr = errno;
+
+        printf("===PROG deltalink#3878ae04e9fc#%s type=socket_filter ===\n", ARMS[a].name);
+        printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+               fd >= 0 ? "accept" : "reject", fd >= 0 ? 1 : -1, fd >= 0 ? 0 : lerr);
+        printf("STORE insn=%d reg=7 off=0 size=1\n", store_insn);
+        /* The generator's own claim, read off the program text and the ISA -- never off
+           the verifier. Both arms reach the store, so both return 1. */
+        printf("EXPECT intended_retval=1\n");
+        printf("PRUNE fall=deltalink taken=%s fall_safe=1 taken_safe=1 stack=0"
+               " base_verdict=%s base_errno=%d base_states=%lu base_reason=%s"
+               " freq_verdict=%s freq_errno=%d freq_states=%lu freq_reason=%s"
+               " inv_verdict=%s inv_errno=%d inv_reason=%s\n",
+               ARMS[a].name,
+               base.accept ? "accept" : "reject", base.err, base.states, base.reason,
+               freq.accept ? "accept" : "reject", freq.err, freq.states, freq.reason,
+               inv.accept ? "accept" : "reject", inv.err, inv.reason);
+
+        if (fd >= 0) {
+            unsigned char pkt[64], zero[RTW_VALUE_SIZE], out[RTW_VALUE_SIZE];
+            memset(pkt, 0, sizeof(pkt));
+            memset(zero, 0, sizeof(zero));
+            /* The program reads nothing external, so one sample IS the observation --
+               but the map still has to be cleared, or a previous arm's sentinel would
+               be read as this arm's landing site. */
+            int ze = rt_map_set_bytes(map_out, 0, zero);
+            union bpf_attr t;
+            memset(&t, 0, sizeof(t));
+            t.test.prog_fd = fd;
+            t.test.data_in = (uint64_t)(unsigned long)pkt;
+            t.test.data_size_in = sizeof(pkt);
+            t.test.repeat = 1;
+            int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+            memset(out, 0, sizeof(out));
+            int ge = rt_map_get(map_out, 0, out);
+            if (r < 0 || ze < 0 || ge < 0) {
+                printf("RUNTIME input=0x00000000 error=1 testrun_errno=%d\n",
+                       r < 0 ? errno : 0);
+            } else {
+                int off = -1;
+                for (int b = 0; b < RTW_VALUE_SIZE; b++)
+                    if (out[b] == RTW_SENTINEL) { off = b; break; }
+                int executed = (t.test.retval == 1);
+                if (off < 0)
+                    printf("RUNTIME input=0x00000000 retval=0x%08x store_off=none"
+                           " store_len=0 store_size=1 executed=%d\n",
+                           t.test.retval, executed);
+                else {
+                    int len = 0;
+                    for (int b = off; b < RTW_VALUE_SIZE && out[b] == RTW_SENTINEL; b++) len++;
+                    printf("RUNTIME input=0x00000000 retval=0x%08x store_off=%d"
+                           " store_len=%d store_size=1 executed=%d\n",
+                           t.test.retval, off, len, executed);
+                }
+            }
+            close(fd);
+        }
+        printf("---LOG---\n%s\n---END---\n", g_log);
+    }
+    close(map_out);
+}
+
 // ---- calibration probe: the fake_reg corruption (--probe-fakereg) -----------
 // The SECOND kind of calibration. 0061 tested the oracle against a bug whose inconsistent
 // state the commit message printed, so no kernel had to be built. This one cannot work
@@ -8342,6 +8534,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-spill") == 0) {
         run_probe_spill();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-deltalink") == 0) {
+        run_probe_deltalink();
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--fuzz") == 0) {

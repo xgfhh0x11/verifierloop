@@ -73,16 +73,26 @@ fi
 # 4. Verify BTF is embedded in the FINAL artifact (the point of the pahole
 #    prerequisite). Authoritative confirmation is in-VM (/sys/kernel/btf/vmlinux,
 #    checked by scripts/verify-vm.sh); this is the static cross-check.
-if readelf -S "$LAB/build/vmlinux" 2>/dev/null | grep -qE '\.BTF([[:space:]]|_ids)'; then
-  echo "[build] .BTF section present in vmlinux (confirm in-VM with verify-vm.sh)"
+#
+#    EVERY LINE BELOW MUST DESCRIBE THE BUILD THAT JUST RAN. Until 0087 the three
+#    closing lines were unconditional: a variant build checked BTF on the SHARED
+#    vmlinux, announced a vmlinux it had not written, and printed the MAIN tree's
+#    revision. All three were false for a variant, and each one is the same shape as
+#    the stale artefact 0085 lost a measurement to — a report about the wrong image.
+VMLINUX_HERE="vmlinux"                      # the one this build produced, in $SRC
+if readelf -S "$VMLINUX_HERE" 2>/dev/null | grep -qE '\.BTF([[:space:]]|_ids)'; then
+  echo "[build] .BTF section present in $SRC/vmlinux (confirm in-VM with verify-vm.sh)"
 else
-  echo "[build] WARNING: no .BTF section in $LAB/build/vmlinux"
+  echo "[build] WARNING: no .BTF section in $SRC/vmlinux"
 fi
 echo "[build] bzImage  -> $OUT ($(du -h "$BZ" | cut -f1))"
-echo "[build] vmlinux  -> $LAB/build/vmlinux"
 if [ "$OUT" != "$LAB/build/bzImage" ]; then
+  echo "[build] vmlinux  -> $SRC/vmlinux  (variant; the shared $LAB/build/vmlinux was left alone)"
   echo "[build] config   -> ${OUT}.config  (variant; the shared config was left alone)"
 else
+  echo "[build] vmlinux  -> $LAB/build/vmlinux"
   echo "[build] config   -> $LAB/build/kernel.config"
 fi
-echo "[build] revision -> $(cat "$LAB/kernel.rev" 2>/dev/null || echo unknown)"
+# The revision of the tree that was actually built. `.lab/kernel.rev` records the MAIN
+# tree and says nothing about a worktree parked at some fix's parent.
+echo "[build] revision -> $(git -C "$SRC" rev-parse HEAD 2>/dev/null || cat "$LAB/kernel.rev" 2>/dev/null || echo unknown)"

@@ -6338,3 +6338,134 @@ Yani enstrüman program açlığı çekmiyor. **Çözülmüş bir yüzeye nişan
 bulgunun en dürüst açıklaması bu, ve ilk kez bir sayı olarak duruyor.
 
 Workspace 345 yeşil.
+
+## 0087 — Sekizinci çift: "asıl av" ilk kez gerçek bir hataya karşı kalibre edildi
+
+### 1. Reviewer kararı, ve elle doğrulamanın adayı değiştirmesi
+
+0086'nın devir teslimi reviewer'a beş soru bırakmıştı. Cevap **04**'ten başlamak oldu:
+store-konumu oracle'ı — 0041'in "asıl av" dediği şey — yedi kalibrasyon çiftinin
+hiçbirinde gerçek bir hataya karşı denenmemişti. Taramanın önerdiği aday
+`22c7fa171a02` idi.
+
+**Elle doğrulama o adayı reddetti, ve sebebi bir kalıp.** `check_store_location`
+(diff.rs:881) çalışma-zamanı offset'ini verifier'ın **kendi bastığı iddiasına** karşı
+ölçüyor (`admits()`, diff.rs:1097). O hatada verifier `var_off=(0x0; 0x400), umax=1024`
+basıyor ve store tam olarak 0 ya da 1024'e iniyor — **iddia onu kabul ediyor.** Oracle
+karşılaştırmayı sayar ve "tutarlı" der. Hata "store verifier'ın demediği yere indi"
+değil; "verifier kendi iddiasını nesnenin boyutuyla hiç karşılaştırmadı" — onu gören
+`check_runtime_write_safety`, sentinel-yokluğu kanalı. 0068 ve 0070'ten sonra **üçüncü
+kez** bir tarama verdicti yanlış kanalı işaret etti.
+
+Doğru aday zaten listedeydi: **`3878ae04e9fc`** (2024-10-16). O bir *yanlış-pencere*
+hatası — verifier'ın kanısı gerçekten yanlış, `admits()`'in test ettiği şeyin ta kendisi.
+
+### 2. Çift, ve neden tip "fixed" değil
+
+`sync_linked_regs` **2026'da iki kez daha** değişmiş: `7a433e519364` (alu32 link desteği)
+ve `bc308be380c1` (yine bir ADD_CONST32 hatası). Tip'i "fixed" saymak, sessizliği yanlış
+commit'e atfetmek olurdu.
+
+Bu yüzden çift tam kuruldu: `bpf-buggy4` @ `3878ae04e9fc~1` ve `bpf-fix4` @
+`3878ae04e9fc`. İki `.config` **byte-byte aynı** (`diff` boş) — iki kernel commit'in
+dört satırında ve başka hiçbir şeyde farklı. Tip üçüncü bir kol olarak ayrı ölçüldü.
+
+### 3. Mevcut şeklin dişi olmadığının ÖLÇÜLMESİ
+
+0062 `SPL_DELTA32`'yi eklerken dürüst bir not düşmüştü: "32-bit delta LINK şeklini
+kapsıyor, wraparound tetikleyicisini değil". Bu bir iddiaydı; artık ölçüm:
+
+```
+--gen-spill, buggy4 vs tip, tohumla eşleşmiş
+  verdict farkı            : 12/12 aynı  (hiç flip yok)
+  store_locations_checked  : 48 / 48
+  finding_count            : 0 / 0
+```
+
+Şekil gerekli ama yeterli değil. Eksik olan malzemenin adı var: **taban wrap etmeli.**
+
+### 4. Mekanizma ve şekil
+
+`adjust_reg_min_max_vals()` 32-BİT bir toplama için de `BPF_ADD_CONST` damgalıyor ve
+`off = val` kaydediyor — ama kayıt **genişliği tutmuyor.** `sync_linked_regs()` sonra
+delta'yı tam 64-bit aritmetikle tekrar oynatıyor:
+
+```c
+__mark_reg_known(&fake_reg, (s32)reg->off - (s32)known_reg->off);
+copy_register_state(reg, known_reg); scalar_min_max_add(reg, &fake_reg);
+```
+
+alu32 CPU'da sıfır-genişletir, yani gerçek değer asla düşük kelimeden taşamaz — ama
+64-bit'te eklenen negatif bir delta **üst kelimeye ödünç verir.** Düzeltme `&& !alu32`.
+
+Program bakımcıların kendi selftest'inden (`verifier_linked_scalars.c`, aynı seride
+`db123e42304d`) alındı; ama onların pointer-aritmetiği yükseltmesi store'u fp+0x7FFFFFFE'ye
+sürüyor — VM'i de beraberinde götürecek yaban bir yazma. Burada ıraksak bit **tek bite**
+daraltılıp 8 bayta ölçekleniyor, böylece hem kanıtlanan hem gerçek konum **aynı 64 baytlık
+harita değerinin içinde** kalıyor. Çökmeyle gözlem arasındaki fark bu.
+
+```
+r1 = <taban> ll ; r1 /= 1     ; değer korunur, sabit düşer -> r1 bir id alır
+r2 = r1 ; r4 = r1             ; LINK: tek id, üç üye
+w2 += 0x40000000              ; alu32 -> ADD_CONST, off=0x40000000
+w4 += 0                       ; alu32 -> ADD_CONST, off=0
+if r2 == <cmp> goto L1        ; known_reg'i sabitler, sync_linked_regs'i ateşler
+L1: r4 >>= 63                 ; ıraksak bit, başka hiçbir şey
+    r4 <<= 3 ; r7 += r4       ; harita değerine 0 ya da 8 bayt
+    *(u8 *)(r7 + 0) = 0xFF    ; STORE
+```
+
+İki kol **tek şeyde** ayrılıyor — 32-bit toplama wrap ediyor mu:
+
+| kol | taban | `w2` | known_reg | verifier'ın `r4`'ü | gerçek `r4` |
+|---|---|---|---|---|---|
+| `wrap` | `0xC0000001` | wrap → 1 | 1 | `0xFFFFFFFFC0000001` | `0xC0000001` |
+| `nowrap` | `0x00000001` | `0x40000001` | `0x40000001` | `1` | `1` |
+
+### 5. Sonuç
+
+`--probe-deltalink`, üç kernel, aynı program:
+
+```
+buggy : R7_w=map_value(ks=4,vs=64,off=8)   store_off=0   -> 1 store_location_desync
+fixed : R7_w=map_value(ks=4,vs=64)         store_off=0   -> 0
+tip   : R7_w=map_value(ks=4,vs=64)         store_off=0   -> 0
+store_locations_checked = 2 / 2 / 2
+```
+
+Her üç kernel'de **iki kol da kabul ediliyor** — verdict kanalı hiçbir şey söylemiyor.
+Bulgu yalnızca `wrap` kolunda (1/1); kontrol kolu temiz (0/1). Payda üç tarafta da aynı,
+yani sıfırlar gerçek sıfır.
+
+**0086'nın ilan ettiği boşluk kapandı:** store-konumu kanalı artık gerçek bir hataya karşı
+sertifikalı. Kanal sayımı: parsed-state ×3, verdict ×1, temiz teyit ×1, sınır ×1,
+runtime-intent ×1, **store-konumu ×1**.
+
+### 6. Aynı çiftin çizdiği sınır
+
+Aynı buggy yakalamada dört kanal daha **koştu ve sustu** — ve her biri sayıldı:
+
+| kanal | payda | bulgu | neden sustuğu |
+|---|---|---|---|
+| runtime intent (0071) | 2 | 0 | ıraksama retval'de değil, store'un YERİNDE |
+| REG_INVARIANTS | 2 | 0 | sabitlenmiş sabit + uyumlu sınırlar = iyi biçimli |
+| pruning differential | 2 | 0 | iki taraf da kendiyle tutarlı |
+| write-safety (0038) | 2 | 0 | store değerin **İÇİNDE** kaldı |
+
+Sonuncusu şeklin bütün amacı: **sınır içinde ama yanlış yerde** bir store, her sınır-tabanlı
+oracle'ın kaçırdığı sınıf — 0041'in "asıl av" dediği şeyin tanımı.
+
+### 7. Yol boyunca iki ölçüm aracı yalan söylüyordu
+
+**`measure_log` on üç paydanın altısını basıyordu.** Bir ailenin ölçülüp ölçülmediğine
+karar verdiğimiz araç, ölçümün yarısını gizliyordu — 0066'nın dersinin aynısı, bu sefer
+kendi aletimizde. Artık liste elle yazılmıyor: `INVARIANT_DENOMINATORS`'tan türetiliyor,
+yani yeni bir invariant'ın paydası unutulamaz.
+
+**`build-kernel.sh`'in kapanış satırları bir varyant build'de üçü de yanlıştı**: BTF'i
+PAYLAŞILAN `vmlinux` üzerinde kontrol ediyor, yazmadığı bir vmlinux'u duyuruyor, ve ANA
+ağacın revizyonunu basıyordu. Kopyalama doğruydu (0085'in koruması tuttu, paylaşılan
+vmlinux'a dokunulmadı) — yanlış olan rapordu, ki 0085'in kaybettiği ölçümün şekli tam
+olarak buydu: yanlış imaj hakkında bir rapor.
+
+Workspace 350 yeşil.

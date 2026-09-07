@@ -76,6 +76,19 @@ const SP_FIXED: &str = include_str!("fixtures/calibration/spill-811c363645b3-fix
 const MV_BUGGY: &str = include_str!("fixtures/calibration/mov32-3cf2b61eb067-buggy.log");
 const MV_FIXED: &str = include_str!("fixtures/calibration/mov32-3cf2b61eb067-fixed.log");
 
+/// The EIGHTH pair (devlog 0087): commit 3878ae04e9fc — the first pair aimed at the
+/// STORE-LOCATION channel, which 0041 named "the hunt" and which no real bug had ever
+/// exercised. All three halves are real captures from `--probe-deltalink`.
+///
+/// `buggy` is 3878ae04e9fc~1 and `fixed` is 3878ae04e9fc itself, built from BYTE-IDENTICAL
+/// .config files: the two kernels differ in the commit's four lines and nothing else. The
+/// tip capture is kept separately because it is NOT a substitute for `fixed` — two further
+/// fixes to the very same function (7a433e519364, bc308be380c1) landed after it, so a
+/// silence at tip could belong to either of them.
+const DL_BUGGY: &str = include_str!("fixtures/calibration/deltalink-3878ae04e9fc-buggy.log");
+const DL_FIXED: &str = include_str!("fixtures/calibration/deltalink-3878ae04e9fc-fixed.log");
+const DL_TIP: &str = include_str!("fixtures/calibration/deltalink-3878ae04e9fc-tip.log");
+
 fn run_diff(text: &str, tag: &str) -> (normalize::NormalizedMetrics, diff::DiffFindings) {
     let dir = std::env::temp_dir().join(format!("vl-cal-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -968,4 +981,171 @@ fn a_constant_scalars_bounds_are_synthesized_and_must_not_be_counted() {
             .any(|r| r.reg_type == "scalar" && r.tnum.mask == 0 && r.bounds_from_log),
         "that era printed `scalar(imm=0,umax=1,var_off=(0x0; 0x0))` — an independent umax"
     );
+}
+
+
+// ===========================================================================================
+// PAIR EIGHT — 3878ae04e9fc: the store-location channel, calibrated against a real bug
+// ===========================================================================================
+//
+// `adjust_reg_min_max_vals()` stamped BPF_ADD_CONST for a 32-BIT add without recording the
+// width, and `sync_linked_regs()` then replayed that delta in full 64-bit arithmetic. When
+// the CPU zero-extends but a negative delta borrows below zero, the verifier's constant
+// grows an upper word the real value can never have.
+//
+// WHY THIS PAIR BELONGS TO THIS CHANNEL AND NO OTHER. The resulting state is a pinned
+// constant with tnum and bounds in agreement: internally consistent, so every consistency
+// invariant is silent by construction. The verdict is ACCEPT on both kernels, so the verdict
+// channel is silent too. The program returns 1 either way, so the intent oracle is silent.
+// What is wrong is only the RELATION between the proof and reality — the verifier proves the
+// store lands at map_value+8, the CPU puts it at map_value+0 — and check_store_location is
+// the one oracle whose reference is the runtime landing site.
+//
+// The two arms differ in ONE thing: whether the 32-bit add wraps. 0062 added this bug's LINK
+// shape to --gen-spill but explicitly not its wraparound trigger, and named that gap; the
+// control arm is that missing ingredient isolated as a variable.
+
+fn dl_labelled_findings(text: &str, tag: &str) -> Vec<(String, String)> {
+    let (norm, out) = run_diff(text, tag);
+    out.findings
+        .iter()
+        .map(|f| {
+            let label = f
+                .record_index
+                .and_then(|i| norm.records.get(i as usize))
+                .and_then(|r| r.source_label.clone())
+                .unwrap_or_default();
+            (label, f.kind.clone())
+        })
+        .collect()
+}
+
+/// THE HEADLINE: the store-location oracle fires on the kernel that had the bug, and is
+/// silent on the kernel that fixed it — with the same denominator on both sides, so the
+/// zero is a real zero and not a comparison that never ran.
+#[test]
+fn deltalink_the_store_location_oracle_fires_only_on_the_kernel_that_had_the_bug() {
+    let (_, buggy) = run_diff(DL_BUGGY, "dl-b");
+    let (_, fixed) = run_diff(DL_FIXED, "dl-f");
+    let (_, tip) = run_diff(DL_TIP, "dl-t");
+
+    assert_eq!(
+        buggy.findings.iter().filter(|f| f.kind == "store_location_desync").count(),
+        1,
+        "{:?}",
+        buggy.findings
+    );
+    assert_eq!(buggy.summary.finding_count, 1, "{:?}", buggy.findings);
+    assert_eq!(fixed.summary.finding_count, 0, "{:?}", fixed.findings);
+    assert_eq!(tip.summary.finding_count, 0, "{:?}", tip.findings);
+
+    // The denominator behind all three numbers. Two accepted programs, one store sample
+    // each: without this the fixed side's zero would be indistinguishable from a capture
+    // the oracle never looked at.
+    for (name, s) in [
+        ("buggy", &buggy.summary),
+        ("fixed", &fixed.summary),
+        ("tip", &tip.summary),
+    ] {
+        assert_eq!(s.store_locations_checked, 2, "{name}");
+    }
+}
+
+/// THE CONTROL: the finding belongs to the `wrap` arm and only to it. Both arms are the
+/// same program with the same instructions; they differ in the base constant, and therefore
+/// in whether the 32-bit add wraps. If the control fired too, the finding would be about
+/// the shape rather than about the wraparound.
+#[test]
+fn deltalink_the_control_arm_isolates_the_wraparound() {
+    let hits = dl_labelled_findings(DL_BUGGY, "dl-b-arm");
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert!(
+        hits[0].0.ends_with("wrap") && !hits[0].0.ends_with("nowrap"),
+        "the finding must be the wrapping arm's: {hits:?}"
+    );
+    assert_eq!(hits[0].1, "store_location_desync");
+
+    // And both arms really were accepted and really did store, on both kernels — otherwise
+    // "the control is clean" would just mean the control never ran.
+    for (text, tag) in [(DL_BUGGY, "dl-b-dec"), (DL_FIXED, "dl-f-dec")] {
+        let d = decisions(text, tag);
+        assert_eq!(d.len(), 2, "{d:?}");
+        assert!(d.iter().all(|(_, v)| v == "Accept"), "{d:?}");
+        assert_eq!(text.matches("executed=1").count(), 2, "both stores must execute");
+        assert_eq!(text.matches("store_off=0 ").count(), 2, "both land at 0 at runtime");
+    }
+}
+
+/// THE DIFFERENCE IS IN THE LOG, and it is a claim about the world rather than a
+/// contradiction inside the state — which is precisely why only a runtime reference can
+/// judge it. The buggy kernel prints an `off=8` for the store's base register; the fixed
+/// one proves offset 0, the same place the CPU uses.
+#[test]
+fn deltalink_the_wrong_offset_is_printed_but_contradicts_nothing() {
+    assert!(
+        DL_BUGGY.contains("R7_w=map_value(ks=4,vs=64,off=8)"),
+        "the buggy kernel must prove the store at +8"
+    );
+    assert!(
+        !DL_FIXED.contains("off=8"),
+        "the fixed kernel must not: the link is not created at all"
+    );
+    // No consistency invariant sees it, on either side — the state is self-consistent.
+    let (_, buggy) = run_diff(DL_BUGGY, "dl-b-cons");
+    assert!(
+        !buggy.findings.iter().any(|f| f.kind.starts_with("tnum")
+            || f.kind.ends_with("_inverted")
+            || f.kind == "reg32_reg64_inconsistent"),
+        "{:?}",
+        buggy.findings
+    );
+}
+
+/// THE BOUNDARY THIS PAIR ALSO DRAWS. Three other channels ran on the very same buggy
+/// capture and stayed silent, each for a reason that is a property of the bug and not of
+/// the capture. Counting them is what turns "the other oracles said nothing" from an
+/// absence into a measurement.
+#[test]
+fn deltalink_the_other_channels_ran_and_were_silent() {
+    let (_, buggy) = run_diff(DL_BUGGY, "dl-b-chan");
+
+    // The intent oracle (0071) compared the generator's own claim against the observed
+    // retval, twice — and agreed: the divergence is in WHERE the store went, never in what
+    // the program returned.
+    assert_eq!(buggy.summary.runtime_intent_checked, 2);
+    assert!(!buggy.findings.iter().any(|f| f.kind == "runtime_intent_violation"));
+
+    // BPF_F_TEST_REG_INVARIANTS loaded both programs and found nothing to fault: a pinned
+    // constant with matching bounds is exactly what that checker calls well-formed.
+    assert_eq!(buggy.summary.reg_invariants_checked, 2);
+    assert!(!buggy.findings.iter().any(|f| f.kind == "reg_invariants_violation"));
+
+    // The pruning differential ran on both programs and both kernels agreed with
+    // themselves under BPF_F_TEST_STATE_FREQ.
+    assert_eq!(buggy.summary.prune_pairs_checked, 2);
+    assert!(!buggy.findings.iter().any(|f| f.kind.starts_with("prune_")));
+
+    // And the memory-safety oracle saw a store that stayed INSIDE the value — which is the
+    // whole point of the shape: an in-bounds store in the wrong place is the class every
+    // bounds-only oracle misses.
+    assert_eq!(buggy.summary.runtime_writes_checked, 2);
+    assert!(!buggy.findings.iter().any(|f| f.kind == "runtime_oob_write"));
+}
+
+/// NO BLIND SPOTS: every block parsed, on all three kernels. A pair that silently failed to
+/// parse would report a clean fixed side for the wrong reason — the trap 0065 fell into.
+#[test]
+fn deltalink_every_block_parses_on_all_three_kernels() {
+    for (text, tag) in [(DL_BUGGY, "dl-b-p"), (DL_FIXED, "dl-f-p"), (DL_TIP, "dl-t-p")] {
+        let (norm, _) = run_diff(text, tag);
+        assert_eq!(norm.records.len(), 2, "{tag}");
+        assert_eq!(
+            norm.unparsed
+                .iter()
+                .filter(|u| u.kind == normalize::UnparsedKind::Unrecognized)
+                .count(),
+            0,
+            "{tag}"
+        );
+    }
 }
