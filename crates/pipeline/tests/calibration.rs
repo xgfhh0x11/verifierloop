@@ -1232,3 +1232,73 @@ fn the_flag_differential_cannot_see_a_prune_the_baseline_already_takes() {
         "the flag must demonstrably have changed the state space"
     );
 }
+
+// ===========================================================================================
+// PAIR TWELVE — bc308be380c1: the verifier accepts, the kernel dies
+// ===========================================================================================
+//
+// `sync_linked_regs()` propagated a delta between two registers linked to the same base but
+// advanced with DIFFERENT ALU widths, then applied `zext_32_to_64()` because the 32-bit flag
+// sat on `known_reg`. The commit spells out the consequence: "the CPU does NOT zero-extend
+// it. The actual CPU value of r8 is 0xFFFFFFFE + 2 = 0x100000000, not 0. The verifier now
+// underestimates r8's 64-bit bounds, which is a soundness violation."
+//
+// The arms differ in ONE instruction, the width of a single add: `r8 += 2` (alu64) against
+// `w8 += 2` (alu32). In the control both links are 32-bit, the zext the verifier applies is
+// CORRECT, and verifier and CPU agree on offset 0.
+//
+// WHAT THE MEASUREMENT SHOWED, and it is the strongest evidence this instrument has produced:
+// on the buggy kernel the trigger is ACCEPTED, and running it faults inside the JITed program:
+//
+//     RESULT decision=accept
+//     BUG: unable to handle page fault for address: ffff888105d1c528
+//     Oops: 0002 [#1] SMP KASAN NOPTI            <- 0002: a WRITE fault
+//     RIP: 0010:bpf_prog_08e3cb6c8754a5c4+0xaf   <- inside the program itself
+//     bpf_test_run+0x468 / bpf_prog_test_run_skb+0xf97
+//
+// AND THE BOUNDARY THAT COMES WITH IT. The channel this pair was built for —
+// `check_runtime_write_safety`, which reports a sentinel that never arrives — cannot report
+// it, because the observation requires surviving the store and the store is fatal by
+// construction. The divergence is 4 GB; nothing lands inside a 64-byte map value and nothing
+// returns to print a RUNTIME line. For this class the detector is the CRASH, which is why
+// `run-harness-vm.sh` now names an oops instead of losing the run as "markers not found".
+//
+// Three kinds of boundary have now been measured, and they are different: 0068 (the class is
+// outside the instrument), 0092 (the detector's own flag cannot create the condition), and
+// this one (the observation requires surviving an event that is fatal by construction).
+
+const MW_FIXED: &str = include_str!("fixtures/calibration/mixwidth-bc308be380c1-fixed.log");
+const MW_TIP: &str = include_str!("fixtures/calibration/mixwidth-bc308be380c1-tip.log");
+const MW_CRASH: &str = include_str!("fixtures/calibration/mixwidth-bc308be380c1-buggy-crash.txt");
+
+/// THE FIX IS WHAT REJECTS IT, and the control shows the rejection is about the add's width.
+#[test]
+fn the_mixed_width_link_is_rejected_once_the_propagation_is_skipped() {
+    for (text, tag) in [(MW_FIXED, "mw-f"), (MW_TIP, "mw-t")] {
+        let d = decisions(text, tag);
+        assert_eq!(d.len(), 2, "{d:?}");
+        assert!(d[0].0.ends_with("mixed") && d[1].0.ends_with("same"), "{d:?}");
+        assert_ne!(d[0].1, "Accept", "{tag}: the mixed-width trigger must be rejected");
+        assert_eq!(d[1].1, "Accept", "{tag}: the same-width control must not move");
+    }
+    // The control really runs and really stores, at the offset the verifier proved. Without
+    // this the rejection above could be about the shape rather than the width.
+    assert!(MW_FIXED.contains("input=0xfffffffe retval=0x00000001 store_off=0"));
+    assert!(MW_FIXED.contains("executed=1"));
+}
+
+/// THE BUGGY KERNEL ACCEPTED IT AND THEN DIED. Pinned from the serial console, because the
+/// harness never got to print a result: this is the one finding whose evidence is an oops.
+#[test]
+fn the_buggy_kernel_accepts_the_program_and_faults_running_it() {
+    assert!(MW_CRASH.contains("RESULT decision=accept"), "the verifier accepted it");
+    assert!(
+        MW_CRASH.contains("BUG: unable to handle page fault"),
+        "and the kernel faulted running it"
+    );
+    // `Oops: 0002` — bit 1 set is a WRITE fault, which is what an out-of-bounds store is.
+    assert!(MW_CRASH.contains("Oops: 0002"), "a WRITE fault, not a read");
+    // Inside the JITed program, reached through the test-run path: not incidental noise.
+    assert!(MW_CRASH.contains("RIP: 0010:bpf_prog_"), "the fault is inside the program");
+    assert!(MW_CRASH.contains("bpf_test_run+"), "reached through BPF_PROG_TEST_RUN");
+}

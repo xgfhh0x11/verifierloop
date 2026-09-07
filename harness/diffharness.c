@@ -5922,6 +5922,169 @@ static void run_probe_idbase(void) {
     close(map_out);
 }
 
+// ---- calibration probe: the mixed-width linked delta (--probe-mixwidth) ----------------
+// Calibration pair TWELVE (bc308be380c1, "bpf: Fix sync_linked_regs regarding
+// BPF_ADD_CONST32 zext propagation", 2026-03-19) — aimed at the RUNTIME WRITE-SAFETY
+// channel, which no real bug has ever exercised.
+//
+// THE BUG this arm targets is the commit's THIRD worked example, the mixed-width one. Two
+// registers linked to the same base, one advanced with alu32 and the other with alu64:
+//
+//     r7 = r6 ; w7 += 1      -- r7.id = N | BPF_ADD_CONST32   (CPU zero-extends)
+//     r8 = r6 ; r8 += 2      -- r8.id = N | BPF_ADD_CONST64   (CPU does NOT)
+//     if w7 < 0xFFFFFFFF ... -- pins r7, and sync_linked_regs propagates to r8
+//
+// The delta relationship does not hold across widths, but the buggy sync propagated anyway
+// and then applied `zext_32_to_64()` because KNOWN_REG carried the 32-bit flag. The commit
+// states the consequence: "the CPU does NOT zero-extend it. The actual CPU value of r8 is
+// 0xFFFFFFFE + 2 = 0x100000000, not 0. The verifier now underestimates r8's 64-bit bounds,
+// which is a soundness violation."
+//
+// WHY WRITE-SAFETY AND NOT STORE-LOCATION. The verifier proves the store offset is 0; the
+// CPU uses 0x100000000. Those differ by 4 GB, so the sentinel cannot land anywhere inside a
+// 64-byte map value and `store_off=none` is what comes back — which check_store_location
+// skips by design ("an absent sentinel is an OOB write, which check_runtime_write_safety
+// already reports"). The two other worked examples in that commit are invisible to every
+// oracle we have: one is an over-estimate, and the other is a case the old code got right.
+//
+// THE ARMS DIFFER IN ONE INSTRUCTION, and it is the width of a single add:
+//   mixed  `r8 += 2`  (alu64) -- r8 carries ADD_CONST64 while r7 carries ADD_CONST32
+//   same   `w8 += 2`  (alu32) -- both are 32-bit, the zext the verifier applies is CORRECT,
+//                                and the CPU agrees. Verifier and runtime both put the store
+//                                at offset 0, the sentinel is found, nothing fires.
+static void run_probe_mixwidth(void) {
+    static const struct { const char *name; int alu64; } ARMS[] = {
+        {"mixed", 1},   /* trigger: alu64 on r8 against alu32 on r7 */
+        {"same",  0},   /* control: both 32-bit                     */
+    };
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 16; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    m.value_size = RTW_VALUE_SIZE;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
+        printf("===PROG mixwidth#bc308be380c1 type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+
+    for (unsigned a = 0; a < sizeof(ARMS) / sizeof(ARMS[0]); a++) {
+        struct bpf_insn ins[48];
+        int n = 0, jexit[4], nx = 0;
+
+        /* The input map first: r6 takes a 32-bit value from it, which is what constrains the
+           base to [0, U32_MAX] without a 64-bit jump immediate. */
+        ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+        ins[n++] = (struct bpf_insn){0};
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+        jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);
+
+        /* The output map, BEFORE the link is built: a helper call clobbers r0-r5, and r9 is
+           callee-saved so the pointer survives the rest of the program. */
+        ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+        ins[n++] = (struct bpf_insn){0};
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+        jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_9, BPF_REG_0);
+
+        /* The link, and the one instruction the arms differ in. */
+        ins[n++] = BPF_MOV64_REG(BPF_REG_7, BPF_REG_6);
+        ins[n++] = BPF_ALU32_IMM(BPF_ADD, BPF_REG_7, 1);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_8, BPF_REG_6);
+        ins[n++] = ARMS[a].alu64 ? BPF_ALU64_IMM(BPF_ADD, BPF_REG_8, 2)
+                                 : BPF_ALU32_IMM(BPF_ADD, BPF_REG_8, 2);
+        /* Pin r7 to 0xFFFFFFFF on the fall-through. The compare is 32-bit because the
+           constant does not fit a positive s32 immediate. */
+        jexit[nx++] = n;
+        ins[n++] = BPF_JMP32_IMM(BPF_JLT, BPF_REG_7, -1, 0);
+
+        ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_9, BPF_REG_8);
+        const int store_insn = n;
+        ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_9, 0, -1);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);
+        ins[n++] = BPF_EXIT_INSN();
+        const int exit0 = n;
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+        ins[n++] = BPF_EXIT_INSN();
+        for (int i = 0; i < nx; i++) ins[jexit[i]].off = exit0 - jexit[i] - 1;
+
+        g_log[0] = '\0';
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 2;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        int lerr = errno;
+
+        printf("===PROG mixwidth#bc308be380c1#%s type=socket_filter ===\n", ARMS[a].name);
+        printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+               fd >= 0 ? "accept" : "reject", fd >= 0 ? 1 : -1, fd >= 0 ? 0 : lerr);
+        printf("STORE insn=%d reg=9 off=0 size=1\n", store_insn);
+
+        if (fd >= 0) {
+            /* The input that makes w7 wrap to 0xFFFFFFFF is r6 = 0xFFFFFFFE, which is the
+               only value that reaches the store at all — the branch sends every other one to
+               the exit, and `executed=` records which happened. */
+            unsigned char pkt[64], zero[RTW_VALUE_SIZE], out[RTW_VALUE_SIZE], val[16];
+            memset(pkt, 0, sizeof(pkt));
+            static const uint32_t INS[2] = {0xFFFFFFFEu, 0x00000001u};
+            for (int i = 0; i < 2; i++) {
+                memset(zero, 0, sizeof(zero)); memset(val, 0, sizeof(val));
+                memcpy(val, &INS[i], 4);
+                int ue = rt_map_set_bytes(map_in, 0, val);
+                int ze = rt_map_set_bytes(map_out, 0, zero);
+                union bpf_attr t;
+                memset(&t, 0, sizeof(t));
+                t.test.prog_fd = fd;
+                t.test.data_in = (uint64_t)(unsigned long)pkt;
+                t.test.data_size_in = sizeof(pkt);
+                t.test.repeat = 1;
+                int r = bpf(BPF_PROG_TEST_RUN, &t, sizeof(t));
+                memset(out, 0, sizeof(out));
+                int ge = rt_map_get(map_out, 0, out);
+                if (r < 0 || ue < 0 || ze < 0 || ge < 0) {
+                    printf("RUNTIME input=0x%08x error=1 testrun_errno=%d\n",
+                           INS[i], r < 0 ? errno : 0);
+                    continue;
+                }
+                int off = -1;
+                for (int b = 0; b < RTW_VALUE_SIZE; b++)
+                    if (out[b] == RTW_SENTINEL) { off = b; break; }
+                int executed = (t.test.retval == 1);
+                if (off < 0)
+                    printf("RUNTIME input=0x%08x retval=0x%08x store_off=none store_len=0"
+                           " store_size=1 executed=%d\n", INS[i], t.test.retval, executed);
+                else {
+                    int len = 0;
+                    for (int b = off; b < RTW_VALUE_SIZE && out[b] == RTW_SENTINEL; b++) len++;
+                    printf("RUNTIME input=0x%08x retval=0x%08x store_off=%d store_len=%d"
+                           " store_size=1 executed=%d\n", INS[i], t.test.retval, off, len, executed);
+                }
+            }
+            close(fd);
+        }
+        bpflive_print_claim(ins, n);
+        printf("---LOG---\n%s\n---END---\n", g_log);
+    }
+    close(map_in); close(map_out);
+}
+
 // ---- calibration probe: the fake_reg corruption (--probe-fakereg) -----------
 // The SECOND kind of calibration. 0061 tested the oracle against a bug whose inconsistent
 // state the commit message printed, so no kernel had to be built. This one cannot work
@@ -9388,6 +9551,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-idbase") == 0) {
         run_probe_idbase();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-mixwidth") == 0) {
+        run_probe_mixwidth();
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--fuzz") == 0) {

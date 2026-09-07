@@ -6903,3 +6903,63 @@ parsed-state ×3, verdict ×1, temiz teyit ×1, sınır ×**3** (af9e89d8dd39, 8
 2f2ec8e7730e), runtime-intent ×1, store-konumu ×1, canlılık-kapısı ×1.
 
 Workspace 367 yeşil.
+
+## 0093 — Onikinci çift: verifier kabul ediyor, kernel ölüyor
+
+### 1. Hedef ve kanal
+
+`bc308be380c1`'in üç işlenmiş örneğinden yalnız üçüncüsü bir kanala düşüyordu (ajan
+doğrulaması): karışık genişlikli bağ. `r7 = r6; w7 += 1` (alu32) ile `r8 = r6; r8 += 2`
+(alu64) aynı tabana bağlı ama farklı genişlikte; delta ilişkisi genişlikler arasında geçerli
+değil, ama hatalı `sync_linked_regs` yine de yayıyor ve `known_reg` 32-bit bayrağı taşıdığı
+için `zext_32_to_64()` uyguluyor. Commit'in cümlesi: *"the CPU does NOT zero-extend it. The
+actual CPU value of r8 is 0x100000000, not 0."*
+
+İki kol **tek bir komutun genişliğinde** ayrılıyor: `r8 += 2` (alu64) ve `w8 += 2` (alu32).
+
+### 2. Ölçüm
+
+```
+fixed / tip:  mixed = REJECT      same = accept, store_off=0, executed=1
+buggy:        mixed = ACCEPT      ... ve kernel öldü
+```
+
+Buggy kernel'in serial konsolundan:
+
+```
+RESULT decision=accept
+BUG: unable to handle page fault for address: ffff888105d1c528
+Oops: 0002 [#1] SMP KASAN NOPTI              <- 0002: YAZMA hatası
+RIP: 0010:bpf_prog_08e3cb6c8754a5c4+0xaf     <- JIT'lenmiş programın İÇİ
+bpf_test_run+0x468 / bpf_prog_test_run_skb+0xf97
+```
+
+**Verifier programı kabul etti, program kernel'de sınır dışına yazdı, kernel paniklendi.**
+Bu enstrümanın ürettiği en güçlü kanıt: gerçek bir commit'ten yeniden üretilmiş, kontrol kollu
+bir bellek güvenliği ihlali.
+
+### 3. Ve beraberinde gelen sınır
+
+Bu çift **`check_runtime_write_safety`** için kurulmuştu — hiç kalibre edilmemiş kanal. O
+oracle bunu **raporlayamıyor**: gözlemi yapabilmek için store'dan sağ çıkmak gerekiyor, ve
+store yapısı gereği öldürücü. Iraksama 4 GB; 64 baytlık bir map değerinin içine hiçbir şey
+inmiyor ve bir RUNTIME satırı basmak için geri dönen kimse yok.
+
+**Bu sınıfın dedektörü çökmenin kendisi.** O yüzden `run-harness-vm.sh` artık oops'u
+adlandırıyor: serial'ı saklıyor, BUG ve RIP satırlarını basıyor, ve kabul edilmiş bir program
+ardından geldiyse bunu bir verifier bulgusu olarak işaretliyor. Önceden bu koşu
+"markers not found" ile tamamen kaybediliyordu — yani enstrümanın üretebileceği en güçlü
+kanıt, bir harness arızası gibi görünüyordu.
+
+### 4. Üç farklı sınır, ve farkları
+
+| bacak | sınırın türü |
+|---|---|
+| 0068 `af9e89d8dd39` | sınıf enstrümanın tamamen dışında (aşırı-red) |
+| 0092 `2f2ec8e7730e` | dedektörün kendi bayrağı koşulu yaratamıyor |
+| 0093 `bc308be380c1` | gözlem, yapısı gereği öldürücü bir olaydan sağ çıkmayı gerektiriyor |
+
+Üçü de "oracle sustu" diye özetlenebilirdi; hiçbiri aynı şey değil, ve üçü de ayrı bir
+tamir gerektiriyor.
+
+Workspace 369 yeşil.

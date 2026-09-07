@@ -70,6 +70,26 @@ if grep -q "===HARNESS-BEGIN===" "$SERIAL" && grep -q "===HARNESS-END===" "$SERI
   sed -n '/===HARNESS-BEGIN===/,/===HARNESS-END===/p' "$SERIAL" | sed '1d;$d' | tr -d '\r' > "$OUT"
   echo "[harness-vm] captured $(grep -c '===PROG' "$OUT" || echo 0) program block(s) -> $OUT"
 else
+  # A MISSING END MARKER IS NOT ALWAYS A HARNESS FAILURE. 0093 measured a calibration pair
+  # (bc308be380c1) where the verifier ACCEPTS a program whose runtime store lands 4 GB out of
+  # bounds: the kernel oopses inside the JITed program and the VM dies before the harness can
+  # print anything. Treating that as "markers not found" throws away the strongest evidence
+  # this instrument can produce -- a verifier-accepted program that crashes the kernel.
+  #
+  # So the two cases are separated by name. The serial log is preserved either way, because
+  # it is the only record of what happened.
+  CRASHLOG="${OUT%.log}-crash-serial.log"
+  if grep -qE "BUG: unable to handle|Oops: |general protection fault|Kernel panic" "$SERIAL"; then
+    cp "$SERIAL" "$CRASHLOG"
+    echo "[harness-vm] KERNEL CRASH while running the harness -- serial saved to $CRASHLOG" >&2
+    grep -m1 -E "BUG: unable to handle|general protection fault" "$SERIAL" >&2 || true
+    grep -m1 -E "^\[[ 0-9.]+\] RIP: " "$SERIAL" >&2 || true
+    # An oops under an ACCEPTED program is a finding about the verifier, not about us.
+    if grep -q "RESULT decision=accept" "$SERIAL"; then
+      echo "[harness-vm] the crash followed an ACCEPTED program: treat as a verifier finding" >&2
+    fi
+    exit 2
+  fi
   echo "[harness-vm] FAILED: markers not found. Last 30 serial lines:" >&2
   tail -30 "$SERIAL" >&2
   exit 1
