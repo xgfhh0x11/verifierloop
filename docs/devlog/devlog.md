@@ -6762,3 +6762,70 @@ differential'ın **43,379 çifti ve sıfır flip'i var** — yani o oracle hiç 
 dokunmadığı için mümkün olan en temiz pozitif kontrol.
 
 Workspace 363 yeşil.
+
+## 0091 — Referansın kendi kalibrasyonu: kernel'in selftest'i modelde üç hata buldu
+
+### 1. Neden bu gerekiyordu
+
+`bpflive.h`'in başlığı, tüm kapı-oracle'ının dayandığı önkoşulu kendisi yazıyor: fazla büyük
+bir canlılık **aynı zamanda kaba bir analizin ürettiği** şey olduğu için, model yargılamaya
+başlamadan önce kernel'inki kadar hassas olmak zorunda. 0088'e kadar bunun kanıtı bizim
+kendi ürettiğimiz üç aileydi — yani modelin yanında yazılmış korpuslar.
+
+Eksik korpusu kernel'in kendisi taşıyor:
+`tools/testing/selftests/bpf/progs/compute_live_registers.c`, **20 elle yazılmış program**,
+her biri her komut için verifier'ın basması gereken satırla anotasyonlu. O `__msg` satırları,
+`bpflive.h`'in kopyaladığı analiz için **bakımcılar tarafından bakımı yapılan bir oracle** —
+bu projedeki, kendi modelimizden türetilmemiş tek referans.
+
+20'nin 15'i harness'ın komut altkümesinde. Kalan beşi arena, LD_ABS, subprog çağrısı ya da
+dolaylı-atlama haritası istiyor ve kapsam dışı olarak **adlandırılarak** bırakıldı.
+
+### 2. Üç hata, hepsi sahte-bulgu yönünde
+
+| hata | ne | maliyet |
+|---|---|---|
+| `gotol` | `BPF_JMP32\|BPF_JA`, yer değiştirme `off`'ta değil **`imm`**'de | atlama fall-through sanılıyor, sonraki her satır bozuk |
+| `BPF_LOAD_ACQ` | operandları **ters** olan tek atomik (dst değer, src adres); `imm=0x100` olduğu için FETCH biti kapalı | genel kural onu hedefin okunması sayıyordu, 5 satır |
+| listelenmemiş helper | varsayılan **5 argüman** | `bpf_trace_printk` (proto'suna göre 2) r3/r4/r5'i yalancı canlı yapıyordu, 5 satır |
+
+Üçüncüsü yapısal ve en ciddisi. Varsayılanı "5 argüman" yaparken gerekçem *"daha fazla canlı
+demek muhafazakârdır"* idi. **Bu tam tersi:** "daha fazla canlı", `check_liveness_gate`'in
+bulgu saydığı yön. Yani tablomda olmayan her helper, en çok önem verdiğim yönde duran bir
+yalan. Artık listelenmemiş helper **reddediliyor** — reddetmek bir program kaybettirir,
+tahmin etmek oracle'ın itibarını.
+
+Dördüncü bir gizli delik de kapatıldı: `gotox` (`BPF_JA|BPF_X`, hedefi register'da) sessizce
+fall-through sayılıyordu; artık reddediliyor.
+
+**Dördünün de ortak özelliği: hiçbir ailemiz bu şekilleri üretmiyor.** Yani hiçbiri bizim
+korpusumuzdan çıkamazdı. Bağımsız bir referansın neden *bağımsız bir kalibrasyona* ihtiyacı
+olduğunun tanımı bu.
+
+### 3. Ölçüm
+
+```
+--probe-livetraps, bugünkü kernel
+  15 program, 15 kabul, 0 reddedilen model dışı
+  1080 hücre karşılaştırıldı, UYUM %100
+  kernel=CANLI/biz=ÖLÜ : 0        kernel=ÖLÜ/biz=CANLI : 0
+  liveness_gate_checked = 132     finding_count = 0     parser_unrecognized = 0
+```
+
+Düzeltmelerden önce iki vaka (`atomic_load_acq_store_rel`, `regular_call`) on satırda
+uyuşmuyordu; şimdi sıfır.
+
+Regresyon: `--gen-spill` 571 hücre, `--gen-prune` 491 hücre, ikisi de 0 bulgu ve 0 reddedilen
+— düzeltmeler mevcut ölçümleri kımıldatmadı.
+
+### 4. Operasyonel: VM'ler sırayla koşar
+
+Turda bir korpus koşusunu kaybettim. Arka planda `--gen-comp` koşarken ikinci bir VM
+başlattım; `run-harness-vm.sh` rootfs'i loop-mount edip `/root/run-harness.sh`'i yazdığı
+için ikinci koşu, birincisi boot ederken init script'ini değiştirdi. Sonuç: VM koştu, kapandı,
+ve marker'lar bulunamadı — kalıcı hasar yok ama ölçüm yok.
+
+Kernel build'leri paralel koşabilir (dosya sistemine dokunmuyorlar); **VM koşuları
+koşamaz.** Bu bir harness sınırı, ve [[harness-gotchas]]'a yazıldı.
+
+Workspace 365 yeşil.

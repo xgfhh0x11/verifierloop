@@ -5271,6 +5271,504 @@ static void run_probe_maygotolive(void) {
     }
 }
 
+// ---- calibration probe: the kernel's OWN liveness selftests (--probe-livetraps) --------
+//
+// WHY THIS EXISTS. bpflive.h is an independent re-implementation of the verifier's
+// live-register analysis, and 0088 built the whole liveness gate on top of it. Its own
+// header states the load-bearing precondition: "because [too-large liveness] is also the
+// direction a COARSER analysis produces, this file has to be at least as precise as the
+// kernel's before it is allowed to judge." Until now the only evidence for that was
+// --probe-jsetlive, which exercises ONE opcode on TWO arms. That is a calibration of a
+// single cell, not of the model.
+//
+// The kernel ships the missing corpus itself:
+// tools/testing/selftests/bpf/progs/compute_live_registers.c is a set of hand-written
+// programs, each annotated with the EXACT liveness row the verifier is expected to print
+// for every instruction. Those __msg lines are a maintainer-maintained oracle for the
+// analysis bpflive.h duplicates — the one reference in this project that was not derived
+// from our own model. Replaying them through the harness turns "we believe bpflive.h is at
+// least as precise as the kernel" into a measurement with a denominator: 15 programs,
+// ~50 pinned instruction rows, and a named disagreement wherever there is one.
+//
+// THE DIRECTION IS STILL THE POINT. A row where bpflive says LIVE and the kernel says DEAD
+// is either a kernel bug (the finding we hunt) or a bpflive imprecision (a manufactured
+// finding, and a reason to distrust every prior zero). These selftests are the only inputs
+// where we know a priori which of the two it is, because the expected row is written down.
+// Every disagreement here is therefore a bpflive defect by construction, and the value of
+// the probe is exactly the list it produces.
+//
+// SCOPE, and what was left out. The harness emits SOCKET_FILTER programs and bpflive.h
+// models a single frame over ALU/ALU64, LDX/STX/ST (incl. ATOMIC and MEMSX), LD_IMM64,
+// JMP/JMP32 (incl. gotol and may_goto), helper CALL and EXIT. Five of the source file's
+// twenty programs fall outside that and are NOT replayed: ldabs (LD_ABS/LD_IND — bpflive
+// returns UNSUPPORTED by design), addr_space_cast (arena map + a kfunc + fentry), subprog1
+// and subprog_ret_reg_pair (BPF_PSEUDO_CALL — interprocedural, explicitly out of model),
+// and gotox (indirect jump through a BPF_MAP_TYPE_INSN_ARRAY jump table). See
+// livetraps-expected.md for the row-by-row reasons.
+//
+// WHAT IS NOT LOST BY A REJECT. bpf_compute_live_registers() runs in bpf_check() BEFORE
+// do_check_main() (verifier.c:21298), and prints its table at BPF_LOG_LEVEL2 the moment it
+// finishes. So the liveness rows appear in the log even for a program the verifier later
+// refuses — a `load` that reads uninitialised stack without CAP_PERFMON, or a store-release
+// on a kernel that predates it, still yields the signal this probe is here for. The RESULT
+// line records the verdict; it is not a gate on the measurement.
+//
+// PLACEMENT. This file is a fragment of diffharness.c: it uses g_log, bpf(), the insn
+// macros and bpflive_print_claim(). Paste it after run_probe_jsetlive() and add the
+// --probe-livetraps arm to main(). The four opcodes the harness has no macro for are
+// spelled locally below, in the same raw-struct idiom diffharness.c already uses for
+// atomics (see doc_bad_ptr_xadd and run_probe_deltalink).
+
+/* Newer opcode bits. Present in the kernel's uapi but not necessarily in distro headers,
+   so define them the way include/uapi/linux/bpf.h does — same reason BPF_MEMSX is guarded
+   at the top of diffharness.c. */
+#ifndef BPF_FETCH
+#define BPF_FETCH     0x01
+#endif
+#ifndef BPF_XCHG
+#define BPF_XCHG      (0xe0 | BPF_FETCH)
+#endif
+#ifndef BPF_CMPXCHG
+#define BPF_CMPXCHG   (0xf0 | BPF_FETCH)
+#endif
+#ifndef BPF_LOAD_ACQ
+#define BPF_LOAD_ACQ  0x100
+#endif
+#ifndef BPF_STORE_REL
+#define BPF_STORE_REL 0x110
+#endif
+#ifndef BPF_JCOND
+#define BPF_JCOND     0xe0
+#endif
+#ifndef BPF_MAY_GOTO
+#define BPF_MAY_GOTO  0
+#endif
+
+/* An atomic RMW, spelled exactly as the kernel's own BPF_ATOMIC_OP: DST holds the ADDRESS
+   and SRC the operand — except for BPF_LOAD_ACQ, where the roles are REVERSED (DST is the
+   value destination, SRC the address). That reversal is the single most likely place for an
+   independent analysis to be wrong, which is why the selftest pins it. */
+#define LT_ATOMIC(SIZE, OP, DST, SRC, OFF)                                     \
+    ((struct bpf_insn){.code = BPF_STX | BPF_SIZE(SIZE) | BPF_ATOMIC,          \
+                       .dst_reg = DST, .src_reg = SRC, .off = OFF, .imm = (OP)})
+
+/* Byte-order conversion: reads AND writes dst, which is what makes it different from a
+   MOV for liveness purposes. `r2 = le64 r2` is BPF_ALU|BPF_END|BPF_TO_LE with imm=64. */
+#define LT_END(CLASS, TOEND, DST, LEN)                                         \
+    ((struct bpf_insn){.code = (CLASS) | BPF_END | (TOEND),                    \
+                       .dst_reg = DST, .src_reg = 0, .off = 0, .imm = (LEN)})
+
+/* gotol: a LONG unconditional jump whose displacement lives in imm, not off. Reading `off`
+   here yields 0 and turns the jump into a fall-through — the exact trap bpflive.h's
+   bpflive_succ() documents having found in this very selftest file. */
+#define LT_GOTOL(DISP)                                                         \
+    ((struct bpf_insn){.code = BPF_JMP32 | BPF_JA,                             \
+                       .dst_reg = 0, .src_reg = 0, .off = 0, .imm = (DISP)})
+
+/* may_goto +off: the budget-exhausted edge. Reads no register, but its TAKEN edge is what
+   keeps the loop-carried registers alive at the head. */
+#define LT_MAY_GOTO(OFF)                                                       \
+    ((struct bpf_insn){.code = BPF_JMP | BPF_JCOND,                            \
+                       .dst_reg = 0, .src_reg = BPF_MAY_GOTO, .off = OFF, .imm = 0})
+
+/* A plain 64-bit immediate load. BPF_LD_MAP_FD stamps BPF_PSEUDO_MAP_FD in src_reg; this
+   one must leave src_reg at 0 or the verifier resolves it as a map. Two slots, like every
+   LD_IMM64, and the second is the high word. */
+#define LT_LD_IMM64(DST, IMM)                                                  \
+    ((struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = DST,      \
+                       .src_reg = 0, .off = 0, .imm = (IMM)}),                 \
+    ((struct bpf_insn){0})
+
+/* Helper ids are taken from the public numbering in include/uapi/linux/bpf.h's
+   __BPF_FUNC_MAPPER — FN(map_lookup_elem, 1) at line 6004, FN(trace_printk, 6) at line
+   6009 — which is the same source bpflive_helper_argc() cites and is not the liveness
+   code. The selftest's own expected log confirms the second: "(85) call bpf_trace_printk#6". */
+#define LT_FN_MAP_LOOKUP_ELEM 1
+#define LT_FN_TRACE_PRINTK    6
+
+enum livetrap_id {
+    LT_ASSIGN_CHAIN,
+    LT_ARITHMETICS,
+    LT_STORE,
+    LT_LOAD,
+    LT_ENDIAN,
+    LT_ATOMIC_RMW,
+    LT_ATOMIC_ACQ_REL,
+    LT_REGULAR_CALL,
+    LT_IF1,
+    LT_IF2,
+    LT_IF3_JSET_BUG,
+    LT_LOOP,
+    LT_GOTOL_CASE,
+    LT_MAY_GOTO_CASE,
+    LT_LDIMM64,
+};
+
+struct livetrap_case {
+    const char *name;   /* the selftest function name — the row this pins */
+    int id;
+    int needs_map;      /* the ARRAY map the source file calls `test_map` */
+};
+
+/* The order is the source file's order, so a diff of two runs lines up with the file. */
+static const struct livetrap_case LIVETRAPS[] = {
+    /* A dependency chain with no branches: the only way to be wrong is to misread MOV's
+       def/use, and every row differs from every other, so a constant-mask bug is visible. */
+    {"assign_chain",       LT_ASSIGN_CHAIN,   0},
+    /* `r1 += 7` whose result nothing ever reads, yet r1 is LIVE before it: a non-MOV ALU
+       reads its destination. The row that separates liveness from usefulness. */
+    {"arithmetics",        LT_ARITHMETICS,    0},
+    /* BPF_ST's use set is {dst} and BPF_STX's is {dst, src} — two different rules for two
+       instructions the disassembly prints almost identically. */
+    {"store",              LT_STORE,          0},
+    /* insn 3 is a second `r4 += -8` whose result is dead; r4 AND r5 are live there anyway.
+       Getting this row right requires the dst-is-also-a-use rule to survive a dead result. */
+    {"load",               LT_LOAD,           0},
+    /* BPF_END is the one ALU op that both defines and uses dst. Treating it as a MOV would
+       drop r2 from row 1 and nothing else in the corpus would notice. */
+    {"endian",             LT_ENDIAN,         0},
+    /* The atomic family in one program: FETCH writes back into SRC, the non-fetch form
+       writes nothing, XCHG writes SRC, and CMPXCHG implicitly READS AND WRITES r0. Rows
+       12-14 also swap r0 and r1 through r2, so an off-by-one in the fixpoint shows up. */
+    {"atomic",             LT_ATOMIC_RMW,     1},
+    /* load-acquire REVERSES dst/src: dst is the value destination, src the address. Every
+       other BPF_STX|BPF_ATOMIC in the ISA reads dst as a pointer. Row 4 is the assertion. */
+    {"atomic_load_acq_store_rel", LT_ATOMIC_ACQ_REL, 0},
+    /* A helper's use set is its PROTO's argument count, not five. bpf_trace_printk takes
+       two (fmt, len), so r3-r5 are dead at the call — the row that punishes a model which
+       assumes the maximum. */
+    {"regular_call",       LT_REGULAR_CALL,   0},
+    /* Conditional jump, BPF_K form: use = {dst}. */
+    {"if1",                LT_IF1,            0},
+    /* Conditional jump, BPF_X form: use = {dst, src}. */
+    {"if2",                LT_IF2,            0},
+    /* The source file's own comment: "Verifier misses that r2 is alive if jset is not
+       handled properly". This is calibration pair NINE's bug expressed as a pinned row —
+       the same shape --probe-jsetlive drives, but with the maintainers' expected value. */
+    {"if3_jset_bug",       LT_IF3_JSET_BUG,   0},
+    /* A back edge. r1 and r2 are live across the whole body only after the fixpoint has
+       gone round the loop; a single backward sweep gets rows 2-4 wrong. */
+    {"loop",               LT_LOOP,           0},
+    /* The displacement is in imm. A model that reads off sees a fall-through and gets every
+       row after the jump wrong while still looking self-consistent. */
+    {"gotol",              LT_GOTOL_CASE,     0},
+    /* may_goto reads nothing, but its taken edge reaches the r1 reader, so r1 must be live
+       at the head — the liveness of a register kept alive purely by an edge. */
+    {"may_goto",           LT_MAY_GOTO_CASE,  0},
+    /* LD_IMM64 occupies two slots. The kernel PRINTS no row for the tail (liveness.c skips
+       it via bpf_is_ldimm64), so index 3 follows index 1 in the log while bpflive's mask
+       string still carries a slot for index 2. Alignment, not arithmetic. */
+    {"ldimm64",            LT_LDIMM64,        0},
+};
+
+/* Build one case. Returns the instruction count, or 0 if the case needs a map we could not
+   create. `map_fd` is the plain BPF_MAP_TYPE_ARRAY the source file declares as `test_map`
+   (key __u32, value __u64, one entry) — the only map any in-scope case touches. */
+static int livetrap_build(int id, int map_fd, struct bpf_insn *ins)
+{
+    switch (id) {
+
+    case LT_ASSIGN_CHAIN: {
+        struct bpf_insn a[] = {
+            BPF_MOV64_IMM(BPF_REG_0, 42),
+            BPF_MOV64_REG(BPF_REG_1, BPF_REG_0),
+            BPF_MOV64_REG(BPF_REG_2, BPF_REG_1),
+            BPF_MOV64_REG(BPF_REG_3, BPF_REG_2),
+            BPF_MOV64_REG(BPF_REG_4, BPF_REG_3),
+            BPF_MOV64_REG(BPF_REG_5, BPF_REG_4),
+            BPF_MOV64_REG(BPF_REG_6, BPF_REG_5),
+            BPF_MOV64_REG(BPF_REG_7, BPF_REG_6),
+            BPF_MOV64_REG(BPF_REG_8, BPF_REG_7),
+            BPF_MOV64_REG(BPF_REG_9, BPF_REG_8),
+            BPF_MOV64_REG(BPF_REG_0, BPF_REG_9),
+            BPF_EXIT_INSN(),
+        };
+        memcpy(ins, a, sizeof(a));
+        return (int)(sizeof(a) / sizeof(a[0]));
+    }
+
+    case LT_ARITHMETICS: {
+        struct bpf_insn a[] = {
+            BPF_MOV64_IMM(BPF_REG_1, 7),
+            BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, 7),
+            BPF_MOV64_IMM(BPF_REG_2, 7),
+            BPF_MOV64_IMM(BPF_REG_3, 42),
+            BPF_ALU64_REG(BPF_ADD, BPF_REG_2, BPF_REG_3),
+            BPF_MOV64_IMM(BPF_REG_0, 0),
+            BPF_EXIT_INSN(),
+        };
+        memcpy(ins, a, sizeof(a));
+        return (int)(sizeof(a) / sizeof(a[0]));
+    }
+
+    case LT_STORE: {
+        struct bpf_insn a[] = {
+            BPF_MOV64_REG(BPF_REG_1, BPF_REG_10),
+            BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -8),
+            BPF_ST_MEM(BPF_DW, BPF_REG_1, 0, 7),
+            BPF_MOV64_IMM(BPF_REG_2, 42),
+            BPF_STX_MEM(BPF_DW, BPF_REG_1, BPF_REG_2, 0),
+            /* The duplicate store is deliberate: two identical rows in a row make an
+               off-by-one in the printed table impossible to miss. */
+            BPF_STX_MEM(BPF_DW, BPF_REG_1, BPF_REG_2, 0),
+            BPF_MOV64_IMM(BPF_REG_0, 0),
+            BPF_EXIT_INSN(),
+        };
+        memcpy(ins, a, sizeof(a));
+        return (int)(sizeof(a) / sizeof(a[0]));
+    }
+
+    case LT_LOAD: {
+        struct bpf_insn a[] = {
+            BPF_MOV64_REG(BPF_REG_4, BPF_REG_10),
+            BPF_ALU64_IMM(BPF_ADD, BPF_REG_4, -8),
+            /* Reads uninitialised stack. Privileged loads accept it (allow_uninit_stack ==
+               CAP_PERFMON); unprivileged ones reject AFTER the liveness table is printed,
+               so the row survives either way. */
+            BPF_LDX_MEM(BPF_DW, BPF_REG_5, BPF_REG_4, 0),
+            BPF_ALU64_IMM(BPF_ADD, BPF_REG_4, -8),
+            BPF_MOV64_REG(BPF_REG_0, BPF_REG_5),
+            BPF_EXIT_INSN(),
+        };
+        memcpy(ins, a, sizeof(a));
+        return (int)(sizeof(a) / sizeof(a[0]));
+    }
+
+    case LT_ENDIAN: {
+        struct bpf_insn a[] = {
+            /* r1 is the socket_filter ctx; +0 is skb->len, a legal 4-byte ctx read. */
+            BPF_LDX_MEM(BPF_W, BPF_REG_2, BPF_REG_1, 0),
+            LT_END(BPF_ALU, BPF_TO_LE, BPF_REG_2, 64),
+            BPF_MOV64_REG(BPF_REG_0, BPF_REG_2),
+            BPF_EXIT_INSN(),
+        };
+        memcpy(ins, a, sizeof(a));
+        return (int)(sizeof(a) / sizeof(a[0]));
+    }
+
+    case LT_ATOMIC_RMW: {
+        if (map_fd < 0)
+            return 0;
+        struct bpf_insn a[] = {
+            BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),                       /*  0 */
+            BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),                      /*  1 */
+            BPF_MOV64_IMM(BPF_REG_1, 0),                                /*  2 */
+            BPF_STX_MEM(BPF_DW, BPF_REG_2, BPF_REG_1, 0),               /*  3 */
+            BPF_LD_MAP_FD(BPF_REG_1, map_fd),                           /*  4,5 */
+            BPF_EMIT_CALL(LT_FN_MAP_LOOKUP_ELEM),                       /*  6 */
+            /* The null check is the only reason the atomics below are reachable; its
+               target is the single exit at 15, so off = 15 - 7 - 1. */
+            BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 7),                      /*  7 */
+            BPF_MOV64_IMM(BPF_REG_1, 1),                                /*  8 */
+            /* FETCH: leaves the OLD value in r1, so r1 is DEFINED here as well as used. */
+            LT_ATOMIC(BPF_DW, BPF_ADD | BPF_FETCH, BPF_REG_0, BPF_REG_1, 0), /* 9 */
+            /* No FETCH, and 32-bit: defines nothing. */
+            LT_ATOMIC(BPF_W,  BPF_ADD,             BPF_REG_0, BPF_REG_1, 0), /* 10 */
+            LT_ATOMIC(BPF_DW, BPF_XCHG,            BPF_REG_0, BPF_REG_1, 0), /* 11 */
+            BPF_MOV64_REG(BPF_REG_2, BPF_REG_0),                        /* 12 */
+            BPF_MOV64_REG(BPF_REG_0, BPF_REG_1),                        /* 13 */
+            /* CMPXCHG: address in dst (r2), new value in src (r1), compared-and-returned
+               value implicitly in r0 — the only instruction with an implicit register. */
+            LT_ATOMIC(BPF_DW, BPF_CMPXCHG,         BPF_REG_2, BPF_REG_1, 0), /* 14 */
+            BPF_EXIT_INSN(),                                            /* 15 */
+        };
+        memcpy(ins, a, sizeof(a));
+        return (int)(sizeof(a) / sizeof(a[0]));
+    }
+
+    case LT_ATOMIC_ACQ_REL: {
+        struct bpf_insn a[] = {
+            BPF_MOV64_IMM(BPF_REG_1, 42),                                    /* 0 */
+            BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),                            /* 1 */
+            /* store-release: dst is the address, src the value — the normal roles. */
+            LT_ATOMIC(BPF_DW, BPF_STORE_REL, BPF_REG_2, BPF_REG_1, -8),      /* 2 */
+            BPF_MOV64_REG(BPF_REG_3, BPF_REG_10),                            /* 3 */
+            /* load-acquire: dst is the DESTINATION, src the address. Row 4's expected mask
+               is `...3......` — r4 is written, not read. */
+            LT_ATOMIC(BPF_DW, BPF_LOAD_ACQ,  BPF_REG_4, BPF_REG_3, -8),      /* 4 */
+            BPF_MOV64_REG(BPF_REG_0, BPF_REG_4),                             /* 5 */
+            BPF_EXIT_INSN(),                                                 /* 6 */
+        };
+        memcpy(ins, a, sizeof(a));
+        return (int)(sizeof(a) / sizeof(a[0]));
+    }
+
+    case LT_REGULAR_CALL: {
+        struct bpf_insn a[] = {
+            /* r7 is callee-saved, so it must survive the call and be live on both sides of
+               it — the row that proves the clobber set stops at r5. */
+            BPF_MOV64_IMM(BPF_REG_7, 1),
+            BPF_MOV64_REG(BPF_REG_1, BPF_REG_10),
+            BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -8),
+            BPF_MOV64_IMM(BPF_REG_2, 1),
+            BPF_EMIT_CALL(LT_FN_TRACE_PRINTK),
+            BPF_ALU64_REG(BPF_ADD, BPF_REG_0, BPF_REG_7),
+            BPF_EXIT_INSN(),
+        };
+        memcpy(ins, a, sizeof(a));
+        return (int)(sizeof(a) / sizeof(a[0]));
+    }
+
+    case LT_IF1: {
+        struct bpf_insn a[] = {
+            BPF_MOV64_IMM(BPF_REG_0, 1),
+            BPF_MOV64_IMM(BPF_REG_2, 2),
+            /* r1 is the ctx pointer, so the branch is genuinely two-way and neither edge
+               is const-folded away before liveness runs. */
+            BPF_JMP_IMM(BPF_JGT, BPF_REG_1, 7, 1),
+            BPF_MOV64_REG(BPF_REG_0, BPF_REG_2),
+            BPF_EXIT_INSN(),
+        };
+        memcpy(ins, a, sizeof(a));
+        return (int)(sizeof(a) / sizeof(a[0]));
+    }
+
+    case LT_IF2: {
+        struct bpf_insn a[] = {
+            BPF_MOV64_IMM(BPF_REG_0, 1),
+            BPF_MOV64_IMM(BPF_REG_2, 2),
+            BPF_MOV64_IMM(BPF_REG_3, 7),
+            BPF_JMP_REG(BPF_JGT, BPF_REG_1, BPF_REG_3, 1),
+            BPF_MOV64_REG(BPF_REG_0, BPF_REG_2),
+            BPF_EXIT_INSN(),
+        };
+        memcpy(ins, a, sizeof(a));
+        return (int)(sizeof(a) / sizeof(a[0]));
+    }
+
+    case LT_IF3_JSET_BUG: {
+        struct bpf_insn a[] = {
+            BPF_MOV64_IMM(BPF_REG_0, 1),
+            BPF_MOV64_IMM(BPF_REG_2, 2),
+            /* If JSET's taken edge is missing from the CFG, insn 4 is unreachable and r2
+               is reported dead here. That is the whole bug, in one cell. */
+            BPF_JMP_IMM(BPF_JSET, BPF_REG_1, 7, 1),
+            BPF_EXIT_INSN(),
+            BPF_MOV64_REG(BPF_REG_0, BPF_REG_2),
+            BPF_EXIT_INSN(),
+        };
+        memcpy(ins, a, sizeof(a));
+        return (int)(sizeof(a) / sizeof(a[0]));
+    }
+
+    case LT_LOOP: {
+        struct bpf_insn a[] = {
+            BPF_MOV64_IMM(BPF_REG_1, 0),                /* 0 */
+            BPF_MOV64_IMM(BPF_REG_2, 7),                /* 1 */
+            BPF_JMP_IMM(BPF_JGT, BPF_REG_1, 7, 4),      /* 2 -> 7 */
+            BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, 1),       /* 3 */
+            BPF_ALU64_IMM(BPF_MUL, BPF_REG_2, 2),       /* 4 */
+            /* `goto +0` is a no-op jump kept from the source: it makes the block boundary
+               explicit without adding an edge anywhere new. */
+            BPF_JMP_A(0),                               /* 5 */
+            BPF_JMP_A(-5),                              /* 6 -> 2, the back edge */
+            BPF_MOV64_IMM(BPF_REG_0, 0),                /* 7 */
+            BPF_EXIT_INSN(),                            /* 8 */
+        };
+        memcpy(ins, a, sizeof(a));
+        return (int)(sizeof(a) / sizeof(a[0]));
+    }
+
+    case LT_GOTOL_CASE: {
+        struct bpf_insn a[] = {
+            BPF_MOV64_IMM(BPF_REG_2, 42),               /* 0 */
+            BPF_MOV64_IMM(BPF_REG_3, 24),               /* 1 */
+            BPF_JMP_IMM(BPF_JGT, BPF_REG_1, 7, 2),      /* 2 -> 5 */
+            BPF_MOV64_REG(BPF_REG_0, BPF_REG_2),        /* 3 */
+            LT_GOTOL(1),                                /* 4 -> 6, displacement in imm */
+            BPF_MOV64_REG(BPF_REG_0, BPF_REG_3),        /* 5 */
+            BPF_EXIT_INSN(),                            /* 6 */
+        };
+        memcpy(ins, a, sizeof(a));
+        return (int)(sizeof(a) / sizeof(a[0]));
+    }
+
+    case LT_MAY_GOTO_CASE: {
+        struct bpf_insn a[] = {
+            BPF_MOV64_IMM(BPF_REG_1, 1),                /* 0, also the loop head */
+            LT_MAY_GOTO(1),                             /* 1 -> 3 when the budget runs out */
+            BPF_JMP_A(-3),                              /* 2 -> 0 */
+            BPF_MOV64_REG(BPF_REG_0, BPF_REG_1),        /* 3 */
+            BPF_EXIT_INSN(),                            /* 4 */
+        };
+        memcpy(ins, a, sizeof(a));
+        return (int)(sizeof(a) / sizeof(a[0]));
+    }
+
+    case LT_LDIMM64: {
+        struct bpf_insn a[] = {
+            BPF_MOV64_IMM(BPF_REG_0, 0),                /* 0 */
+            LT_LD_IMM64(BPF_REG_2, 7),                  /* 1,2 — 2 is the high word */
+            BPF_ALU64_REG(BPF_ADD, BPF_REG_0, BPF_REG_2), /* 3 */
+            BPF_EXIT_INSN(),                            /* 4 */
+        };
+        memcpy(ins, a, sizeof(a));
+        return (int)(sizeof(a) / sizeof(a[0]));
+    }
+
+    default:
+        return 0;
+    }
+}
+
+static void run_probe_livetraps(void)
+{
+    /* The source file's `test_map`: BPF_MAP_TYPE_ARRAY, __u32 key, __u64 value, one entry.
+       Only the `atomic` case needs it, and only to obtain a PTR_TO_MAP_VALUE the atomics
+       can address; the value must be 8 bytes wide for the BPF_DW forms. */
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4;
+    m.value_size = 8;
+    m.max_entries = 1;
+    int map_fd = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    int map_err = map_fd < 0 ? errno : 0;
+
+    for (unsigned c = 0; c < sizeof(LIVETRAPS) / sizeof(LIVETRAPS[0]); c++) {
+        struct bpf_insn ins[32];
+        int n = livetrap_build(LIVETRAPS[c].id, map_fd, ins);
+
+        if (n <= 0) {
+            /* A case we could not build is reported, never skipped silently: a missing row
+               would otherwise read downstream as a case that agreed. */
+            printf("===PROG livetrap#%s type=socket_filter ===\n", LIVETRAPS[c].name);
+            printf("RESULT decision=error fd=-1 errno=%d load_ns=0\n",
+                   LIVETRAPS[c].needs_map ? map_err : 0);
+            printf("---LOG---\n---END---\n");
+            continue;
+        }
+
+        g_log[0] = '\0';
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 2;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        int lerr = errno;
+
+        printf("===PROG livetrap#%s type=socket_filter ===\n", LIVETRAPS[c].name);
+        printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+               fd >= 0 ? "accept" : "reject", fd >= 0 ? 1 : -1, fd >= 0 ? 0 : lerr);
+        /* No EXPECT: none of these programs has a return value the generator can claim
+           without consulting the verifier, and 0072's rule forbids inventing one. The
+           channel here is the liveness table on both sides, and it is printed either way —
+           the kernel's rows come out of bpf_compute_live_registers() before do_check, so a
+           reject above still leaves the comparison intact. */
+        bpflive_print_claim(ins, n);
+        if (fd >= 0)
+            close(fd);
+        printf("---LOG---\n%s\n---END---\n", g_log);
+    }
+
+    if (map_fd >= 0)
+        close(map_fd);
+}
 // ---- calibration probe: the fake_reg corruption (--probe-fakereg) -----------
 // The SECOND kind of calibration. 0061 tested the oracle against a bug whose inconsistent
 // state the commit message printed, so no kernel had to be built. This one cannot work
@@ -8729,6 +9227,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-maygotolive") == 0) {
         run_probe_maygotolive();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-livetraps") == 0) {
+        run_probe_livetraps();
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--fuzz") == 0) {

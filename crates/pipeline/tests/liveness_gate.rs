@@ -327,3 +327,65 @@ fn the_two_kernels_really_do_disagree_about_r0_at_the_may_goto() {
     assert_eq!(MG_BUGGY.matches(" 2: 01........ (e5) may_goto").count(), 2);
     assert_eq!(MG_FIXED.matches(" 2: 01........ (e5) may_goto").count(), 1);
 }
+
+// ===========================================================================================
+// THE REFERENCE'S OWN CALIBRATION — the kernel's liveness selftests, replayed
+// ===========================================================================================
+//
+// `bpflive.h`'s header states the precondition the whole gate oracle rests on: because a
+// too-large liveness is ALSO what a coarser analysis produces, the model has to be at least
+// as precise as the kernel's before it is allowed to judge. Until 0090 the only evidence was
+// two probe arms and our own generated families — all of which the model was written
+// alongside.
+//
+// The kernel ships the missing corpus: tools/testing/selftests/bpf/progs/compute_live_registers.c
+// is 20 hand-written programs, each annotated with the EXACT row the verifier must print for
+// every instruction. Those `__msg` lines are a maintainer-maintained oracle for the very
+// analysis bpflive.h duplicates — the only reference in this project not derived from our own
+// model. 15 of the 20 are inside the harness's instruction subset; the other five need arena,
+// LD_ABS, subprogram calls or an indirect-jump map.
+//
+// REPLAYING THEM FOUND THREE DEFECTS IN THE REFERENCE, all in the false-finding direction:
+//   * `gotol` is BPF_JMP32|BPF_JA and carries its displacement in imm, not off — read as a
+//     fall-through, corrupting every row after it.
+//   * BPF_LOAD_ACQ is the one atomic whose operands are REVERSED (dst is the value, src the
+//     address); the generic atomic rule called it a read of the destination.
+//   * an unlisted helper defaulted to five argument registers. "More live" is exactly the
+//     direction this oracle reports, so every helper missing from that table was a standing
+//     false claim; `bpf_trace_printk` (two args by its proto) cost five rows.
+// None of the four shapes involved (gotol, load_acq, trace_printk, gotox) is emitted by ANY
+// of our families, so none of them could have surfaced from our own corpus.
+
+const TRAPS: &str = include_str!("fixtures/volume/livetraps-15.log");
+
+/// THE CALIBRATION: on the kernel's own cases, the independent model and the kernel agree on
+/// every cell — after the three defects above were fixed.
+#[test]
+fn the_reference_agrees_with_the_kernels_own_liveness_selftests() {
+    let (norm, out) = run(TRAPS, "traps");
+    assert_eq!(norm.records.len(), 15);
+    // Every case is inside the model AND loads: an agreement measured over the subset the
+    // model happened to like, or over programs the verifier rejected, would say much less.
+    assert_eq!(TRAPS.matches("LIVENESS status=unsupported").count(), 0);
+    assert_eq!(TRAPS.matches("LIVENESS status=ok").count(), 15);
+    assert_eq!(TRAPS.matches("RESULT decision=accept").count(), 15);
+
+    assert_eq!(out.summary.finding_count, 0, "{:?}", out.findings);
+    assert!(out.summary.liveness_gate_checked > 100, "{}", out.summary.liveness_gate_checked);
+    assert_eq!(
+        norm.unparsed.iter().filter(|u| u.kind == UnparsedKind::Unrecognized).count(),
+        0
+    );
+}
+
+/// THE CASES THAT MATTER ARE PRESENT. A shrinking corpus would keep the test above green
+/// while quietly removing the shapes that found the defects, so the four are named.
+#[test]
+fn the_corpus_still_contains_the_shapes_that_found_the_defects() {
+    for case in ["gotol", "atomic_load_acq_store_rel", "regular_call", "if3_jset_bug"] {
+        assert!(TRAPS.contains(&format!("livetrap#{case} ")), "missing case: {case}");
+    }
+    // `if3_jset_bug` is the maintainers' own case for calibration pair nine's bug, so this
+    // capture also carries their expected row for it — on a FIXED kernel, r2 live at the jset.
+    assert!(TRAPS.contains("(45) if r1 & 0x7"), "the jset case must be the jset case");
+}

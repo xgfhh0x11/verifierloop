@@ -86,16 +86,23 @@ struct bpflive_result {
 #define BL_FETCH 0x01
 #define BL_XCHG  0xe1
 #define BL_CMPXCHG 0xf1
+#define BL_LOAD_ACQ  0x100
+#define BL_STORE_REL 0x110
 
 #define BL_BIT(r) ((uint16_t)1u << (r))
 #define BL_TRACKED 0x03ff   /* r0..r9 — r10 is the frame pointer and is never compared */
 
 /* Helper argument counts, keyed by helper id, for the helpers this harness emits. The
  * kernel learns these from the proto; we take them from the same public numbering the
- * emitters use, which is not the liveness code. A helper NOT in this table is treated as
- * taking all five argument registers — the conservative choice, and conservative here means
- * "claims MORE registers live", i.e. it can only push this file toward the false-finding
- * direction, never toward silence. Every entry that matters is exercised by the corpus. */
+ * emitters use, which is not the liveness code.
+ *
+ * AN UNLISTED HELPER IS REFUSED, NOT GUESSED. The first version returned 5 for anything
+ * unlisted, reasoning that claiming MORE registers live is the conservative choice. That is
+ * backwards: "more live" is exactly the direction check_liveness_gate reports as a finding,
+ * so an unlisted helper is a standing FALSE CLAIM in the one direction that matters. The
+ * kernel's own compute_live_registers.c selftest proved it on bpf_trace_printk (id 6, two
+ * args by its proto), where the guess of five falsely claimed r3/r4/r5 live across five
+ * rows. Refusing costs a program; guessing costs the oracle's credibility. */
 static int bpflive_helper_argc(int imm) {
     switch (imm) {
     case 1:  return 2;   /* map_lookup_elem(map, key)                    */
@@ -108,7 +115,8 @@ static int bpflive_helper_argc(int imm) {
     case 198: return 4;  /* ringbuf_reserve_dynptr(rb, size, fl, ptr)    */
     case 199: return 2;  /* ringbuf_submit_dynptr(ptr, flags)            */
     case 200: return 2;  /* ringbuf_discard_dynptr(ptr, flags)           */
-    default: return 5;
+    case 6:  return 2;   /* trace_printk(fmt, fmt_size)                 */
+    default: return -1;  /* unlisted: refuse the program, never guess    */
     }
 }
 
@@ -166,6 +174,13 @@ static int bpflive_usedef(const struct bpf_insn *in, uint16_t *use, uint16_t *de
         if (BL_MODE(code) == BL_ATOMIC) {
             /* An atomic reads the address and the operand. The FETCH variants also WRITE
                the operand register back, and CMPXCHG additionally reads AND writes r0. */
+            /* BPF_LOAD_ACQ is the one atomic whose operands are REVERSED: dst is the value
+               destination and src is the address -- a load, not a store. Its imm is 0x100,
+               so the FETCH bit is clear and the ordinary rule below would call it a READ of
+               the destination. The kernel's compute_live_registers.c pins the opposite, and
+               getting it wrong propagated backwards through five rows. */
+            if (in->imm == BL_LOAD_ACQ) { *def = d; *use = s; return 1; }
+            if (in->imm == BL_STORE_REL) { *use = d | s; return 1; }
             *use = d | s;
             if (in->imm & BL_FETCH) *def |= s;
             if ((in->imm & 0xff) == (int)(BL_CMPXCHG & 0xff)) { *use |= BL_BIT(0); *def |= BL_BIT(0); }
@@ -189,6 +204,7 @@ static int bpflive_usedef(const struct bpf_insn *in, uint16_t *use, uint16_t *de
                 if (argc < 0) return 0;                /* unregistered: refuse, never guess */
             } else if (in->src_reg == 0) {
                 argc = bpflive_helper_argc(in->imm);
+                if (argc < 0) return 0;                /* unlisted helper: refuse */
             } else {
                 return 0;
             }
@@ -221,6 +237,10 @@ static int bpflive_succ(const struct bpf_insn *ins, int n, int i, int *succ) {
     case BL_EXIT: return 0;                    /* single frame: exit leaves the program */
     case BL_CALL: if (next >= n) return -1; succ[k++] = next; return k;
     case BL_JA: {
+        /* `gotox` is BPF_JA with BPF_X: the target comes from a register via a jump table,
+           so there is no static successor set. Refused rather than silently read as a
+           fall-through, which is what reading `off` would have done. */
+        if (BL_SRC(code) == BL_X) return -1;
         /* `gotol` is BPF_JMP32|BPF_JA and carries its offset in imm, not off — a long jump.
            Reading `off` there yields 0 and makes the jump look like a fall-through, which
            silently mis-computes liveness for every instruction after it. Found by reading
