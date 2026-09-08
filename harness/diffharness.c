@@ -3759,6 +3759,8 @@ enum gi_step {
     GI_LOOP,      /* a COUNTED back-edge: deep state exploration, and deterministic       */
     GI_PIN,       /* make the verifier believe it knows the value EXACTLY              */
     GI_SDIV,      /* signed div/mod — the interpreter-level UB shape                   */
+    GI_ITER,      /* an open-coded iterator loop — the grammar's FIRST kfunc calls,      */
+                  /* and with them 13% of the verification pass it had never entered     */
     GI_STEP_N
 };
 
@@ -3777,6 +3779,7 @@ static const char *gi_step_name(enum gi_step s) {
     case GI_DIAMOND: return "diamond";
     case GI_LOOP: return "loop";
     case GI_SDIV: return "sdiv";
+    case GI_ITER: return "iter";
     default: return "?";
     }
 }
@@ -3811,6 +3814,19 @@ static int gi_set_jit(int v) {
    (kernel/bpf/states.c), so a short program with a couple of branches produces almost no
    checkpoints — which is exactly why the measured depth was avgstates=1 and the pruning
    differential was comparing nothing. The lever is not loops but LENGTH times BRANCHES. */
+/* THE ITERATOR'S OWN STACK SLOT. `ITER_SLOT` is fp-8, which is exactly where the grammar's
+   spill genes start (`stack_next = -8`); sharing it would let a spill overwrite a live
+   `struct bpf_iter_num` and turn every such program into a structural rejection. The grammar
+   bounds itself at -200, so -256 is out of its reach by construction. */
+#define GI_ITER_SLOT 256
+
+/* Resolved once per fuzz run, from the BTF walk the harness already does. Left at zero when
+   the kernel has no BTF or the symbols move: the gene then emits nothing rather than a call
+   to id 0, and `iterskipped` says how often that happened. */
+static struct iter_ids g_fz_iter;
+static int g_fz_iter_ok = 0;
+static unsigned long g_fz_iter_emitted = 0, g_fz_iter_skipped = 0;
+
 #define GI_MAXGENES 24
 struct gi_gene { uint8_t st, a, b, k, opt; };
 struct gi_genome { uint8_t n, hi; struct gi_gene g[GI_MAXGENES]; };
@@ -3836,6 +3852,7 @@ static int gi_emit_body(const struct gi_genome *G, struct bpf_insn *ins, int n,
     static const int REGS[3] = { 6, 7, 9 };
     int stack_next = -8;
     int loops_emitted = 0;
+    int iters_emitted = 0;
     for (int s = 0; s < G->n && s < GI_MAXGENES; s++) {
         const struct gi_gene *g = &G->g[s];
         const enum gi_step st = (enum gi_step)(g->st % GI_STEP_N);
@@ -3907,6 +3924,57 @@ static int gi_emit_body(const struct gi_genome *G, struct bpf_insn *ins, int n,
             const int op = (o & 2) ? BPF_DIV : BPF_MOD;
             ins[n++] = (struct bpf_insn){.code = cls | BPF_X | op, .dst_reg = A,
                                          .src_reg = B, .off = 1, .imm = 0};
+            break;
+        }
+        case GI_ITER: {
+            /* THE GRAMMAR'S FIRST KFUNC CALLS. [[coverage-fraction]] measured that one
+               feature — kfunc/BTF calls — holds 1318 of the verification pass's coverage
+               points, 13% of it and four times the next largest theme, and that the grammar
+               had never emitted a single one. Everything the loop had reached until now was
+               scalar arithmetic and memory, which is precisely the surface the oracles are
+               strongest on and precisely the surface that is saturated.
+               An open-coded iterator is the cheapest way in: three kfunc calls, a real
+               back-edge, and a `struct bpf_iter_num` the verifier must track across it.
+               ONE PER PROGRAM. Two would need two slots and a nesting discipline; a second
+               gene emits nothing rather than silently sharing fp-256 with the first. */
+            if (!g_fz_iter_ok || iters_emitted) { g_fz_iter_skipped++; break; }
+            if (n + 16 > 300) { g_fz_iter_skipped++; break; }
+            iters_emitted++;
+            g_fz_iter_emitted++;
+            ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_10);
+            ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -GI_ITER_SLOT);
+            ins[n++] = BPF_MOV64_IMM(BPF_REG_2, 0);
+            ins[n++] = BPF_MOV64_IMM(BPF_REG_3, 1 + (int)(o % 4));
+            ins[n++] = BPF_KFUNC_CALL(g_fz_iter.new_id);
+            const int head = n;
+            ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_10);
+            ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -GI_ITER_SLOT);
+            ins[n++] = BPF_KFUNC_CALL(g_fz_iter.next_id);
+            const int jdone = n;
+            ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+            /* The body shapes a callee-saved register so the loop-carried state actually
+               changes across iterations — a body that leaves it alone is the tautology arm
+               OI-13 rules out. r1-r5 are clobbered by next(), so only r6/r7/r9 may be used.
+               EVERY BODY MUST KEEP AN INVARIANT, and this is the second time that has been
+               learned the hard way. The verifier tracks an open-coded iterator's `depth` but
+               does NOT use the constant trip range to bound it (see [[verifier-facts]]): it
+               waits for the loop-carried state to CONVERGE. A monotone unbounded body never
+               converges, so the state space grows until the guest is OOM-killed — which is
+               what a plain `A += K` here did at 51 seconds, and what 0084 hit from the other
+               direction with a counter that was also the body's target. So the increment is
+               masked back into [0,7] and the alternative is idempotent. */
+            if (o & 1) {
+                ins[n++] = BPF_ALU64_IMM(BPF_ADD, A, K);
+                ins[n++] = BPF_ALU64_IMM(BPF_AND, A, 7);
+            } else {
+                ins[n++] = BPF_ALU64_IMM(BPF_AND, A, 7);
+            }
+            ins[n] = BPF_JMP_IMM(BPF_JA, 0, 0, head - n - 1);
+            n++;
+            ins[jdone].off = n - jdone - 1;
+            ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_10);
+            ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -GI_ITER_SLOT);
+            ins[n++] = BPF_KFUNC_CALL(g_fz_iter.destroy_id);
             break;
         }
         case GI_PIN:
@@ -4348,6 +4416,20 @@ static void fz_print_genome(const struct gi_genome *G) {
 }
 
 static void run_fuzz(int seconds) {
+    /* Resolve the iterator kfuncs ONCE, and tell the independent liveness model their
+       arities. Without the registration bpflive.h refuses every program containing the gene
+       — correctly, since guessing an arity is a false LIVE claim in exactly the direction
+       the gate reports — and `liveunsup` would climb instead of `livecells`. The arities are
+       the kfuncs' published signatures, not anything read out of the kernel's analysis. */
+    g_fz_iter_ok = (iter_resolve(&g_fz_iter) == 0);
+    if (g_fz_iter_ok) {
+        bpflive_register_kfunc(g_fz_iter.new_id, 3);      /* (it, start, end) */
+        bpflive_register_kfunc(g_fz_iter.next_id, 1);     /* (it)             */
+        bpflive_register_kfunc(g_fz_iter.destroy_id, 1);  /* (it)             */
+    }
+    printf("FUZZ iter_kfuncs=%s new=%d next=%d destroy=%d\n",
+           g_fz_iter_ok ? "ok" : "unavailable",
+           g_fz_iter.new_id, g_fz_iter.next_id, g_fz_iter.destroy_id);
     struct kcov_ctx k;
     if (kcov_open(&k) != 0) {
         /* Running without feedback would still LOOK like fuzzing while being a plain
@@ -4632,10 +4714,10 @@ static void run_fuzz(int seconds) {
 
         if ((iters % 2000) == 0)
             printf("STATUS iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu elapsed=%lds\n",
+                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
                    iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
                    truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
-                   max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup, (long)(time(NULL) - t0));
+                   max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
     }
     /* THE PC SET ITSELF, so the coverage number can become a FRACTION. 5406 distinct PCs
        is uninterpretable on its own: CONFIG_KCOV_INSTRUMENT_ALL means the list includes the
@@ -4655,10 +4737,10 @@ static void run_fuzz(int seconds) {
         printf("PCSET total=%u\n", printed);
     }
     printf("FUZZ done iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu elapsed=%lds\n",
+           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
            iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
            truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
-           max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup, (long)(time(NULL) - t0));
+           max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
     free(corpus);
     free(g_kseen);
     close(map_in);

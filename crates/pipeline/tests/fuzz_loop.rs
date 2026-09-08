@@ -40,7 +40,11 @@ fn the_loop_runs_at_a_useful_rate() {
     let iters = field(last, "iters=");
     let elapsed = field(last, "elapsed=").max(1);
     let compared = field(last, "compared=");
-    assert!(iters > 100_000, "only {iters} iterations");
+    // The floor moves down when a gene buys something, and 0095's iterator gene bought the
+    // kfunc surface: seen_pcs 5369 -> 6168, and the verification pass 30.3% -> 35.8%. Three
+    // kfunc calls plus a real back-edge are not free, so the rate drops; the coverage and
+    // depth assertions elsewhere are what stop this from becoming a licence to be slow.
+    assert!(iters > 80_000, "only {iters} iterations");
     assert!(iters / elapsed > 500, "only {} programs/sec", iters / elapsed);
     assert!(compared > iters, "every accepted program must contribute several comparisons");
 }
@@ -192,6 +196,24 @@ fn the_expensive_oracles_run_and_cost_little() {
         0,
         "every fuzz program is inside the model today; if that changes, say so in the leg"
     );
+
+    // THE KFUNC SURFACE (0095). [[coverage-fraction]] measured that kfunc/BTF calls held
+    // 1318 of the verification pass's coverage points — 13% of it, four times the next
+    // largest theme — and that the grammar had never emitted one. The iterator gene is the
+    // way in, and the assertion is that it actually fires: a gene that is in the enum but
+    // never emitted would leave every number below unchanged and look exactly like success.
+    assert!(
+        field(last, "iteremitted=") > 10_000,
+        "the iterator gene must actually reach programs: {}",
+        field(last, "iteremitted=")
+    );
+    // Coverage is the point of the gene, so it carries a floor of its own. 5369 PCs was the
+    // number immediately before it; anything at or below that means the surface did not open.
+    assert!(
+        field(last, "seen_pcs=") > 5_800,
+        "the kfunc surface must show up as coverage: {}",
+        field(last, "seen_pcs=")
+    );
     // The resource direction is excluded by construction rather than by luck: state-freq
     // inflates the state count, so a flagged rejection on a complexity limit is the
     // instrument's own artefact. Counted so its absence is a measurement, not an assumption.
@@ -208,7 +230,9 @@ fn the_expensive_oracles_run_and_cost_little() {
     // could loop, 140k once 0085 raised the genome to 6-20 genes. Every drop here bought
     // depth (avgstates 1 -> 3, maxstates 8 -> 46); the floor moves DOWN deliberately, and
     // it is the depth assertions above that stop this from becoming a licence to be slow.
-    assert!(iters > 100_000, "the gating did not recover throughput: {iters}");
+    // ... and 100k once 0095 put three kfunc calls and a back-edge into 59% of programs,
+    // which is what opened the largest unreached theme in the coverage map.
+    assert!(iters > 80_000, "the gating did not recover throughput: {iters}");
 }
 
 /// A NON-ZERO DENOMINATOR IS NOT ENOUGH IF THE COMPARISONS ARE TRIVIAL (devlog 0084).

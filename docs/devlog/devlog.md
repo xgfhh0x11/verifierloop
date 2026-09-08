@@ -7019,3 +7019,69 @@ Kalan hamle P(yüzeye ulaş) tarafında: gramerin kfunc üretmesi, ki [[coverage
 doğrulama geçişinin %13'ü.
 
 Workspace 369 yeşil.
+
+## 0095 — Gramerin ilk kfunc'ları: doğrulama geçişi %30.3 → %35.8
+
+### 1. Kalan tek kaldıraç
+
+0094 oracle-hacim kaldıracını kapattı. Geriye P(yüzeye ulaş) kalmıştı, ve
+[[coverage-fraction]] hedefi adıyla söylüyordu: **kfunc/BTF çağrıları, doğrulama geçişinin
+1318 noktası — %13'ü, sonraki en büyük temanın dört katı — ve gramer bir tane bile
+üretmemişti.**
+
+`GI_ITER` geni en ucuz giriş: açık-kodlu iterator, üç kfunc çağrısı, gerçek bir geri kenar, ve
+verifier'ın geri kenar boyunca izlemek zorunda olduğu bir `struct bpf_iter_num`.
+
+### 2. İki tuzak, ikisi de ölçülerek bulundu
+
+**Stack çakışması.** `ITER_SLOT` fp-8, ve gramerin spill genleri tam oradan başlıyor
+(`stack_next = -8`). Paylaşmak, canlı bir iterator'ı bir spill'in üzerine yazmak ve o programı
+yapısal redde çevirmek demekti. Gramer kendini -200'de sınırladığı için iterator'a fp-256
+verildi — yapı gereği erişilemez.
+
+**OOM.** İlk gövde `A += K` idi ve koşu **51. saniyede OOM-kill** yedi. Sebep
+[[verifier-facts]]'te yazılı: verifier bir iterator'ın `depth`'ini izliyor ama sabit tur
+aralığını sınır olarak KULLANMIYOR — döngü-taşıyan durumun **yakınsamasını** bekliyor. Monoton
+ve sınırsız bir gövde asla yakınsamıyor, state uzayı misafiri öldürene kadar büyüyor.
+
+0084 bunu diğer taraftan öğrenmişti (sayaç, gövdenin hedefiyle çakışıyordu). Kural aynı ve
+artık iki kez ödenmiş: **her döngü gövdesi bir invaryant korumak zorunda.** Artım `[0,7]`'ye
+maskeleniyor, alternatif idempotent.
+
+### 3. Ölçüm
+
+```
+FUZZ iter_kfuncs=ok new=83154 next=83155 destroy=83152
+FUZZ done iters=100688 accept=60179 reject=40509 corpus=139 seen_pcs=6168
+          livecells=1748069 livemiss=0 liveunsup=0
+          iteremitted=59390 iterskipped=18600 findings=0
+```
+
+Ve paydayla birlikte, `coverage-fraction.py` ile yeniden ölçülmüş:
+
+| | 0086 | 0095 |
+|---|---|---|
+| **doğrulama geçişi** | 3104 / 10244 = **%30.3** | 3667 / 10244 = **%35.8** |
+| hiç girilmemiş fonksiyon | 3397 | **2118** |
+| `verifier.o` | %24.1 | **%31.2** |
+| `states.o` | %59.5 | **%71.1** |
+| tema: **kfunc / BTF** | **1318** ulaşılmamış | **211** |
+| `seen_pcs` | 5369 | **6168** |
+
+Eşleşme doğrulaması hâlâ geçerli: `matched=6019 / observed=6168` = %97.6, 0086'nın %97.5'i
+ile aynı — yani her yüzde bunun altında duruyor.
+
+**Tek bir gen, en büyük ulaşılmamış temayı %84 küçülttü.**
+
+### 4. Bedeli, ve neden kaydedildi
+
+İş hacmi 124k → 100k iterasyon. Üç kfunc çağrısı ve gerçek bir geri kenar programların
+%59'una girdiğinde bu beklenen. Eşik bilerek aşağı taşındı ve gerekçesi teste yazıldı — ama
+yanına iki assert kondu ki bu "yavaş olma ruhsatı"na dönüşmesin: `iteremitted` gerçekten
+ateşlenmeli, ve `seen_pcs` genden önceki 5369'un üstünde kalmalı.
+
+`liveunsup=0` korundu: kfunc arity'leri `bpflive.h`'e kaydedildi, yani model gramerin
+tamamını modellemeye devam ediyor. Kaydedilmeseydi her iterator programı reddedilecek ve
+`livecells` yerine `liveunsup` tırmanacaktı — 0091'in dersi, bu sefer önden uygulandı.
+
+Workspace 369 yeşil.
