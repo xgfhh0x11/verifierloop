@@ -7220,3 +7220,71 @@ için enstrümanda üç şey düzeltti: yön ayrımı, replay, ve derinlikle bir
 yanlış-pozitif kaynağı. Triage sayacı altıdan **yediye** çıktı.
 
 Workspace 371 yeşil.
+
+## 0098 — Mimari karar: baskı-amaçlı yama meşrudur, ve bu ölçüldü
+
+### 1. Kararın kendisi
+
+OI-15 şunu söylüyordu: budama farkı, varsayılanın **zaten** aldığı sağlamsız bir prune'a
+yapısal olarak kör, ve o sınıf için aynı-kernel bir dedektör yok. 0088 sebebini ölçmüştü —
+prune kaydı hiçbir durumu taşımıyor, ve log yüklemin **alanını** ifade bile edemiyor.
+
+Projenin duruşu bugüne kadar *"ağacı yamamak test edilen şeyi değiştirir"* (OI-14) oldu.
+Bu doğru bir reflekstir ama **fazla geniş uygulanmıştı**: kural *anlamsal* yamalar içindir.
+Yalnızca yazdıran bir yama hiçbir kararı değiştiremez — ve fark şu ki bu **kanıtlanabilir**.
+
+### 2. Yama
+
+`kernel/bpf/states.c`, `hit:` etiketi: `states_equal()` iki durumu eşdeğer bulup budamaya
+karar verdiği an. Orada **hem `sl->state` hem `cur` kapsamdadır**; logun hiç taşımadığı çift
+tam orada duruyor.
+
+`print_verifier_state` yeniden kullanılmadı, çünkü o fonksiyonun kendisi kayıplı:
+`range_within` `cnum{base,size}` yay-içerilmesi iken log sekiz türetilmiş projeksiyon
+basıyor; `precise` kontrolün yapılıp yapılmayacağına karar verirken logda yalnız bir `P`
+ön-eki; `id` maskelenmiş basıldığı için ADD_CONST32/64 ayrımı kayboluyor. Yama **ham
+alanları** basıyor: `r64{base,size}`, `r32{base,size}`, `var_off`, maskelenmemiş `id`,
+`parent_id`, `delta`, `frameno`, `precise` — ve **tüm frame'ler**, tek `curframe` değil.
+
+### 3. Doğrulama: iddia değil ölçüm
+
+Aynı 896 programlık korpus, iki kernel:
+
+```
+stok : 896 blok, 775 accept / 121 reject
+yama : 896 blok, 775 accept / 121 reject
+verdict dizisi, errno DAHİL:  AYNI, 896/896
+PRUNEPAIR satırı:  yamalı 11,996   ·   stok 0
+```
+
+**Yama verdict'lerin hiçbirini değiştirmiyor.** Bu, "baskı-amaçlı yama meşrudur" cümlesini
+bir görüş olmaktan çıkarıp bir ölçüme çeviriyor — ve gelecekteki her yama için koşul bu:
+kullanılabilmesi için önce bu testi geçmesi gerekir.
+
+### 4. Açılan kanal
+
+```
+11,996 satır  =  5,998 old  +  5,998 cur      (her prune'un iki tarafı, hep eşleşmiş)
+896 programın 710'u taşıyor
+```
+
+710 sayısı bağımsız bir tutarlılık kontrolü: 0088 "en az bir prune eden program" sayısını
+**710** ölçmüştü. Enstrümantasyon tam olarak budama olan yerde ateşleniyor.
+
+### 5. Bir tuzak, önden kapatıldı
+
+Doğrulamayı koşmadan önce `g_log` 256 KB'tı. PRUNEPAIR dökümleriyle derin bir programın logu
+bunu aşabilirdi, kernel `-ENOSPC` dönerdi, ve harness bunu **reject** diye kaydederdi — yani
+verdict farkı kernel'in kararından değil bizim tamponumuzdan gelirdi ve doğrulama kendi
+sınırımızı ölçerdi. 0097'nin dersi bu sefer önden uygulandı: tamponlar 4 MB'a çıkarıldı.
+
+### 6. Ne AÇILDI, ne açılmadı
+
+Açılan: bağımsız bir `states_equal` modelinin önü. `bpflive.h`'in canlılık için yaptığının
+subsumption için karşılığı artık **mümkün** — girdisi var.
+
+Açılmayan: model henüz yok. Ve sözleşme yazıldı — **bir bulgu asla yamalı kernel'de
+bırakılmaz.** Yama oracle'dır, hüküm değil; yamalı kernel'de çıkan her şey stok kernel'de
+yeniden türetilmek zorundadır.
+
+Workspace 371 yeşil.

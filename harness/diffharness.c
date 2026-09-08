@@ -133,7 +133,12 @@ static uint64_t now_ns(void) {
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
-static char g_log[256 * 1024];
+/* 4 MB, raised from 256 KB in 0098. A verifier log that does not fit comes back as
+   -ENOSPC, which 0097 measured being read as a verdict — so a buffer that is merely
+   'usually enough' is a silent source of false rejections. The instrumented kernel's
+   prune-pair dumps make a deep program's log much larger, and a verdict-identity check
+   run against a truncating buffer would be measuring our own limit. */
+static char g_log[4 * 1024 * 1024];
 
 // Load one program with log_level=2 and print its native frame.
 //
@@ -2722,7 +2727,7 @@ static void run_probe_pktw_family(void) {
 
 #define PRUNE_STORE_OFF 56   /* 1-byte store is in bounds iff umax(r6) <= 7 */
 
-static char g_log2[256 * 1024];
+static char g_log2[4 * 1024 * 1024];
 
 enum prune_shaper {
     SH_N7,   /* r6 &= 7          -> [0,7]        SAFE  */

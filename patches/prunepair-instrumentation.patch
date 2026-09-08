@@ -1,0 +1,58 @@
+diff --git a/kernel/bpf/states.c b/kernel/bpf/states.c
+index 4e6aafad33bd..57d1d6728745 100644
+--- a/kernel/bpf/states.c
++++ b/kernel/bpf/states.c
+@@ -1404,6 +1404,53 @@ int bpf_is_state_visited(struct bpf_verifier_env *env, int insn_idx)
+ 		loop = incomplete_read_marks(env, &sl->state);
+ 		if (states_equal(env, &sl->state, cur, loop ? RANGE_WITHIN : NOT_EXACT)) {
+ hit:
++			/* verifierloop: PRINT-ONLY prune-pair instrumentation.
++			 *
++			 * The only thing this adds is output. It reads no state it does not
++			 * already have in scope, writes nothing, and changes no control flow —
++			 * which is the whole argument for it being legitimate to run: a patch
++			 * that cannot change a verdict is not "changing the thing under test",
++			 * and that claim is CHECKABLE by requiring byte-identical verdicts from
++			 * the stock and instrumented kernels over the same corpus.
++			 *
++			 * Why it is needed: the log announces that a prune happened and carries
++			 * NEITHER side's state, and even print_verifier_state cannot express the
++			 * predicate's domain — range_within is arc containment on cnum{base,size}
++			 * while the log prints eight derived projections, `precise` decides
++			 * whether the check runs at all and appears only as a `P` prefix, and
++			 * `id` is printed with BPF_ADD_CONST masked off. So the raw fields are
++			 * printed, not a rendering of them.
++			 */
++			if (env->log.level & BPF_LOG_LEVEL2) {
++				struct bpf_verifier_state *vs[2] = { &sl->state, cur };
++				const char *nm[2] = { "old", "cur" };
++				int vi, fi, ri;
++
++				for (vi = 0; vi < 2; vi++) {
++					for (fi = 0; fi <= vs[vi]->curframe; fi++) {
++						struct bpf_func_state *fr = vs[vi]->frame[fi];
++
++						for (ri = 0; ri < MAX_BPF_REG; ri++) {
++							struct bpf_reg_state *r = &fr->regs[ri];
++
++							if (r->type == NOT_INIT)
++								continue;
++							verbose(env,
++								"PRUNEPAIR insn=%d side=%s fr=%d r%d type=%d delta=%d var=%llx/%llx r64=%llx+%llx r32=%x+%x id=%x pid=%x fno=%d prec=%d\n",
++								env->insn_idx, nm[vi], fi, ri,
++								(int)r->type, (int)r->delta,
++								(unsigned long long)r->var_off.value,
++								(unsigned long long)r->var_off.mask,
++								(unsigned long long)r->r64.base,
++								(unsigned long long)r->r64.size,
++								(unsigned int)r->r32.base,
++								(unsigned int)r->r32.size,
++								r->id, r->parent_id,
++								r->frameno, r->precise ? 1 : 0);
++						}
++					}
++				}
++			}
+ 			sl->hit_cnt++;
+ 
+ 			/* if previous state reached the exit with precision and
