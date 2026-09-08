@@ -24,7 +24,13 @@ LOG="${1:-$REPO_ROOT/.lab/fuzz.log}"
 
 scripts/probe-ref.sh >/dev/null || { echo "reference interpreter NOT calibrated — stopping" >&2; exit 1; }
 echo "[fuzz] reference calibrated; budget ${SECONDS_BUDGET}s"
-HARNESS_ARGS="--fuzz $SECONDS_BUDGET" TIMEOUT=$((SECONDS_BUDGET + 180)) \
+# THE SLACK MUST SCALE WITH THE BUDGET. The guest clock runs ~8% slower than the host's, so
+# a fixed 180s margin is proportionally thinner the longer the run: a 1800s budget finished
+# with ~36s to spare, and a 3600s one was killed at in-guest elapsed=3486s with the whole
+# hour's result lost — the log is only extracted after the end marker, so a kill this close
+# to the finish line loses everything. 20% plus the old floor.
+HARNESS_ARGS="--fuzz $SECONDS_BUDGET" \
+  TIMEOUT=$((SECONDS_BUDGET + SECONDS_BUDGET / 5 + 180)) \
   scripts/run-harness-vm.sh "$LOG" >/dev/null
 
 grep -m1 '^FUZZ start' "$LOG" || true
