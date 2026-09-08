@@ -1,10 +1,51 @@
 diff --git a/kernel/bpf/states.c b/kernel/bpf/states.c
-index 4e6aafad33bd..57d1d6728745 100644
+index 4e6aafad33bd..c0f321137817 100644
 --- a/kernel/bpf/states.c
 +++ b/kernel/bpf/states.c
-@@ -1404,6 +1404,53 @@ int bpf_is_state_visited(struct bpf_verifier_env *env, int insn_idx)
+@@ -1238,6 +1238,11 @@ static void mark_all_scalars_imprecise(struct bpf_verifier_env *env, struct bpf_
+ 
+ int bpf_is_state_visited(struct bpf_verifier_env *env, int insn_idx)
+ {
++	/* verifierloop: print-only. Records WHICH exact_level reached `hit:`.
++	 * OI-14 closed level attribution as unobservable from the log; it is
++	 * observable from here, and without it a subsumption model is blind on
++	 * exactly the imprecise registers the short-circuit governs. */
++	enum exact_level vl_dbg_exact = NOT_EXACT;
+ 	struct bpf_verifier_state_list *new_sl;
+ 	struct bpf_verifier_state_list *sl;
+ 	struct bpf_verifier_state *cur = env->cur_state, *new;
+@@ -1330,7 +1335,7 @@ int bpf_is_state_visited(struct bpf_verifier_env *env, int insn_idx)
+ 			 * => unsafe memory access at 11 would not be caught.
+ 			 */
+ 			if (is_iter_next_insn(env, insn_idx)) {
+-				if (states_equal(env, &sl->state, cur, RANGE_WITHIN)) {
++				if (vl_dbg_exact = RANGE_WITHIN, states_equal(env, &sl->state, cur, RANGE_WITHIN)) {
+ 					struct bpf_func_state *cur_frame;
+ 					struct bpf_reg_state *iter_state, *iter_reg;
+ 					int spi;
+@@ -1355,13 +1360,13 @@ int bpf_is_state_visited(struct bpf_verifier_env *env, int insn_idx)
+ 			}
+ 			if (is_may_goto_insn_at(env, insn_idx)) {
+ 				if (sl->state.may_goto_depth != cur->may_goto_depth &&
+-				    states_equal(env, &sl->state, cur, RANGE_WITHIN)) {
++				    (vl_dbg_exact = RANGE_WITHIN, states_equal(env, &sl->state, cur, RANGE_WITHIN))) {
+ 					loop = true;
+ 					goto hit;
+ 				}
+ 			}
+ 			if (bpf_calls_callback(env, insn_idx)) {
+-				if (states_equal(env, &sl->state, cur, RANGE_WITHIN)) {
++				if (vl_dbg_exact = RANGE_WITHIN, states_equal(env, &sl->state, cur, RANGE_WITHIN)) {
+ 					loop = true;
+ 					goto hit;
+ 				}
+@@ -1402,8 +1407,56 @@ int bpf_is_state_visited(struct bpf_verifier_env *env, int insn_idx)
+ 		}
+ 		/* See comments for mark_all_regs_read_and_precise() */
  		loop = incomplete_read_marks(env, &sl->state);
- 		if (states_equal(env, &sl->state, cur, loop ? RANGE_WITHIN : NOT_EXACT)) {
+-		if (states_equal(env, &sl->state, cur, loop ? RANGE_WITHIN : NOT_EXACT)) {
++		if (vl_dbg_exact = loop ? RANGE_WITHIN : NOT_EXACT,
++		    states_equal(env, &sl->state, cur, loop ? RANGE_WITHIN : NOT_EXACT)) {
  hit:
 +			/* verifierloop: PRINT-ONLY prune-pair instrumentation.
 +			 *
@@ -38,8 +79,8 @@ index 4e6aafad33bd..57d1d6728745 100644
 +							if (r->type == NOT_INIT)
 +								continue;
 +							verbose(env,
-+								"PRUNEPAIR insn=%d side=%s fr=%d r%d type=%d delta=%d var=%llx/%llx r64=%llx+%llx r32=%x+%x id=%x pid=%x fno=%d prec=%d\n",
-+								env->insn_idx, nm[vi], fi, ri,
++								"PRUNEPAIR insn=%d exact=%d side=%s fr=%d r%d type=%d delta=%d var=%llx/%llx r64=%llx+%llx r32=%x+%x id=%x pid=%x fno=%d prec=%d\n",
++								env->insn_idx, (int)vl_dbg_exact, nm[vi], fi, ri,
 +								(int)r->type, (int)r->delta,
 +								(unsigned long long)r->var_off.value,
 +								(unsigned long long)r->var_off.mask,

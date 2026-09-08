@@ -7375,3 +7375,77 @@ koşmak: `2f2ec8e7730e~1` zaten kurulu, ve `--probe-idbase` o hatayı tetikleyen
 üretiyor.
 
 Workspace 371 yeşil.
+
+## 0100 — Modelin dönem tabanı, ve tetikleyicinin gerçekte ne gerektirdiği
+
+### 1. Model, hatası olan kernel'de koşuldu — ve ayrılmadı
+
+0099 modeli düzeltilmiş kernel'de kalibre etmişti. Sıradaki adım onu hatası olan bir
+kernel'de koşmaktı, ve ilk hedef (`2f2ec8e7730e`) **derlenmedi**: o revizyonda
+`struct bpf_reg_state`'in `r64`/`r32` alanları yok.
+
+`bbc631085503` (2026-04-24) min/max alanlarını `cnum` ile değiştirmiş, ve hedef 13 gün
+öncesi. **Yani modelin bir dönem tabanı var: 2026-04-24.** Model `cnum_is_subset` uyguluyor;
+o yüklem daha eski bir kernel'de mevcut değil. Bu, projenin 2023-11-11 REG_INVARIANTS
+tabanının kardeşi, ve başarısız bir derlemeden öğrenildi.
+
+Doğru hedef bir gün sonrasında duruyordu: **`cd5b460ed1ec`** (2026-04-25),
+`Fixes: bbc631085503` — *"range_within() must check cnum ranges instead of min/max pairs"*.
+Buggy `range_within` worktree'de doğrulandı: sekiz min/max karşılaştırması.
+
+Yamanın dönem varyantı yazıldı (`parent_id` o revizyonda henüz yok), kernel kuruldu, ve
+896 programlık korpus koşuldu:
+
+```
+896 blok, 775 accept / 121 reject    (tip ile birebir aynı)
+SUBSUME pairs=2038 agree=2038 disagree=0 unmodelled=0
+```
+
+**Korpus sarmalı yay üretmiyor.** Hatalı min/max kontrolü ile doğru yay-içerilmesi bu
+girdide her yerde aynı sonucu veriyor. Dürüst bir negatif, ve 0062'nin dersini tekrar
+söylüyor: gerçek bir bug girdi ŞEKLİNİ de adlandırır, ve şekil teslim edilecek şeydir.
+
+### 2. Hedefli şekil, ve iki ölçülmüş engel
+
+`--probe-wraparc`: bir yol `w6 &= 0x20; w6 -= 0x10` ile sıfırın altına saran bir yay üretiyor,
+diğeri o yayın boşluğunda bir değer. Üç iterasyon, üç ölçüm:
+
+**(a) `tnum_in` önce geçmek zorunda.** İlk sürümde ikinci yol `[0x100,0x1ff]` üretiyordu;
+eski durumun tnum'u `(0x10; 0xffffffe0)`, yani alt beş bit `0x10`'a sabit. `[0x100,0x1ff]`
+o kümenin içinde değil, durumlar hiç eşdeğer sayılmadı ve `range_within`'a sıra gelmedi.
+İkinci yol tam olarak `0x110` yapıldı — alt bitleri tnum'a uyuyor, değeri yayın boşluğunda.
+
+**(b) Precision kısa-devresi.** Şekil düzeltilince çift yakalandı ve kernel budadı:
+
+```
+old r6: r32=fffffff0+20     ← sarmalı yay
+cur r6: r32=110+0           ← boşlukta
+18: safe                    ← budandı
+```
+
+Ama `exact=0` ve `prec=0`: `regsafe`'in ilk kuralı `!rold->precise && exact == NOT_EXACT ->
+true`. Kernel `range_within`'a **hiç sormadı**. Hata bu yoldan tezahür edemez, ve model de
+doğru olarak aynı kısa devreyi uyguladığı için ayrılmadı.
+
+**(c) Ve doğru yayın hangi yay olduğu.** Precision 0050'nin mekanizmasıyla zorlanınca
+(maskeli bir store, `mark_chain_precision` geriye doğru checkpoint'i precise yapıyor) prune
+tamamen kayboldu — çünkü benim yayım **yalnız işaretsiz sınırı** geçiyor. s32 izdüşümü
+`[-16, 16]` kalıyor ve buggy min/max kontrolü `16 >= 272` testinde **doğru şekilde** düşüyor.
+
+Commit'in karşı örneği `cnum32{base=0x7FFFFFF0, size=0x80000020}`: **hem** `UT_MAX/0` **hem**
+`ST_MAX/ST_MIN` sınırını geçiyor, ki ancak o zaman bütün izdüşümler tam aralığa açılır ve
+min/max kontrolü kör kalır. Yarı-genişlikte bir yayı BPF aritmetiğiyle verifier'a hassas
+biçimde izletmek ayrı bir problem, ve bu bacağın sonucu tam olarak bu:
+
+**Tetikleyicinin üç koşulu var ve üçü birden sağlanmalı** — tnum içerilmesi, eski register'ın
+precise olması, ve yayın HER İKİ sınırı birden geçmesi. Üçü de ayrı ayrı ölçüldü.
+
+### 3. Bilanço
+
+Kurulan: baskı-amaçlı yama (iki kez doğrulanmış), `exact_level` gözlemi, bağımsız subsumption
+modeli (2038/2038 kalibre, 1017'si önemsiz değil), ve modelin dönem tabanı.
+
+Kurulmayan: modelin gerçek bir sağlamsız prune'u yakaladığının gösterimi. Engel oracle değil
+**girdi** — ve engelin adı artık üç maddeyle yazılı.
+
+Workspace 371 yeşil.

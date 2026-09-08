@@ -37,3 +37,17 @@ diff <(grep -oE '^RESULT decision=[a-z]+ .*errno=[0-9]+' /tmp/stock.log) \
 
 **Bir bulgu asla yamalı kernel'de bırakılmaz.** Yama oracle'dır, hüküm değil: yamalı
 kernel'de çıkan her şey stok kernel'de yeniden türetilmek zorundadır.
+
+## Dönem hassasiyeti
+
+Yama, bastığı ALANLARA bağlı olarak dönem hassastır ve her kalibrasyon hedefi için küçük
+bir varyant gerekebilir. Ölçülmüş sınırlar:
+
+| alan | ne zamandan beri var |
+|---|---|
+| `r64` / `r32` (cnum) | **2026-04-24**, `bbc631085503` — bundan eski bir kernel'de yama derlenmez |
+| `parent_id` | `cd5b460ed1ec~1`'den sonra |
+
+Bu, `subsumption` modelinin de dönem tabanıdır: model `cnum_is_subset`'i uyguluyor, ve o
+yüklem 2026-04-24'ten önce mevcut değil. 2026-04-11 tarihli `2f2ec8e7730e` bu yüzden bu
+modelle kalibre EDİLEMEZ — projenin 2023-11-11 REG_INVARIANTS tabanının kardeşi bir sınır.

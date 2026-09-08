@@ -6410,6 +6410,162 @@ static void run_probe_mixwidth(void) {
     close(map_in); close(map_out);
 }
 
+// ---- calibration probe: the wrapping cnum arc (--probe-wraparc) ------------------------
+// Calibration pair THIRTEEN (cd5b460ed1ec, "bpf: range_within() must check cnum ranges
+// instead of min/max pairs", 2026-04-25) — and the first pair aimed at the SUBSUMPTION
+// model 0099 built.
+//
+// THE BUG, in the commit's own words: range_within() decided with the min/max accessors,
+//   reg_umin(old) <= reg_umin(cur) <= reg_umax(old)
+// "This is wrong for cnums that cross both UT_MAX/0 and ST_MAX/ST_MIN boundaries. Consider
+// cnum32{base=0x7FFFFFF0, size=0x80000020} ... A register with range [0x100, 0x200] (which
+// lies entirely in the gap of the wrapping range) would pass the min/max check despite
+// having no overlap with the actual cnum arc."
+//
+// WHY THE CORPUS COULD NOT FIND IT. 0100 ran the whole 896-program corpus on this kernel:
+// 2038 prune pairs, and the model agreed with the buggy kernel on every one. A wrapping arc
+// has to cross zero, and nothing in the grammar had a reason to build one. The bug is
+// reachable only by a shape that is CONSTRUCTED, not stumbled upon — which is 0062's lesson
+// again: a real bug names its input shape, and the shape is the deliverable.
+//
+// THE SHAPE. Two paths meet at one instruction with ranges that the two predicates judge
+// differently:
+//
+//   old path: w6 &= 0x20 ; w6 -= 0x10   -> [0xFFFFFFF0..U32_MAX] u [0..0x10]   (WRAPS)
+//   cur path: w6 &= 0x1ff ; w6 |= 0x100 -> [0x100, 0x1ff]                      (in the GAP)
+//
+// The wrapping arc projects to u32_min=0 / u32_max=U32_MAX, so the buggy min/max check reads
+// the cur range as contained. The arc itself does not contain it at all.
+//
+// THE ARMS DIFFER IN ONE INSTRUCTION: whether the first path's subtraction wraps.
+//   wrap    `w6 -= 0x10`  after `w6 &= 0x20`  -- crosses zero, arc wraps
+//   nowrap  `w6 += 0x10`  after `w6 &= 0x20`  -- stays [0x10, 0x30], no wrap, and then the
+//                                                two predicates must agree on both kernels
+static void run_probe_wraparc(void) {
+    static const struct { const char *name; int sub; } ARMS[] = {
+        {"wrap",   1},   /* trigger: the arc crosses zero */
+        {"nowrap", 0},   /* control: it does not          */
+    };
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = RTW_VALUE_SIZE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_out < 0) {
+        printf("===PROG wraparc#cd5b460ed1ec type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+
+    for (unsigned a = 0; a < sizeof(ARMS) / sizeof(ARMS[0]); a++) {
+        struct bpf_insn ins[64];
+        int n = 0, jexit[4], nx = 0;
+
+        /* Map value pointer first: r1-r5 are caller-saved and no helper call may follow. */
+        ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+        ins[n++] = (struct bpf_insn){0};
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+        jexit[nx++] = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_9, BPF_REG_0);
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_get_prandom_u32);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_6, BPF_REG_0);
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_get_prandom_u32);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_8, BPF_REG_0);      /* path selector */
+        /* The padding below reads r7, so it must exist on every path. Using an
+           uninitialised register as filler costs an "R7 !read_ok" rejection and the whole
+           experiment with it — the third time this project has paid for that. */
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_7, 0);
+
+        const int jsel = n;
+        ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_8, 0, 0);
+        /* path A: build the wrapping arc (or, in the control, one that does not wrap) */
+        ins[n++] = BPF_ALU32_IMM(BPF_AND, BPF_REG_6, 0x20);
+        ins[n++] = ARMS[a].sub ? BPF_ALU32_IMM(BPF_SUB, BPF_REG_6, 0x10)
+                               : BPF_ALU32_IMM(BPF_ADD, BPF_REG_6, 0x10);
+        const int jmerge = n;
+        ins[n++] = BPF_JMP_A(0);
+        /* path B: a value in the wrap's GAP whose tnum the old state still CONTAINS.
+           Both halves matter and the first attempt got the second one wrong. `range_within`
+           is not reached unless `tnum_in` passes first, and the old state's tnum here is
+           (0x10; 0xffffffe0) — its low five bits are pinned to 0x10. A range like
+           [0x100,0x1ff] has tnum (0x100; 0xff), whose low bits are NOT inside that, so the
+           states were never equivalent and the prune never happened. 0x110 has low bits
+           0x10, so it sits inside the tnum, and it is outside the arc
+           [0xFFFFFFF0..U32_MAX] u [0..0x10] — which leaves range_within as the only check
+           that can decide, and that is the one the bug got wrong. */
+        ins[jsel].off = n - jsel - 1;
+        ins[n++] = BPF_MOV32_IMM(BPF_REG_6, 0x110);
+        ins[jmerge].off = n - jmerge - 1;
+
+        /* MERGE. Padding so the checkpoint heuristic (>=2 jumps AND >=8 insns) can fire, and
+           a store whose bound the merged range has to justify. */
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_7, 0);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_7, 0);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_7, 0);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_7, 0);
+        /* A STORE, AND IT IS NOT ABOUT MEMORY SAFETY. Without it the old register stays
+           IMPRECISE, and `regsafe`'s first rule is `!rold->precise && exact == NOT_EXACT ->
+           true`: the kernel short-circuits and never consults range_within, so the bug
+           cannot manifest no matter how the arcs are shaped. That was measured — the pair
+           was captured with the wrapping arc against 0x110 and pruned on the short-circuit.
+           0050 named the mechanism: a store forces `mark_chain_precision`, which backtracks
+           and marks the checkpoint's register precise, so the NEXT comparison at that
+           instruction has to do the range work. The mask keeps the access in bounds; the
+           precision is what is actually wanted. */
+        ins[n++] = BPF_ALU32_IMM(BPF_AND, BPF_REG_6, 7);
+        ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_9, BPF_REG_6);
+        const int store_insn = n;
+        ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_9, 0, -1);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 1);
+        ins[n++] = BPF_EXIT_INSN();
+        const int exit0 = n;
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+        ins[n++] = BPF_EXIT_INSN();
+        for (int i = 0; i < nx; i++) ins[jexit[i]].off = exit0 - jexit[i] - 1;
+
+        struct prune_load base = prune_load_once(ins, n, 0, g_log, sizeof(g_log));
+        struct prune_load freq = prune_load_once(ins, n, BPF_F_TEST_STATE_FREQ,
+                                                 g_log2, sizeof(g_log2));
+        struct prune_load inv  = prune_load_once(ins, n, BPF_F_TEST_REG_INVARIANTS,
+                                                 g_log2, sizeof(g_log2));
+        /* The state dump the subsumption model reads comes from the STATE_FREQ load, because
+           the default heuristic may place no checkpoint where the two paths meet. */
+        g_log[0] = '\0';
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 2;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        attr.prog_flags = BPF_F_TEST_STATE_FREQ;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        int lerr = errno;
+
+        printf("===PROG wraparc#cd5b460ed1ec#%s type=socket_filter ===\n", ARMS[a].name);
+        printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+               fd >= 0 ? "accept" : "reject", fd >= 0 ? 1 : -1, fd >= 0 ? 0 : lerr);
+        printf("STORE insn=%d reg=9 off=0 size=1\n", store_insn);
+        printf("PRUNE fall=wraparc taken=%s fall_safe=1 taken_safe=1 stack=0"
+               " base_verdict=%s base_errno=%d base_states=%lu base_reason=%s"
+               " freq_verdict=%s freq_errno=%d freq_states=%lu freq_reason=%s"
+               " inv_verdict=%s inv_errno=%d inv_reason=%s\n",
+               ARMS[a].name,
+               base.accept ? "accept" : "reject", base.err, base.states, base.reason,
+               freq.accept ? "accept" : "reject", freq.err, freq.states, freq.reason,
+               inv.accept ? "accept" : "reject", inv.err, inv.reason);
+        if (fd >= 0) close(fd);
+        printf("---LOG---\n%s\n---END---\n", g_log);
+    }
+    close(map_out);
+}
+
 // ---- calibration probe: the fake_reg corruption (--probe-fakereg) -----------
 // The SECOND kind of calibration. 0061 tested the oracle against a bug whose inconsistent
 // state the commit message printed, so no kernel had to be built. This one cannot work
@@ -9880,6 +10036,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-mixwidth") == 0) {
         run_probe_mixwidth();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-wraparc") == 0) {
+        run_probe_wraparc();
         return 0;
     }
     if (argc > 2 && strcmp(argv[1], "--fuzz-replay") == 0) {

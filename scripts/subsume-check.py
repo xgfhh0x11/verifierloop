@@ -54,6 +54,48 @@ def tnum_in(a_value, a_mask, b_value, b_mask):
         return False
     return a_value == (b_value & ~a_mask)
 
+class IdMap:
+    """kernel/bpf/states.c'nin `check_ids` + `check_scalar_ids`'i, transkribe edildi.
+
+    Sıra ÖNEMLİ: idmap her `states_equal` çağrısında sıfırlanır ve register'lar frame
+    sırasıyla, sonra stack slotlarıyla doldurulur. Yama stack'i henüz basmadığı için model
+    id taşıyan bir stack slotu OLABİLECEK programda karar vermez — `check_ids`'in tabloyu
+    ARTIMLI doldurması, eksik bir girdinin sonraki her kararı kaydırması demek."""
+
+    def __init__(self, tmp_id_gen_seed=1 << 20):
+        self.map = []
+        self.tmp = tmp_id_gen_seed
+
+    def check_ids(self, old_id, cur_id):
+        if bool(old_id) != bool(cur_id):
+            return False
+        if old_id == 0:
+            return True
+        for o, c in self.map:
+            if o == old_id:
+                return c == cur_id
+            if c == cur_id:
+                return False
+        self.map.append((old_id, cur_id))
+        return True
+
+    def check_scalar_ids(self, old_id, cur_id):
+        """DÜZELTİLMİŞ sürüm (2f2ec8e7730e sonrası). Hatalı sürüm yalnız bileşik id'yi
+        eşliyordu; taban id'nin de tutarlı eşlenmesi gerektiği kontrolü eksikti, ve
+        modelin buggy kernel'den ayrıldığı nokta tam olarak burasıdır."""
+        if not old_id:
+            return True
+        if not cur_id:
+            self.tmp += 1
+            cur_id = self.tmp
+        if not self.check_ids(old_id, cur_id):
+            return False
+        if old_id & BPF_ADD_CONST:
+            if not self.check_ids(old_id & ~BPF_ADD_CONST, cur_id & ~BPF_ADD_CONST):
+                return False
+        return True
+
+
 ROW = re.compile(
     r'^PRUNEPAIR insn=(\d+) exact=(\d+) side=(old|cur) fr=(\d+) r(\d+) '
     r'type=(\d+) delta=(-?\d+) var=([0-9a-f]+)/([0-9a-f]+) '
@@ -87,14 +129,15 @@ def parse(path):
 def main(path):
     pairs = parse(path)
     agree = disagree = unmodelled = nontrivial = 0
-    scalar_cmp = shortcircuit = other_type = 0
+    scalar_cmp = shortcircuit = other_type = id_checks = 0
     reasons = {}
     for p in pairs:
         if not p['old'] or not p['cur']:
             unmodelled += 1; reasons['eksik taraf'] = reasons.get('eksik taraf', 0) + 1
             continue
         skip = False; holds = True; ran_range = False
-        for key, o in p['old'].items():
+        idmap = IdMap()          # her çift için sıfırlanır, kernel'deki gibi
+        for key, o in sorted(p['old'].items()):   # frame, sonra register sırası
             c = p['cur'].get(key)
             if c is None:
                 skip = True; reasons["cur'da yok"] = reasons.get("cur'da yok", 0) + 1; break
@@ -110,11 +153,9 @@ def main(path):
             if (o['id'] & BPF_ADD_CONST) and o['delta'] != c['delta']:
                 holds = False; break
             if o['id'] or c['id']:
-                # check_ids'in idmap'i stack slotlarını da kapsıyor; yama onları henüz
-                # basmıyor, o yüzden bu çift TAHMİN EDİLMEZ.
-                skip = True
-                reasons['id eşlemesi (stack yok)'] = reasons.get('id eşlemesi (stack yok)', 0) + 1
-                break
+                id_checks += 1        # id kolu GERÇEKTEN koştu (0084'ün kuralı)
+            if not idmap.check_scalar_ids(o['id'], c['id']):
+                holds = False; break
             scalar_cmp += 1; ran_range = True
             if not (cnum_is_subset(o['b64'], o['s64'], c['b64'], c['s64'], UT64) and
                     cnum_is_subset(o['b32'], o['s32'], c['b32'], c['s32'], UT32)):
@@ -133,7 +174,8 @@ def main(path):
     print(f"SUBSUME pairs={len(pairs)} modelled={agree + disagree} "
           f"agree={agree} disagree={disagree} unmodelled={unmodelled}")
     print(f"SUBSUME nontrivial_pairs={nontrivial} scalar_comparisons={scalar_cmp} "
-          f"shortcircuited_regs={shortcircuit} other_type_regs={other_type}")
+          f"shortcircuited_regs={shortcircuit} other_type_regs={other_type} "
+          f"id_checks={id_checks}")
     for k, v in sorted(reasons.items()):
         print(f"SUBSUME unmodelled_reason {k}={v}")
     return 0
