@@ -542,3 +542,74 @@ prose vein holds 7 candidate claims, 3 of them encoded, so ~4 remain; the messag
 vein holds 11 examples and **all 11 are now encoded**. The document's real ceiling is
 therefore about **17 cases**, not "a few dozen" — and past that, growth in source 2
 requires the *document itself* to grow, which is outside this project's control.
+
+---
+
+## OI-15 — The pruning differential is structurally blind to a prune the BASELINE already takes
+
+- **Opened:** 2026-09-08 (devlog 0092), by building the detector's first positive control.
+- **Status:** OPEN. The limit is measured and understood; no same-kernel detector exists for
+  the class it excludes.
+- **What was measured.** `2f2ec8e7730e` changes nothing but `check_scalar_ids()` — sixteen
+  lines, no value-domain effect — so the buggy kernel's ONLY difference is a prune it should
+  not take. `--probe-idbase` reproduces it: the trigger is accepted on `2f2ec8e7730e~1` and
+  rejected on the fix and on tip, while the one-register control is accepted everywhere.
+  On the buggy kernel `check_prune_differential` ran with a live denominator
+  (`base_states=2` → `freq_states=8`, so the flag demonstrably widened the state space) and
+  reported **nothing**.
+- **Why, and it is structural rather than a defect.** `BPF_F_TEST_STATE_FREQ` only makes
+  pruning MORE aggressive. The soundness direction the check reports is
+  `freq ACCEPT && base REJECT` — the extra checkpoints revealing a prune that was not there.
+  A bug where the default checkpointing *already* takes the unsound prune produces the same
+  accepting verdict on both sides of the flag, and no flag differential can see it.
+- **Consequence for the numbers already reported.** The 43,379 (later 138,912) prune pairs
+  with zero flips are evidence about the DETECTOR's reach, not about the corpus. They must
+  not be quoted as coverage of unsound pruning.
+- **What would close it.** A same-kernel reference for the pruning DECISION. 0088 measured
+  that the decision is not auditable from the log — the prune record carries neither state,
+  and the log cannot express `range_within`'s domain (arc containment on `cnum{base,size}`
+  against eight printed projections). So closing this needs either a debug patch to the tree
+  under test (which changes the thing under test, and is its own decision) or an oracle whose
+  reference is something other than the log. The liveness GATE (OI-16) is the part of this
+  that turned out to be auditable.
+
+---
+
+## OI-16 — `bpflive.h` refuses subprogram calls, and that is 334 of 896 corpus programs
+
+- **Opened:** 2026-09-08 (devlog 0088/0095).
+- **Status:** OPEN, bounded, with a measured cost.
+- The liveness gate's independent model covers single-frame programs. A `BPF_PSEUDO_CALL`
+  makes the whole program `UNSUPPORTED` — deliberately, because the finding direction
+  (model LIVE / kernel DEAD) is also the direction a coarser analysis produces, so an
+  approximated interprocedural liveness would manufacture findings out of the model's own
+  gaps.
+- **The cost is measured**: on `--gen-comp` the model handles 562 of 896 programs, and every
+  one of the 334 refusals is the subprogram call. The fuzz grammar emits none, so
+  `liveunsup=0` there — but that changes the moment a call gene is added.
+- **What would close it.** Interprocedural liveness: a call's use-set from the callee's live-in,
+  its def-set from the callee's clobbers, and the return edge. This is ordinary dataflow, not
+  research — but it must be calibrated before it judges, the same way the intraprocedural
+  model was calibrated against the kernel's own `compute_live_registers.c` selftests (which
+  found three defects in it that our own corpus could never have surfaced).
+
+---
+
+## OI-17 — A verifier-accepted program that CRASHES the kernel has no pipeline channel
+
+- **Opened:** 2026-09-08 (devlog 0093).
+- **Status:** OPEN. The evidence is captured; the pipeline cannot consume it.
+- **What happened.** Calibration pair twelve (`bc308be380c1`) produced the strongest evidence
+  this instrument has: on the buggy kernel the verifier ACCEPTS the program and the kernel
+  page-faults running it — `Oops: 0002` (a write fault) at `RIP: bpf_prog_...` inside the
+  JITed code, reached through `bpf_test_run`.
+- **And the oracle it was built for cannot report it.** `check_runtime_write_safety` reports a
+  sentinel that never arrives; the observation requires surviving the store, and with a 4 GB
+  divergence the store is fatal by construction. For this class **the detector is the crash**.
+- **Half-closed.** `run-harness-vm.sh` now recognises an oops instead of losing the run as
+  "markers not found": it saves the serial to `<out>-crash-serial.log`, prints the BUG and RIP
+  lines, flags the case where a `RESULT decision=accept` preceded the crash, and exits 2.
+- **What remains.** The pipeline has no record kind for it, so a crash is evidence a human
+  reads rather than a finding the oracles count. A crash channel with its own denominator —
+  "accepted programs that were run" — would make it countable. Note the serial interleaves
+  harness stdout with printk character by character, so parsing it needs care.

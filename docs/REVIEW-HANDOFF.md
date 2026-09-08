@@ -16,7 +16,63 @@
 
 ---
 
-## 0. Reviewer için 60 saniyelik özet
+## 0. Reviewer için 60 saniyelik özet — GÜNCEL (bacak 0097, 2026-09-08)
+
+> **Bu belgenin 1–8. bölümleri bacak 0024'ün (2026-09-01) anlık görüntüsüdür ve olduğu gibi
+> bırakıldı** — o gün bizzat koşulmuş doğrulamaların kaydı hâlâ değerli. Ama aradan **73
+> bacak** geçti ve o bölümlerdeki durum ifadeleri artık geçerli değil. Güncel resim burada;
+> hikâyenin tamamı `docs/devlog/devlog.md`, açık kalemler `docs/OPEN-ITEMS.md`.
+
+**Ne değişti, tek cümlede:** proje "pipeline canlı mı" sorusundan çıkıp **"sıfır bulgu ne
+anlama geliyor"** sorusuna geçti, ve bu sorunun cevabı artık ölçülüyor.
+
+**On iki kalibrasyon çifti**, hepsi gerçek kernel commit'lerine karşı, çoğu hatayı taşıyan
+kernel'i **derleyip koşarak** (`.lab/build/bzImage-buggy*` / `-fix*`, çiftin iki yarısı
+**byte-byte aynı `.config`** ile kurulmuş):
+
+| kanal | çift |
+|---|---|
+| parsed-state | `3844d153a41a`, `049c4e13714e`, `3cf2b61eb067` |
+| VERDICT (REG_INVARIANTS) | `92424801261d` |
+| temiz teyit (tamir gerekmedi) | `ae67b9fb8c4e` |
+| STORE-KONUMU ("asıl av") | `3878ae04e9fc` |
+| CANLILIK KAPISI | `3157f7e29996` |
+| **ölçülmüş SINIR** | `af9e89d8dd39`, `811c363645b3`, `871ef8d50e7c`, `2f2ec8e7730e`, `bc308be380c1` |
+
+Beş sınırın hiçbiri diğeriyle aynı değil, ve bu ayrım projenin en çok işe yarayan çıktısı:
+sınıf enstrümanın dışında (0068) · referansın kendisi hatayla aynı fikirde (0070) · yön
+muhafazakâr, raporlanmamalı (0090) · dedektörün **kendi bayrağı** koşulu yaratamıyor (0092) ·
+gözlem, yapısı gereği **öldürücü** bir olaydan sağ çıkmayı gerektiriyor (0093).
+
+**Sonuncusu bu enstrümanın ürettiği en güçlü kanıt:** `bc308be380c1`'in hatalı kernel'inde
+verifier programı **kabul ediyor** ve program koşarken kernel **page-fault ile ölüyor**
+(`Oops: 0002`, yazma hatası, `RIP: bpf_prog_...` JIT'lenmiş kodun içinde).
+
+**Yeni bir oracle sınıfı: canlılık kapısı.** `func_states_equal` yalnız CANLI saydığı
+register'ları karşılaştırır — yani canlılık her prune kararının **kapısı**. `harness/bpflive.h`
+o analizi emitlenen baytlardan bağımsız yeniden hesaplar. Yön tek taraflı (kernel ÖLÜ / model
+CANLI = bulgu), model kapsamadığını **reddeder**, ve kendi kalibrasyonunu kernel'in kendi
+`compute_live_registers.c` selftest'lerinden alır — ki o selftest'ler modelde **üç hata**
+buldu, hiçbiri bizim korpusumuzdan çıkamazdı.
+
+**Ölçülmüş sayılar (bugün):**
+
+| | |
+|---|---|
+| doğrulama geçişinin kapsandığı oranı | **%35.8** (3667/10244), 0086'da %30.3 idi |
+| en geniş payda | `liveness_gate_checked` — 30 dk'lık avda **19.5 milyon hücre** |
+| av hacmi | ~1.1M program / 30 dk, `livemiss=0 liveunsup=0 trunc=0` |
+| budama farkı | 138,912 çift, sıfır flip — **ama OI-15'i okumadan bunu kapsama sayma** |
+| test | **371 yeşil** |
+
+**Ve dürüst olan kısım:** hâlâ **sıfır kernel bulgusu**. Farkı şu ki bu sıfırın artık yanında
+hangi kanalların sertifikalı olduğu, paydaların ne olduğu ve yüzeyin ne kadarına dokunulduğu
+duruyor. Avın ürettiği tek `FINDING` triyajda **bizim log tamponumuz** çıktı (0097) — triyaj
+sayacı altıdan yediye.
+
+---
+
+## 0-eski. Reviewer için 60 saniyelik özet (bacak 0024 anlık görüntüsü — SÜPERSEDED)
 
 **verifierloop**, `bpf-next` çekirdeğindeki **eBPF verifier**'ın *mantık
 hatalarını* avlamak için tasarlanmış operasyonel bir araştırma döngüsüdür (kendi
@@ -714,7 +770,26 @@ sorgulamalı.
 
 ---
 
-## 9. Tek cümlelik doğrulanabilir durum ifadesi
+## 9. Tek cümlelik doğrulanabilir durum ifadesi — GÜNCEL (0097)
+
+> "verifierloop artık *pipeline canlı mı* değil, **sıfır bulgunun ne anlama geldiği**
+> sorusunu ölçüyor. On iki kalibrasyon çifti gerçek kernel commit'lerine karşı koşuldu ve
+> yedi kanal sertifikalandı; beşi **birbirinden farklı türde sınır** olarak döndü, biri
+> verifier'ın kabul ettiği bir programın kernel'i düşürmesiyle sonuçlandı. Kapsama, doğrulama
+> geçişinin **%35.8**'i (0086'da %30.3), ve projenin en geniş paydası — canlılık kapısı —
+> otuz dakikalık bir avda **19.5 milyon karşılaştırma** yapıp sıfır uyuşmazlık bildiriyor.
+> Hâlâ sıfır kernel bulgusu var; farkı, bu sıfırın artık hangi kanalların ölçüldüğüne, hangi
+> paydaya ve hangi yüzeye yaslandığının yazılı olması. Avın ürettiği tek bulgu triyajda
+> enstrümanın kendi log tamponu çıktı, ve onu bulmak üç eksik kapattı: yön ayrımı, genom
+> replay'i, ve derinlikle büyüyecek bir yanlış-pozitif kaynağı."
+
+**Bilinerek açık bırakılanlar:** OI-15 (budama farkının yapısal körlüğü — aynı-kernel bir
+dedektör yok), OI-16 (canlılık modeli subprog çağrılarını reddediyor: korpusun 334/896'sı),
+OI-17 (kabul edilip kernel'i düşüren bir programın pipeline kanalı yok).
+
+---
+
+## 9-eski. Tek cümlelik durum ifadesi (bacak 0024 — SÜPERSEDED)
 
 > "verifierloop'un beş-stage'li pipeline'ı ve loop'u, kendi derlediğimiz bpf-next
 > kernel'inden gelen **gerçek verifier verisiyle uçtan uca canlı koşuyor**; hacim açık

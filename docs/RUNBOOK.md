@@ -103,7 +103,12 @@ ls -la .lab/build/bzImage .lab/images/rootfs.img   # varsa kurulum tamam
 
 ---
 
-## 4. Fuzzer'ı çalıştır (syzkaller — birincil)
+## 4. Fuzzer'ı çalıştır (syzkaller — ARTIK BİRİNCİL DEĞİL)
+
+> **0077'den beri birincil av aracı syzkaller değil, kendi kapsama-güdümlü döngümüz.**
+> Sebebi OI-1: WSL2 iç içe KVM bir syzkaller kampanyasını taşıyamıyor, tek VM bile sürekli
+> kopuyor. Kendi döngümüz genom tabanlı, yeniden üretilebilir ve dört oracle taşıyor.
+> Av için **§4c'ye** bak; bu bölüm syzkaller corpus'undan örnek toplamak için duruyor.
 
 ```bash
 ./scripts/setup-syzkaller.sh              # bir kez (zaten yapıldı; syzkaller derler)
@@ -156,10 +161,93 @@ TIMEOUT=900 cargo run -q -p orchestrator --example syz_period -- /tmp/syz-period
 
 ---
 
+## 4c. AV: kapsama-güdümlü sürekli döngü (BİRİNCİL)
+
+```bash
+SECONDS_BUDGET=1800 ./scripts/run-fuzz.sh /tmp/hunt.log     # 30 dk, ~560 program/sn
+```
+
+`run-fuzz.sh` **önce referans interpreter'ı kalibre eder ve geçemezse koşmayı reddeder**;
+döngü ayrıca KCOV olmadan koşmayı reddeder (geri besleme olmadan "fuzzing" görüntüsü altında
+düz bir rastgele yürüyüş olurdu).
+
+Sonuç satırı `FUZZ done ...` ve okunacak alanlar:
+
+| alan | ne demek |
+|---|---|
+| `findings` / `FINDING` satırları | oracle bulguları — her biri **genomuyla** basılır |
+| `livecells` / `livemiss` | canlılık kapısı: payda ve uyuşmazlık (bkz §4d) |
+| `liveunsup` | modelin REDDETTİĞİ program sayısı — dürüst kapsam, sıfır değilse paydayı ona göre oku |
+| `prunepairs` / `pruneflip` / `pruneartifact` | budama farkı; **`pruneartifact` yapay red** |
+| `invchecked` / `invfault` | `BPF_F_TEST_REG_INVARIANTS` kanalı |
+| `trunc` | KCOV tamponu taştı mı — **sıfır değilse `seen_pcs` eksik sayıyor** |
+| `maxstates` / `avgstates` | keşif derinliği; düşükse budama çiftleri önemsizdir |
+
+**Bir bulguyu yeniden üret** (bulgu satırındaki genomu aynen ver):
+
+```bash
+G='genes=18 hi=1:15.1.1.7.4,10.0.1.9.27,...'
+HARNESS_ARGS="--fuzz-replay '$G'" TIMEOUT=240 ./scripts/run-harness-vm.sh /tmp/replay.log
+```
+
+Replay, döngünün **kendi** prologue/gövde/epilogue'unu kullanır — ikinci bir implementasyon
+farklılık üretebilirdi. Çıktı tam bir pipeline kaydıdır, yani her ailede olduğu gibi aynı
+oracle'lar yargılar.
+
+---
+
+## 4d. Canlılık kapısı (`bpflive.h`) — durumlar-arası oracle
+
+`func_states_equal` yalnız CANLI saydığı register'ları karşılaştırır, yani canlılık her prune
+kararının **kapısıdır**. `bpflive.h` o analizi emitlenen baytlardan bağımsız olarak yeniden
+hesaplar ve kernel'in bastığı tabloyla karşılaştırır.
+
+```bash
+./scripts/run-liveness.sh                    # prune + spill aileleri, ~2 dk
+FAMILIES=comp TIMEOUT=1500 ./scripts/run-liveness.sh   # 896 programlık korpus, ~25 dk
+```
+
+**Yön tek taraflıdır:** kernel ÖLÜ / model CANLI = bulgu. Kernel CANLI / model ÖLÜ =
+muhafazakârlık, raporlanmaz ve **sayılmaz**. Model, kapsamadığı bir şey görürse (subprog
+çağrısı, kayıtsız kfunc, bilinmeyen opcode) tahmin etmez, **reddeder** — bulgu yönü aynı
+zamanda kaba bir analizin ürettiği yön olduğu için.
+
+Modelin kendi kalibrasyonu, kernel'in kendi selftest'leriyle:
+
+```bash
+HARNESS_ARGS=--probe-livetraps TIMEOUT=240 ./scripts/run-harness-vm.sh /tmp/traps.log
+```
+
+---
+
+## 4e. Kalibrasyon çiftleri (gerçek kernel hatalarına karşı)
+
+Her çift bir kanalı sertifikalar, **ve yalnız onu**. Runner'ı olanlar:
+
+```bash
+./scripts/run-calibration.sh    # 92424801261d — VERDICT kanalı (REG_INVARIANTS)
+./scripts/probe-idlink.sh       # af9e89d8dd39 — SINIR: aşırı-red, enstrüman dışı
+./scripts/probe-spill.sh        # 811c363645b3 — runtime kanalının ölçülmüş sınırı
+./scripts/probe-deltalink.sh    # 3878ae04e9fc — STORE-KONUMU kanalı
+./scripts/probe-jsetlive.sh     # 3157f7e29996 — CANLILIK KAPISI kanalı
+```
+
+Runner'ı olmayan, doğrudan `HARNESS_ARGS` ile koşanlar: `--probe-maygotolive`
+(871ef8d50e7c, kapının SINIRI), `--probe-idbase` (2f2ec8e7730e, budama farkının **yapısal**
+sınırı), `--probe-mixwidth` (bc308be380c1, verifier kabul eder ve **kernel çöker**),
+`--probe-sx`, `--probe-fakereg`, `--probe-ref`.
+
+Buggy kernel'ler `.lab/build/bzImage-buggy*` ve `-fix*`; `KERNEL=` ile seçilir. Bir çift
+ancak iki kernel **aynı `.config`** ile kurulduysa anlamlıdır — `build-kernel.sh` `SRC`/`OUT`
+alır, ve doğrulaması iki `.config`'i `diff`lemektir.
+
+---
+
 ## 5. VM'e elle gir (manuel PoC / debug)
 
 ```bash
-ACCEL=tcg ./scripts/boot-vm.sh    # disposable VM, seri konsol (KVM yok, TCG kullan)
+./scripts/boot-vm.sh              # disposable VM, seri konsol (KVM otomatik seçilir)
+# ACCEL=tcg ./scripts/boot-vm.sh  # TCG'ye zorlamak istersen (~20x yavaş)
 ```
 Çıkış: VM içinde `poweroff` ya da QEMU'yu öldür (bkz §7 gotcha).
 
@@ -167,7 +255,12 @@ ACCEL=tcg ./scripts/boot-vm.sh    # disposable VM, seri konsol (KVM yok, TCG kul
 
 ## 6. KVM mı, TCG mi? (hız meselesi)
 
-Şu an: **TCG** (probe edildi 2026-08-26, `-enable-kvm` → `No such device`).
+Şu an: **KVM** (Win11/WSL2 iç içe sanallaştırma çalışıyor). `boot-vm.sh` `/dev/kvm`
+yazılabilirse KVM, değilse TCG seçiyor — el ile bir şey yapmana gerek yok. Ölçüm: KVM,
+`load_ns` medyanında TCG'nin ~20 katı, ve çıktı iki hızlandırıcıda **byte-byte aynı**
+(242/242 program), yani hızlandırıcı seçimi bir verim kararı, asla anlamsal bir karar değil.
+
+> Tarihsel not: 2026-08-26'da `-enable-kvm` → `No such device` veriyordu; o engel kalktı.
 KVM ~10–20x daha hızlı olurdu; ama loop mantığı **period = exec-count** olduğu için
 sadece duvar-saati etkilenir, sonuçlar değil.
 
@@ -245,8 +338,20 @@ Bunlar bilerek **niyet basıp `exit 1`** yapar; henüz bağlı değil:
 ## 10. "Yeni oturuma başladım, nereden bakayım?" (30 sn)
 
 ```bash
-cat docs/devlog/devlog.md | sed -n '26,50p'   # entry tablosu + pipeline durumu
-git --no-pager log --oneline -5                 # son commit'ler
-cargo test                                        # her şey yeşil mi (82 passed)
+git --no-pager log --oneline -8                  # son bacaklar
+tail -120 docs/devlog/devlog.md                  # en son bacağın tamamı
+cargo test --workspace                           # her şey yeşil mi (371 passed)
 ```
-Detaylı durum: `docs/REVIEW-HANDOFF.md`. Ne yapıldığının hikâyesi: `docs/devlog/devlog.md`.
+
+Ve enstrümanın **kendi sağlığını** okumak — sayıların hangisi payda, hangisi kapsam:
+
+```bash
+MEASURE_LOG=<yakalama> cargo test -p pipeline --test measure_log -- --ignored --nocapture
+```
+
+Bu, kayıtlı HER paydayı basar (liste `INVARIANT_DENOMINATORS`'tan türetilir, elle
+yazılmaz — 0091'de altısı yıllarca basılmıyordu). Bir ailenin "temiz" olduğuna karar
+vermeden önce bakılacak yer burasıdır: **sıfır bulgu, paydası olmadan bilgi değildir.**
+
+Detaylı durum: `docs/REVIEW-HANDOFF.md`. Hikâye: `docs/devlog/devlog.md`.
+Açık kalemler ve ölçülmüş sınırlar: `docs/OPEN-ITEMS.md`.
