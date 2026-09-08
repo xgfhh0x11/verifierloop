@@ -7288,3 +7288,90 @@ bırakılmaz.** Yama oracle'dır, hüküm değil; yamalı kernel'de çıkan her 
 yeniden türetilmek zorundadır.
 
 Workspace 371 yeşil.
+
+## 0099 — Bağımsız `states_equal` modeli, ve onu mümkün kılan seviye atfı
+
+### 1. `exact_level` artık gözlemleniyor — OI-14 bunu imkânsız saymıştı
+
+Model yazmadan önce bir eksik vardı ve kapatılması şarttı: `regsafe`'in en güçlü kuralı
+`if (!rold->precise && exact == NOT_EXACT) return true`. Yani seviye bilinmeden, imprecise
+bir register'da kontrolün yapılıp yapılmadığı bilinemez.
+
+OI-14 (0052) seviye atfını **ölçümle kapatmıştı**: iki farklı çağrı yeri aynı çifti
+birleştirebiliyor ve log hangisinin ateşlediğini söylemiyor. Doğruydu — kernel basmıyor.
+Yama basıyor: `hit:`e ulaşan çağrı yerini kaydeden bir yerel, ve `PRUNEPAIR` satırına bir
+`exact=` alanı.
+
+```
+6,538 kayıt  exact=NOT_EXACT      (kısa devre geçerli)
+5,458 kayıt  exact=RANGE_WITHIN   (range/tnum gerçekten koşuyor)
+    0 kayıt  exact=EXACT
+```
+
+Kayıtların **%55'i** kısa-devrenin geçerli olduğu yerde. `exact` olmadan kurulan bir model
+verinin yarısında yanlış yönde davranırdı — ya kör kalırdı ya yanlış bulgu üretirdi.
+
+**Ve kimlik testi yeni yamayla tekrar koşuldu:** yerel değişken ve dört atama eklendiği hâlde
+896/896 verdict, errno dahil, aynı. "Yalnızca yazdırır" iddiası her değişiklikte yeniden
+kanıtlanır, bir kez değil.
+
+### 2. Model
+
+`kernel/bpf/cnum_defs.h` ve `states.c`'den **transkribe edildi, kopyalanmadı**:
+
+```
+is_empty(c)        = c.base == UT_MAX && c.size == UT_MAX
+urange_overflow(c) = c.size > UT_MAX - c.base
+is_subset(big,sm)  = sm boş → true; big boş → false;
+                     sm.base -= big.base; big.base = 0
+                     urange_overflow(sm) && big.size < UT_MAX → false
+                     sm.base + sm.size <= big.size
+```
+
+üstüne `regsafe`'in skaler kolu sırasıyla: precision kısa-devresi → ADD_CONST bayrak eşitliği
+→ delta eşitliği → `check_ids` → `range_within && tnum_in`.
+
+`scripts/subsume-check.py`.
+
+### 3. Kalibrasyon — model, yargılamadan önce yargılanıyor
+
+```
+SUBSUME pairs=2038 modelled=1942 agree=1942 disagree=0 unmodelled=96
+```
+
+**2,038 çift**, ve bu sayı bağımsız bir tutarlılık kontrolü: 0088 logdaki `: safe`
+olaylarını sayarak da **2038** bulmuştu. Enstrümantasyon prune başına tam bir kez ateşleniyor,
+ve çiftleme gruplaması doğru.
+
+**Uyuşmazlık sıfır.** Ve 0084'ün kuralı gereği bunun boş olmadığı ayrıca ölçüldü:
+
+```
+range/tnum'un GERÇEKTEN koştuğu çift : 921
+o çiftlerdeki skaler karşılaştırma   : 1,453
+kısa-devreyle atlanan register        : 565
+skaler kolu dışı (pointer vb.)        : 3,637
+```
+
+921 çiftte yay-içerilmesi ve tnum-içerilmesi fiilen hesaplandı; model hepsinde kernel'le
+aynı sonuca vardı.
+
+### 4. Modellenmeyen 96, ve adı
+
+Hepsi tek sebep: **id taşıyan bir register**. `check_ids`'in idmap'i stack slotlarını da
+kapsıyor, yama onları henüz basmıyor, ve model tahmin etmiyor — `bpflive.h`'in disiplininin
+aynısı, çünkü tahmin edilen bir eşleme yanlış bulgu üretir. Kapatması yamaya stack slotlarını
+eklemek: sınırlı iş, ölçülmüş maliyet (96/2038 = %4.7).
+
+### 5. Ne kanıtlandı, ne kanıtlanmadı
+
+**Kanıtlanan:** budama kararı için bağımsız bir referans **mümkün**, ve kurulan referans
+kernel'le 1,942 çiftin hepsinde — 921'i önemsiz olmayan — aynı fikirde. OI-15'in "aynı-kernel
+dedektör yok" tespiti artık eskimiş durumda; referans var.
+
+**Kanıtlanmayan:** modelin gerçek bir sağlamsız prune'u YAKALAYACAĞI. Elimizde yalnız
+kernel'in aldığı prune'lar var, yani tek yön görülebiliyor, ve o yönde sıfır uyuşmazlık
+çıktı. Sıradaki adım — ve bu kalibrasyon kuralının kendisi — bunu hatası olan bir kernel'de
+koşmak: `2f2ec8e7730e~1` zaten kurulu, ve `--probe-idbase` o hatayı tetikleyen şekli
+üretiyor.
+
+Workspace 371 yeşil.
