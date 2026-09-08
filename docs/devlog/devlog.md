@@ -7143,3 +7143,80 @@ Eksik kalan şey de adıyla duruyor: [[kernel-vs-kernel-differential]] pruning d
 yapısal körlüğünü ölçtü, ve o sınıf için hâlâ aynı-kernel bir dedektör yok.
 
 Workspace 369 yeşil.
+
+## 0097 — Avın ilk bulgusu bizim log tamponumuzdu, ve onu bulmak iki eksik açtı
+
+### 1. Bulgu
+
+İki kaldıraç da açıkken koşan ikinci uzun oturum (1,076,153 program, 1801s) tam bir `FINDING`
+üretti:
+
+```
+FINDING kind=prune_verdict_flip iter=443840 base=accept freq=reject
+        base_states=49 freq_states=202 reason=verdict
+```
+
+Triage kuralı gereği ne kernel hatası ne bizim hatamız sayıldı; elle türetildi.
+
+### 2. Ama önce iki şeyin eksik olduğu ortaya çıktı
+
+**Yön ayrılmıyordu.** `diff.rs` sağlamsızlık yönünü (`freq ACCEPT + base REJECT`) ters yönden
+özenle ayırıyor; VM içindeki kontrol ikisini `prune_verdict_flip` tek adında topluyordu. Düşen
+bulgu ters yöndü — yani **zayıf yön, güçlü yönün adıyla** raporlanmıştı.
+
+**Replay yoktu.** Devlog 0077'den beri *"her genom yeniden üretilebilir, ve bir bulgu genomunu
+raporda taşır"* diyor. Yarısı doğruydu: genom basılıyordu, onu geri okuyacak hiçbir şey yoktu.
+**Yeniden üretilemeyen bir rapor bulgu değil, üstünde sayılar olan bir söylenti.**
+`--fuzz-replay` eklendi, ve fuzz döngüsünün kendi prologue/gövde/epilogue'unu kullanıyor —
+ikinci bir implementasyon farklılık üretebilirdi.
+
+### 3. Cevap: (c)-negatif, yedinci kez
+
+Replay birebir üretti (`base_states=49`, `freq_states=202`) ve eksik parçayı gösterdi:
+**`freq_errno=28`**, yani ENOSPC.
+
+`kernel/bpf/log.c:295`:
+
+```c
+/* did truncation actually happen? */
+if (log->ubuf && log->len_max > log->len_total)
+        return -ENOSPC;
+```
+
+**ENOSPC bir verdict değil; verifier LOGUNUN kesildiği anlamına geliyor.** Zincir:
+
+bayraklı koşu 49 yerine 202 state gezdi → `log_level=2`'de dört kat log → 256 KB'lık `g_log2`
+taştı → kernel ENOSPC döndü → sınıflandırıcı yalnız `"BPF program is too large"` ve
+`"too many states"` metinlerine baktığı için `"verdict"`e düştü → bir pruning uyuşmazlığı
+raporlandı.
+
+**Ve bu, derinlik arttıkça artacak bir kirlenmeydi.** 0095'in iterator geni `maxstates`'i
+17/61'den 73/238'e çıkardı; her derin keşif bir aday. ENOSPC'yi verdict okumak, enstrümanın
+derine inmedeki kendi başarısını bir yanlış bulgu akışına çeviriyor.
+
+### 4. Üç yerden düzeltildi
+
+1. **Sınıflandırma:** `reason = "log_truncated"`, ENOSPC için.
+2. **Kaynak kaldırıldı:** bayraklı yükleme artık `prune_load_states()` ile **`log_level=1`**
+   istiyor. `total_states` zaten seviye 1'in bastığı özet satırında; seviye 2 yalnızca
+   taşmanın sebebi olan komut-başı durum dökümünü ekliyor. Temel yükleme seviye 2'de kalıyor,
+   çünkü canlılık kapısı onun tablosunu okuyor.
+3. **Pipeline:** `diff.rs`'in kaynak filtresi `log_truncated`'ı da sayıyor — yakalanmış bir
+   kayıt aynı yanlış pozitifi üretmesin diye.
+
+### 5. Doğrulama
+
+```
+--fuzz-replay: freq_verdict=reject freq_errno=28 freq_reason=log_truncated   (önce: verdict)
+yeni oturum  : iters=255762 pruneflip=0 pruneartifact=0 FINDING yok
+```
+
+`pruneartifact=0` bilerek: kaynak sınıflandırılmadı, **kaldırıldı**.
+
+### 6. Turun sonucu
+
+Av sıfır kernel bulgusu verdi. Ama bir tur, ürettiği tek sinyali sonuna kadar takip ettiği
+için enstrümanda üç şey düzeltti: yön ayrımı, replay, ve derinlikle birlikte büyüyecek bir
+yanlış-pozitif kaynağı. Triage sayacı altıdan **yediye** çıktı.
+
+Workspace 371 yeşil.

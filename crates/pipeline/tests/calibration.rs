@@ -1302,3 +1302,59 @@ fn the_buggy_kernel_accepts_the_program_and_faults_running_it() {
     assert!(MW_CRASH.contains("RIP: 0010:bpf_prog_"), "the fault is inside the program");
     assert!(MW_CRASH.contains("bpf_test_run+"), "reached through BPF_PROG_TEST_RUN");
 }
+
+// ===========================================================================================
+// THE HUNT'S FIRST FINDING WAS OUR OWN LOG BUFFER (0097)
+// ===========================================================================================
+//
+// The first million-program hunt after both levers were opened produced exactly one FINDING:
+// `prune_verdict_flip base=accept freq=reject reason=verdict`. Triage said (c)-negative for
+// the seventh time.
+//
+// `freq_errno=28` is ENOSPC, and kernel/bpf/log.c:295 returns it when the verifier LOG was
+// truncated — `log->len_max > log->len_total`, a statement about the harness's buffer and not
+// about the program. The state-freq load explored 202 states where the default explored 49,
+// wrote four times the log_level=2 output, overflowed 256 KB, and came back rejected. The
+// classifier looked only for "BPF program is too large" and "too many states", so it fell
+// through to "verdict" and was reported as a pruning disagreement.
+//
+// THE DEEPER THE SEARCH, THE MORE OF THESE. 0095's iterator gene took maxstates from 17/61 to
+// 73/238; every one of those deep explorations is a candidate. Reading ENOSPC as a verdict
+// turns the instrument's own success at going deep into a stream of false findings.
+//
+// Fixed in three places: the reason is now `log_truncated`; the fuzz loop's flagged load asks
+// for log_level=1, which is all `total_states` needs and removes the source rather than
+// classifying it; and the check below treats it as the resource direction it is.
+
+const PLT: &str = include_str!("fixtures/calibration/prune-log-truncated.log");
+
+/// A truncated log is the RESOURCE direction, never a finding — and the capture that proves
+/// it is the replayed genome from the hunt that reported it.
+#[test]
+fn a_truncated_verifier_log_is_not_a_pruning_disagreement() {
+    assert!(
+        PLT.contains("freq_errno=28") && PLT.contains("freq_reason=log_truncated"),
+        "the fixture must carry the ENOSPC case it was captured for"
+    );
+    let (_, out) = run_diff(PLT, "plt");
+    assert!(
+        !out.findings.iter().any(|f| f.kind.starts_with("prune_")),
+        "a log-buffer overflow must not be reported as a pruning result: {:?}",
+        out.findings
+    );
+    // Counted as the artefact it is, and NOT folded into the denominator: a pair whose
+    // flagged half never finished says nothing about pruning either way.
+    assert_eq!(out.summary.prune_resource_artifacts, 1);
+    assert_eq!(out.summary.finding_count, 0, "{:?}", out.findings);
+}
+
+/// AND THE GENOME REPLAYS. Until 0097 the devlog claimed every genome was replayable while
+/// nothing could read one back; a report nobody can reproduce is not a finding. This fixture
+/// is the output of `--fuzz-replay` on the reported genome, and it reproduces the original
+/// state counts exactly.
+#[test]
+fn the_reported_genome_reproduces_the_state_counts_it_was_reported_with() {
+    assert!(PLT.contains("base_states=49"), "the original base count");
+    assert!(PLT.contains("freq_states=202"), "and the original flagged count");
+    assert!(PLT.contains("REPLAY insns=79 genes=18"), "rebuilt from the printed genome");
+}

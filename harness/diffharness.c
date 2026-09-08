@@ -2822,6 +2822,14 @@ static struct prune_load prune_load_typed(const struct bpf_insn *insns, int n,
         r.reason = "too_many_states";     /* BPF_COMPLEXITY_LIMIT_STATES, not a finding */
     else if (e == EFAULT)
         r.reason = "efault";              /* REG INVARIANTS VIOLATION path */
+    /* ENOSPC IS NOT A VERDICT. kernel/bpf/log.c:295 returns it when the verifier LOG was
+       truncated (`log->len_max > log->len_total`) — a statement about our buffer, not about
+       the program. It reached here as "verdict" and produced the hunt's only FINDING: a
+       state-freq load that explored 202 states instead of 49, wrote four times the
+       log_level=2 output, overflowed a 256 KB buffer, and was reported as a pruning
+       disagreement. Seventh time the triage answer was (c)-negative. */
+    else if (e == ENOSPC)
+        r.reason = "log_truncated";       /* OUR buffer, not the kernel's decision */
     else
         r.reason = "verdict";             /* the verifier actually decided */
     if (fd >= 0)
@@ -2832,6 +2840,43 @@ static struct prune_load prune_load_typed(const struct bpf_insn *insns, int n,
 static struct prune_load prune_load_once(const struct bpf_insn *insns, int n,
                                          uint32_t flags, char *logbuf, size_t logsz) {
     return prune_load_typed(insns, n, flags, logbuf, logsz, BPF_PROG_TYPE_SOCKET_FILTER);
+}
+
+/* THE STATE COUNT NEEDS log_level=1, NOT 2. `total_states` lives in the one-line summary
+   that level 1 already prints; level 2 adds the whole per-instruction state dump, which for
+   a deep exploration is two orders of magnitude more text and the only reason the buffer can
+   overflow at all. The flagged load in the fuzz loop reads nothing but that count, so it now
+   asks for the level it needs — which REMOVES the ENOSPC source rather than merely
+   classifying it. The BASE load stays at level 2 because the liveness gate reads its table. */
+static struct prune_load prune_load_states(const struct bpf_insn *insns, int n,
+                                           uint32_t flags, char *logbuf, size_t logsz) {
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)insns;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 1;
+    attr.log_size = logsz;
+    attr.log_buf = (uint64_t)(unsigned long)logbuf;
+    attr.prog_flags = flags;
+    logbuf[0] = '\0';
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int e = errno;
+    struct prune_load r;
+    r.accept = fd >= 0;
+    r.err = fd >= 0 ? 0 : e;
+    r.states = 0;
+    for (const char *p = logbuf; (p = strstr(p, "total_states ")) != NULL; p++)
+        r.states = strtoul(p + strlen("total_states "), NULL, 10);
+    if (fd >= 0)                                          r.reason = "none";
+    else if (strstr(logbuf, "BPF program is too large"))  r.reason = "too_large";
+    else if (strstr(logbuf, "too many states"))           r.reason = "too_many_states";
+    else if (e == EFAULT)                                 r.reason = "efault";
+    else if (e == ENOSPC)                                 r.reason = "log_truncated";
+    else                                                  r.reason = "verdict";
+    if (fd >= 0) close(fd);
+    return r;
 }
 
 static void run_prune_prog(enum prune_shaper fall, enum prune_shaper taken,
@@ -4421,6 +4466,140 @@ static void fz_print_genome(const struct gi_genome *G) {
                G->g[i].st, G->g[i].a, G->g[i].b, G->g[i].k, G->g[i].opt);
 }
 
+/* REPLAY A GENOME (--fuzz-replay "genes=N hi=H:st.a.b.k.opt,..."). 
+ *
+ * The devlog has claimed since 0077 that "every genome is replayable, and a finding carries
+ * its genome in the report". Half of that was true: the genome was printed. Nothing could
+ * read it back. 0097's first FINDING made the gap concrete — a report nobody could reproduce
+ * is not a finding, it is a rumour with numbers on it.
+ *
+ * The rebuild is the fuzz loop's own prologue, body and epilogue, so a replay is the same
+ * program the loop loaded and not a second implementation that might differ. Output is a
+ * full pipeline record, so the same oracles that judge every other family judge this one. */
+static void run_fuzz_replay(const char *spec) {
+    struct gi_genome G;
+    memset(&G, 0, sizeof(G));
+    unsigned gn = 0, hi = 0;
+    const char *p = strstr(spec, "genes=");
+    if (!p || sscanf(p, "genes=%u hi=%u", &gn, &hi) != 2 || gn == 0 || gn > GI_MAXGENES) {
+        printf("===PROG fuzzreplay type=socket_filter ===\n"
+               "RESULT decision=error bad_genome errno=0\n---LOG---\n---END---\n");
+        return;
+    }
+    G.n = (uint8_t)gn; G.hi = (uint8_t)hi;
+    const char *q = strchr(p, ':');
+    if (!q) { printf("===PROG fuzzreplay type=socket_filter ===\n"
+                     "RESULT decision=error bad_genome errno=0\n---LOG---\n---END---\n");
+              return; }
+    q++;
+    for (unsigned i = 0; i < gn; i++) {
+        unsigned st, a, b, kk, opt;
+        if (sscanf(q, "%u.%u.%u.%u.%u", &st, &a, &b, &kk, &opt) != 5) {
+            printf("===PROG fuzzreplay type=socket_filter ===\n"
+                   "RESULT decision=error bad_genome_at=%u errno=0\n---LOG---\n---END---\n", i);
+            return;
+        }
+        G.g[i].st = (uint8_t)st; G.g[i].a = (uint8_t)a; G.g[i].b = (uint8_t)b;
+        G.g[i].k = (uint8_t)kk;  G.g[i].opt = (uint8_t)opt;
+        const char *comma = strchr(q, ',');
+        if (!comma) { if (i + 1 != gn) { printf("===PROG fuzzreplay type=socket_filter ===\n"
+                                                "RESULT decision=error short_genome errno=0\n"
+                                                "---LOG---\n---END---\n"); return; } break; }
+        q = comma + 1;
+    }
+
+    g_fz_iter_ok = (iter_resolve(&g_fz_iter) == 0);
+    if (g_fz_iter_ok) {
+        bpflive_register_kfunc(g_fz_iter.new_id, 3);
+        bpflive_register_kfunc(g_fz_iter.next_id, 1);
+        bpflive_register_kfunc(g_fz_iter.destroy_id, 1);
+    }
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = 16; m.max_entries = 1;
+    int map_in = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_in < 0 || map_out < 0) {
+        printf("===PROG fuzzreplay type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n",
+               errno);
+        return;
+    }
+
+    struct bpf_insn ins[320];
+    int n = 0, jexit[2 * GI_MAXGENES + 8], nx = 0;
+    ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_in};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    const int jnull = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_6, BPF_REG_0, 0);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_7, BPF_REG_0, 4);
+    ins[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_9, BPF_REG_0, 8);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                 .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+    ins[n++] = (struct bpf_insn){0};
+    ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    const int jnull2 = n; ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_8, BPF_REG_0);
+    n = gi_emit_body(&G, ins, n, jexit, &nx, NULL, 0);
+    const int tail = n;
+    if (G.hi) ins[n++] = BPF_ALU64_IMM(BPF_RSH, BPF_REG_6, 32);
+    ins[n++] = BPF_MOV64_REG(BPF_REG_0, BPF_REG_6);
+    ins[n++] = BPF_EXIT_INSN();
+    const int sentinel = n;
+    ins[n++] = BPF_MOV64_IMM(BPF_REG_0, GI_NULL_SENTINEL);
+    ins[n++] = BPF_EXIT_INSN();
+    for (int i = 0; i < nx; i++) ins[jexit[i]].off = tail - jexit[i] - 1;
+    ins[jnull].off = sentinel - jnull - 1;
+    ins[jnull2].off = sentinel - jnull2 - 1;
+
+    struct prune_load base = prune_load_once(ins, n, 0, g_log, sizeof(g_log));
+    struct prune_load freq = prune_load_once(ins, n, BPF_F_TEST_STATE_FREQ,
+                                             g_log2, sizeof(g_log2));
+    struct prune_load inv  = prune_load_once(ins, n, BPF_F_TEST_REG_INVARIANTS,
+                                             g_log2, sizeof(g_log2));
+    g_log[0] = '\0';
+    union bpf_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+    attr.insn_cnt = n;
+    attr.insns = (uint64_t)(unsigned long)ins;
+    attr.license = (uint64_t)(unsigned long)"GPL";
+    attr.log_level = 2;
+    attr.log_size = sizeof(g_log);
+    attr.log_buf = (uint64_t)(unsigned long)g_log;
+    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    int lerr = errno;
+
+    printf("===PROG fuzzreplay#%u type=socket_filter ===\n", gn);
+    printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+           fd >= 0 ? "accept" : "reject", fd >= 0 ? 1 : -1, fd >= 0 ? 0 : lerr);
+    printf("REPLAY insns=%d ", n);
+    fz_print_genome(&G);
+    printf("\n");
+    printf("PRUNE fall=replay taken=replay fall_safe=1 taken_safe=1 stack=0"
+           " base_verdict=%s base_errno=%d base_states=%lu base_reason=%s"
+           " freq_verdict=%s freq_errno=%d freq_states=%lu freq_reason=%s"
+           " inv_verdict=%s inv_errno=%d inv_reason=%s\n",
+           base.accept ? "accept" : "reject", base.err, base.states, base.reason,
+           freq.accept ? "accept" : "reject", freq.err, freq.states, freq.reason,
+           inv.accept ? "accept" : "reject", inv.err, inv.reason);
+    /* The flagged load's log too: when the two verdicts differ, the REASON the flagged run
+       gives is the whole question, and it lives only in that buffer. */
+    printf("FREQREASON %s\n", g_log2[0] ? "captured" : "empty");
+    if (fd >= 0) close(fd);
+    bpflive_print_claim(ins, n);
+    printf("---LOG---\n%s\n---END---\n", g_log);
+    close(map_in); close(map_out);
+}
+
 static void run_fuzz(int seconds) {
     /* Resolve the iterator kfuncs ONCE, and tell the independent liveness model their
        arities. Without the registration bpflive.h refuses every program containing the gene
@@ -4575,9 +4754,8 @@ static void run_fuzz(int seconds) {
                    helper rather than a second implementation of the same parse. */
                 struct prune_load base = prune_load_typed(ins, n, 0, g_log, sizeof(g_log),
                                                           BPF_PROG_TYPE_SOCKET_FILTER);
-                struct prune_load freq = prune_load_typed(ins, n, BPF_F_TEST_STATE_FREQ,
-                                                          g_log2, sizeof(g_log2),
-                                                          BPF_PROG_TYPE_SOCKET_FILTER);
+                struct prune_load freq = prune_load_states(ins, n, BPF_F_TEST_STATE_FREQ,
+                                                          g_log2, sizeof(g_log2));
                 const int widened = freq.states > base.states;
                 if (widened) prune_pairs++;
 
@@ -4626,12 +4804,29 @@ static void run_fuzz(int seconds) {
                    rejection on a complexity limit is the instrument's own artefact. */
                 const int resource = !freq.accept &&
                                      (strcmp(freq.reason, "too_many_states") == 0 ||
-                                      strcmp(freq.reason, "too_large") == 0);
+                                      strcmp(freq.reason, "too_large") == 0 ||
+                                      strcmp(freq.reason, "log_truncated") == 0);
                 if (resource) prune_artifacts++;
+                /* THE DIRECTION IS THE FINDING, and this check used to collapse both into
+                   one name. `diff.rs`'s check_prune_differential separates them carefully:
+                     freq ACCEPT + base REJECT -- the extra checkpoints pruned away a path
+                       that produced the rejection. Only an unsound regsafe does that.
+                     freq REJECT + base ACCEPT -- the reverse. The complexity-limit case is
+                       filtered above, but there is a THIRD cause the filter does not catch:
+                       forcing a checkpoint at every instruction stores states with
+                       `mark_all_scalars_imprecise()` applied, so the flagged run can LOSE
+                       precision and fail to prove something the default run proves. That is
+                       an over-rejection produced by the instrument, not unsoundness.
+                   Reporting the second under the first's name is how a weak-direction
+                   disagreement arrives looking like a soundness finding — which is exactly
+                   what the first hunt's only FINDING turned out to be (0097). */
+                const int unsound_dir = freq.accept && !base.accept;
                 if (widened && flipped && !resource) {
                     prune_flips++;
-                    printf("FINDING kind=prune_verdict_flip iter=%lu base=%s freq=%s"
+                    printf("FINDING kind=%s iter=%lu base=%s freq=%s"
                            " base_states=%lu freq_states=%lu reason=%s ",
+                           unsound_dir ? "prune_soundness_desync"
+                                       : "prune_verdict_disagreement",
                            iters, base.accept ? "accept" : "reject",
                            freq.accept ? "accept" : "reject", base.states, freq.states,
                            freq.reason);
@@ -9680,6 +9875,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-mixwidth") == 0) {
         run_probe_mixwidth();
+        return 0;
+    }
+    if (argc > 2 && strcmp(argv[1], "--fuzz-replay") == 0) {
+        run_fuzz_replay(argv[2]);
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--fuzz") == 0) {

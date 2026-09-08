@@ -1077,7 +1077,16 @@ fn check_prune_differential(
         return;
     }
     // The reverse direction: classify before counting.
-    if p.freq_reason == "too_large" || p.freq_reason == "too_many_states" {
+    // `log_truncated` is the third resource reason, and it cost the hunt its only FINDING
+    // (0097). kernel/bpf/log.c:295 returns -ENOSPC when the VERIFIER LOG did not fit — a
+    // statement about the harness's buffer, not about the program. A state-freq load that
+    // explores four times as many states writes four times as much log_level=2 output, so
+    // the DEEPER the exploration the more likely this is; reading it as a verdict turns the
+    // instrument's own success at going deep into a stream of false disagreements.
+    if p.freq_reason == "too_large"
+        || p.freq_reason == "too_many_states"
+        || p.freq_reason == "log_truncated"
+    {
         *artifacts += 1;
         return;
     }
