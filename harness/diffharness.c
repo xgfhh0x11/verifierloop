@@ -3569,8 +3569,14 @@ static void run_probe_uninit(void) {
 /* Sized against the LONGEST program the grammar emits, not the average. 0085 lengthened
    genomes to 6-20 genes and 41 loads in 144k promptly filled a 1<<18 buffer — and a
    truncated load loses coverage, which looks exactly like a plateau. The guest has room for
-   the larger mapping; the harness's own footprint is a few megabytes either way. */
-#define KCOV_ENTRIES    (1 << 20)
+   the larger mapping; the harness's own footprint is a few megabytes either way.
+   RAISED AGAIN AFTER 0095. The iterator gene put three kfunc calls and a back-edge into 59%
+   of programs, and the first million-program hunt came back `trunc=1` — one load in 1,011,360
+   refilled a 1<<20 buffer. One in a million does not move `seen_pcs`, but the DIRECTION does:
+   truncation had been 0 and returned the moment the grammar reached deeper code, so the next
+   gene would climb from here. 1<<21 is 16 MB of a guest with 1.6 GB free. The point of the
+   counter is that "plateaued" and "overflowed" must never be able to look alike. */
+#define KCOV_ENTRIES    (1 << 21)
 
 struct kcov_ctx { int fd; unsigned long *area; };
 

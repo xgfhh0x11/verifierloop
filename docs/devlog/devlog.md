@@ -7085,3 +7085,61 @@ tamamını modellemeye devam ediyor. Kaydedilmeseydi her iterator programı redd
 `livecells` yerine `liveunsup` tırmanacaktı — 0091'in dersi, bu sefer önden uygulandı.
 
 Workspace 369 yeşil.
+
+## 0096 — İlk gerçek av turu, ve geri gelen bir sayı
+
+### 1. Bu turun neyi farklı
+
+0094 oracle-hacim kaldıracını, 0095 yüzey kaldıracını kapattı. Bu, ikisi de kapalıyken
+koşan ilk uzun oturum — yani ilk kez "sıfır bulgu" hem ölçülmüş bir paydaya hem ölçülmüş bir
+kapsama yaslanıyor.
+
+```
+FUZZ done iters=1011360 accept=623767 reject=387593 corpus=154 seen_pcs=6218
+          compared=2792522 findings=0 trunc=1
+          prunepairs=126552 pruneflip=0 invchecked=78134 invfault=0
+          livecells=16384146 liverows=6402959 livemiss=0 liveunsup=0
+          maxstates=73/238 avgstates=4 iteremitted=578589 elapsed=1801s
+```
+
+Bir milyon program, otuz dakika. **16.4 milyon canlılık hücresi**, 126 bin prune çifti,
+78 bin invariant yüklemesi, 2.8 milyon referans karşılaştırması — hepsi temiz.
+
+### 2. Beklemediğim kazanç: derinlik
+
+| | 0085 | 0096 |
+|---|---|---|
+| `avgstates` | 3 | **4** |
+| `maxstates` (base/freq) | 17/61 | **73/238** |
+
+0084'ün endişesi şuydu: *"43 bin çift, 43 bin ÖNEMSİZ karşılaştırma olabilir — budamanın
+karar vereceği bir şey yok."* Iterator geni yalnız kapsama eklemedi; **state keşfini
+dörde katladı.** Yani pruning differential'ın çiftleri artık gerçekten derin — ki 0092'nin
+o dedektör hakkındaki sınırını değiştirmiyor, ama en azından çiftlerin önemsizliği artık
+bir mazeret değil.
+
+### 3. Ve geri gelen sayı: `trunc=1`
+
+[[fuzzing-loop]]'un kendi kuralı: *"`trunc=0`, platonun gramerden geldiğini kanıtlar — o
+kontrol olmadan 'platoya ulaştı' ile 'tampon taştı' aynı görünür."* Bu turda `trunc=1`.
+
+Bir milyonda bir yükleme `seen_pcs`'i kımıldatmaz. **Kımıldatan şey yön:** taşma sıfırlanmıştı
+ve gramer daha derin koda ulaşır ulaşmaz geri geldi. Bir sonraki gen buradan tırmanırdı.
+
+0085'in yaptığının aynısı yapıldı: `KCOV_ENTRIES` `1<<20` → `1<<21`. Misafirde 1.6 GB boş,
+eşleme 8 MB'tan 16 MB'a çıkıyor — %1. (Önceki OOM harness'tan değil, sınırsız bir iterator
+gövdesinin kernel'de biriktirdiği state'ten geliyordu; 0095'te düzeltildi.)
+
+Doğrulama koşusu: **226,887 iterasyon, `trunc=0`**, `livecells=3,930,313`, `livemiss=0`,
+`liveunsup=0`, bulgu 0.
+
+### 4. Sıfırın bugünkü anlamı
+
+Bu sıfır, 84 bacak önceki sıfırlarla aynı şey değil. Artık yanında duran şeyler var: hangi
+kanalların gerçek hatalarla sertifikalandığı (dokuz çift, üç ölçülmüş sınır), paydaların ne
+olduğu (16.4M hücre, 126k çift, 78k yükleme), ve yüzeyin ne kadarına dokunulduğu (%35.8).
+
+Eksik kalan şey de adıyla duruyor: [[kernel-vs-kernel-differential]] pruning differential'ın
+yapısal körlüğünü ölçtü, ve o sınıf için hâlâ aynı-kernel bir dedektör yok.
+
+Workspace 369 yeşil.
