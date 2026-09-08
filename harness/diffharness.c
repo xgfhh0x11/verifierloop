@@ -4380,6 +4380,11 @@ static void run_fuzz(int seconds) {
     unsigned long prune_pairs = 0, prune_artifacts = 0;
     unsigned long max_base_states = 0, max_freq_states = 0, sum_base_states = 0;
     unsigned long inv_checked = 0;
+    /* The liveness gate's counters. `live_cells` is the denominator the pipeline calls
+       `liveness_gate_checked`: cells the independent model calls LIVE, because only those
+       can fail. `live_unsup` is the honest scope — programs the model refused rather than
+       approximated — and reporting it next to the zero is what keeps the zero readable. */
+    unsigned long live_cells = 0, live_rows = 0, live_miss = 0, live_unsup = 0;
 
     printf("FUZZ start budget=%ds corpus_max=%d\n", seconds, FZ_CORPUS_MAX);
     while (time(NULL) - t0 < seconds) {
@@ -4487,6 +4492,38 @@ static void run_fuzz(int seconds) {
                                                           BPF_PROG_TYPE_SOCKET_FILTER);
                 const int widened = freq.states > base.states;
                 if (widened) prune_pairs++;
+
+                /* THE LIVENESS GATE, on the highest-volume input this project has.
+                   `func_states_equal` compares only the registers the verifier believes are
+                   live where two states meet, so a register wrongly called dead is a prune
+                   that never had to justify itself. 0088 built that oracle and 0089
+                   calibrated it against a real bug, but until now it ran only on the small
+                   hand-built families — the widest denominator in the project was attached
+                   to the narrowest input.
+                   It rides the GATED sample rather than every program, for the reason 0082
+                   gave: the table only exists at log_level=2, which is what makes these
+                   loads expensive. `base`'s log already has it, so this costs a parse.
+                   Only aggregates and real disagreements leave the VM; a per-program claim
+                   would be gigabytes of log for a number. */
+                {
+                    struct bpflive_cmp lc;
+                    bpflive_compare_log(ins, n, g_log, &lc);
+                    if (lc.status != BPFLIVE_OK) {
+                        live_unsup++;
+                    } else {
+                        live_cells += lc.checked;
+                        live_rows += lc.rows;
+                        if (lc.overreach) {
+                            live_miss += lc.overreach;
+                            printf("FINDING kind=liveness_gate_overreach iter=%lu insn=%d"
+                                   " reg=%d kernel_mask=0x%03x model_mask=0x%03x cells=%d ",
+                                   iters, lc.first_insn, lc.first_reg, lc.kmask, lc.omask,
+                                   lc.overreach);
+                            fz_print_genome(&G);
+                            printf("\n");
+                        }
+                    }
+                }
                 /* HOW DEEP the search actually went. Coverage rising says the grammar
                    reached new code; it does NOT say pruning had anything to decide. A
                    verifier that explores two or three states per program is not pruning in
@@ -4595,10 +4632,10 @@ static void run_fuzz(int seconds) {
 
         if ((iters % 2000) == 0)
             printf("STATUS iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu elapsed=%lds\n",
+                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu elapsed=%lds\n",
                    iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
                    truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
-                   max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, (long)(time(NULL) - t0));
+                   max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup, (long)(time(NULL) - t0));
     }
     /* THE PC SET ITSELF, so the coverage number can become a FRACTION. 5406 distinct PCs
        is uninterpretable on its own: CONFIG_KCOV_INSTRUMENT_ALL means the list includes the
@@ -4618,10 +4655,10 @@ static void run_fuzz(int seconds) {
         printf("PCSET total=%u\n", printed);
     }
     printf("FUZZ done iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu elapsed=%lds\n",
+           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu elapsed=%lds\n",
            iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
            truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
-           max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, (long)(time(NULL) - t0));
+           max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup, (long)(time(NULL) - t0));
     free(corpus);
     free(g_kseen);
     close(map_in);

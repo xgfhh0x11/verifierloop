@@ -6963,3 +6963,59 @@ kanıt, bir harness arızası gibi görünüyordu.
 tamir gerektiriyor.
 
 Workspace 369 yeşil.
+
+## 0094 — En geniş oracle, en yüksek hacimli girdiye bağlandı
+
+### 1. Bağlanmamış olduğunun kendisi bir bulgu
+
+0088 kapı-oracle'ını kurdu ve 0089 onu gerçek bir hataya karşı kalibre etti. Ama koştuğu yer
+elle kurulmuş küçük ailelerdi: `--gen-comp` (92,784 hücre), `--gen-prune` (491),
+`--gen-spill` (571). Yani **projenin en geniş paydalı oracle'ı, en dar girdiye takılıydı** —
+ve bunu fark etmek, "ne zaman ava geçiyoruz" sorusuna verilecek cevabın ilk yarısıydı.
+
+### 2. Neden VM içinde karşılaştırıyor
+
+Fuzz döngüsü saniyede ~700 program yüklüyor. Program başına bir `LIVENESS ... mask=` satırı
+basmak, bir sayı için gigabaytlarca log demek. O yüzden karşılaştırma C tarafında,
+`bpflive_compare_log()` içinde yapılıyor: VM'den yalnız **toplamlar ve gerçek uyuşmazlıklar**
+çıkıyor, ve bir uyuşmazlık genomuyla birlikte basılıyor, yani tekrar üretilebilir.
+
+Yüklem `diff.rs`'teki `check_liveness_gate` ile aynı, yönü de aynı: yalnız modelin CANLI
+dediği hücre ateşlenebilir, ve yalnız kernel'in ÖLÜ demesi bulgudur.
+
+**Kapılı örneğe biniyor**, her programa değil — 0082'nin kuralı: tablo yalnız `log_level=2`'de
+var, ki bu yüklemeleri pahalı yapan şeyin ta kendisi. `base` yüklemesinin logu tabloyu zaten
+taşıyor, yani ek maliyet bir ayrıştırmadan ibaret.
+
+### 3. Ölçüm
+
+```
+FUZZ done iters=124642 ... prunepairs=15706 invchecked=9680
+          livecells=1664690 liverows=688827 livemiss=0 liveunsup=0 elapsed=180s
+```
+
+| | |
+|---|---|
+| canlılık hücresi, **180 saniyede** | **1,664,690** |
+| tablo satırı | 688,827 |
+| uyuşmazlık | **0** |
+| model dışı program | **0** |
+
+Karşılaştırma için: tüm 896 programlık kompozisyon korpusu 92,784 hücre veriyor. Fuzz döngüsü
+üç dakikada bunun **on sekiz katını** üretiyor.
+
+`liveunsup=0` dürüst kapsam: fuzz grameri kfunc ve subprog çağrısı üretmiyor, yani
+`bpflive.h` gramerin tamamını modelliyor. Gramere kfunc eklendiğinde bu sayı kımıldayacak ve
+payda ona göre okunmalı — test bunu ayrı bir assert olarak taşıyor.
+
+### 4. Bu ne değiştirir
+
+P(find) = P(yüzeye ulaş) × P(oracle görsün) × P(şekil tetiklesin). Bu bacak ikinci çarpanı
+büyütmüyor — oracle zaten vardı. **Üçüncüsünü büyütüyor**: aynı oracle artık günde milyonlarca
+kez, kendi ürettiğimiz elle yazılmış şekiller yerine mutasyonla üretilmiş şekiller üzerinde
+soruluyor. Ve `liveness.o` %50.6 kapsamayla, 2025-09'da doğmuş, hâlâ değişen bir altsistem.
+
+Kalan hamle P(yüzeye ulaş) tarafında: gramerin kfunc üretmesi, ki [[coverage-fraction]]'a göre
+doğrulama geçişinin %13'ü.
+
+Workspace 369 yeşil.

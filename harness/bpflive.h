@@ -317,4 +317,92 @@ static void bpflive_print_claim(const struct bpf_insn *ins, int n) {
     printf("\n");
 }
 
+/* ---- comparing against the kernel's printed table, in-VM ------------------------------
+ *
+ * The fuzz loop runs hundreds of thousands of programs, so it cannot emit a claim per
+ * program and let the pipeline compare them — that is gigabytes of log for a number. The
+ * comparison therefore happens here, and only the AGGREGATES plus any actual disagreement
+ * leave the VM. Same predicate as `check_liveness_gate` in diff.rs, same direction: only a
+ * cell this model calls LIVE can fail, and only the kernel calling it DEAD is a finding.
+ */
+struct bpflive_cmp {
+    int status;        /* BPFLIVE_OK, or BPFLIVE_UNSUPPORTED when the model declined  */
+    int rows;          /* table rows the kernel printed and we could pair             */
+    int checked;       /* cells that COULD have fired: this model says LIVE           */
+    int overreach;     /* cells where the kernel says DEAD and this model says LIVE   */
+    int first_insn;    /* the first such cell, for triage                             */
+    int first_reg;
+    int kmask, omask;  /* and both masks at that row                                  */
+};
+
+/* Parse one row of `Live regs before insn:` out of a log buffer. `p` points at the start of
+   a line; returns the line's end, or NULL when the line is not a table row. The instruction
+   index is the LAST whitespace-separated token before the colon — liveness.c prints an
+   optional SCC id ahead of it (`%3d ` then `%3d: `), and taking the first digits instead
+   parses row 20 of SCC 2 as row 0. That mistake was made once, while measuring this very
+   channel. */
+static const char *bpflive_parse_row(const char *p, int *idx, uint16_t *mask) {
+    if (*p != ' ') return NULL;
+    const char *colon = p;
+    while (*colon && *colon != ':' && *colon != '\n') colon++;
+    if (*colon != ':') return NULL;
+    const char *q = colon;                       /* walk back over the index digits */
+    while (q > p && q[-1] >= '0' && q[-1] <= '9') q--;
+    if (q == colon) return NULL;
+    int v = 0;
+    for (const char *d = q; d < colon; d++) v = v * 10 + (*d - '0');
+    const char *cols = colon + 1;
+    if (*cols != ' ') return NULL;
+    cols++;
+    uint16_t m = 0;
+    for (int j = 0; j < 10; j++) {
+        char c = cols[j];
+        if (c != '.' && (c < '0' || c > '9')) return NULL;
+        if (c != '.') m |= BL_BIT(j);
+    }
+    if (cols[10] != ' ') return NULL;
+    *idx = v; *mask = m;
+    const char *eol = cols;
+    while (*eol && *eol != '\n') eol++;
+    return eol;
+}
+
+static void bpflive_compare_log(const struct bpf_insn *ins, int n, const char *log,
+                                struct bpflive_cmp *out) {
+    memset(out, 0, sizeof(*out));
+    out->first_insn = -1; out->first_reg = -1;
+    struct bpflive_result r;
+    bpflive_run(ins, n, &r);
+    out->status = r.status;
+    if (r.status != BPFLIVE_OK) return;
+
+    const char *t = strstr(log, "Live regs before insn:");
+    if (!t) { out->status = BPFLIVE_UNSUPPORTED; return; }   /* no table: nothing to compare */
+    t = strchr(t, '\n');
+    if (!t) { out->status = BPFLIVE_UNSUPPORTED; return; }
+    t++;
+    for (;;) {
+        int idx; uint16_t kmask;
+        const char *eol = bpflive_parse_row(t, &idx, &kmask);
+        if (!eol) break;                          /* the table is one contiguous block */
+        if (idx >= 0 && idx < n) {
+            out->rows++;
+            uint16_t ours = r.live_before[idx];
+            for (int reg = 0; reg < 10; reg++) {
+                uint16_t bit = BL_BIT(reg);
+                if (!(ours & bit)) continue;      /* we say dead: the kernel cannot overreach */
+                out->checked++;
+                if (kmask & bit) continue;
+                out->overreach++;
+                if (out->first_insn < 0) {
+                    out->first_insn = idx; out->first_reg = reg;
+                    out->kmask = kmask; out->omask = ours;
+                }
+            }
+        }
+        if (*eol != '\n') break;
+        t = eol + 1;
+    }
+}
+
 #endif /* BPFLIVE_H */

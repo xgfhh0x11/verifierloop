@@ -170,6 +170,28 @@ fn the_expensive_oracles_run_and_cost_little() {
         "the pruning differential must actually be evaluated, not merely reported: {}",
         field(last, "prunepairs=")
     );
+
+    // THE LIVENESS GATE, on the highest-volume input this project has (0094). 0088 built the
+    // oracle and 0089 calibrated it against a real bug, but until now it ran only on the
+    // hand-built families: the widest denominator in the project was attached to the
+    // narrowest input. Wired into the gated sample it produces more cells in three minutes
+    // than the entire 896-program composition corpus does — so this floor is deliberately
+    // far above what the corpus can reach, and would fail loudly if the hook were dropped.
+    assert!(
+        field(last, "livecells=") > 100_000,
+        "the liveness gate must actually be evaluated on the fuzz corpus: {}",
+        field(last, "livecells=")
+    );
+    assert!(field(last, "liverows=") > 10_000, "{}", field(last, "liverows="));
+    assert_eq!(field(last, "livemiss="), 0, "a liveness-gate overreach is a finding");
+    // HONEST SCOPE next to the zero. The fuzz grammar emits no kfuncs and no subprogram
+    // calls, so `bpflive.h` models all of it; if a future grammar addition changes that, this
+    // number moves and the denominator above must be read against it rather than alone.
+    assert_eq!(
+        field(last, "liveunsup="),
+        0,
+        "every fuzz program is inside the model today; if that changes, say so in the leg"
+    );
     // The resource direction is excluded by construction rather than by luck: state-freq
     // inflates the state count, so a flagged rejection on a complexity limit is the
     // instrument's own artefact. Counted so its absence is a measurement, not an assumption.
