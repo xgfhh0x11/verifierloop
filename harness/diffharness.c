@@ -6566,6 +6566,146 @@ static void run_probe_wraparc(void) {
     close(map_out);
 }
 
+// ---- calibration probe: the BOTH-BOUNDARY wrapping arc (--probe-wraparc2) --------------
+// The INPUT half of pair `cd5b460ed1ec` ("range_within() must check cnum ranges instead of
+// min/max pairs", 2026-04-25). 0100 built the oracle side and could not build the shape; it
+// ended by naming the trigger's three conditions, and this probe is aimed at all three.
+//
+// CONDITION (c) WAS THE HARD ONE and 0100 measured why. Its arc crossed only the UT_MAX/0
+// boundary, so the s32 projection stayed [-16, 16] and the buggy min/max check correctly
+// refused at `16 >= 272`. For every projection to open to the full range — which is what
+// blinds min/max — the arc must contain BOTH ST_MAX and ST_MIN as well, i.e. cover more than
+// half the space. The commit's own counterexample is cnum32{base=0x7FFFFFF0,size=0x80000020}
+// = [0x7FFFFFF0 .. U32_MAX] u [0 .. 0x10], and in BPF arithmetic that is two instructions:
+//
+//     if w6 > 0x80000020 goto out      -- fallthrough: w6 in [0, 0x80000020], size > 2^31
+//     w6 += 0x7FFFFFF0                 -- rotate the base: {0x7FFFFFF0, 0x80000020}
+//
+// A CONDITIONAL JUMP CANNOT PRODUCE IT. Jumps narrow to contiguous intervals, so "not in
+// [a,b]" arrives as two separate states, never as one wrapping arc. The wrap has to come
+// from ARITHMETIC, which is why the add is the whole trick and why 0100's `&= 0x20; -= 0x10`
+// shape could not reach it: masking first PINS the low bits, and then condition (a) —
+// tnum containment — fails before range_within is ever consulted.
+//
+// CONDITION (a), tnum: the jump leaves w6's low bits unknown, so old's var_off stays wide
+// and contains the second path's constant. 0100 lost the pair here.
+//
+// CONDITION (b), precision: the merged register is narrowed and used as a variable store
+// offset, so mark_chain_precision walks back and marks it precise in the checkpoint —
+// 0050's mechanism. 0100 saw the prune disappear when it forced precision, but for a reason
+// specific to its arc: with only the unsigned boundary crossed the min/max check refused on
+// its own. With both boundaries crossed there is nothing left for it to refuse on.
+//
+// THE ARMS differ in ONE thing: how far the pre-add range reaches.
+//   both  -- w6 <= 0x80000020, so the arc spans both boundaries: every projection opens to
+//            the full range, min/max is blind, cnum arc containment is not.
+//   unsig -- w6 <= 0x20, so the arc {0x7FFFFFF0, 0x20} crosses only UT_MAX/0; the s32
+//            projection survives and the buggy check refuses correctly. This is 0100's
+//            shape, kept as the control that says the signal comes from the SPANNING and
+//            not from wrapping as such.
+//
+// EXPECTED, on the buggy kernel (cd5b460ed1ec~1, .lab/build/bzImage-instr-cn): old is the
+// arc, cur is a constant sitting in the arc's GAP. min/max sees old's projections as the
+// full range and prunes; cnum arc containment says the gap value is not in the arc. That
+// disagreement is `arm=range_within` and it exercises the cnum branch B1 lived in.
+static void run_probe_wraparc2(void) {
+    static const struct { const char *name; int lim; } ARMS[] = {
+        {"both",  0x80000020},   /* trigger: spans UT_MAX/0 AND ST_MAX/ST_MIN */
+        {"unsig", 0x20},         /* control: spans only UT_MAX/0 (0100's shape) */
+    };
+    union bpf_attr m;
+    memset(&m, 0, sizeof(m));
+    m.map_type = BPF_MAP_TYPE_ARRAY;
+    m.key_size = 4; m.value_size = RTW_VALUE_SIZE; m.max_entries = 1;
+    int map_out = bpf(BPF_MAP_CREATE, &m, sizeof(m));
+    if (map_out < 0) {
+        printf("===PROG wraparc2#cd5b460ed1ec type=socket_filter ===\n"
+               "RESULT decision=error map_create_failed errno=%d\n---LOG---\n---END---\n", errno);
+        return;
+    }
+
+    for (unsigned a = 0; a < sizeof(ARMS) / sizeof(ARMS[0]); a++) {
+        struct bpf_insn ins[48];
+        int n = 0, jout[4], no = 0;
+
+        /* map value pointer first, in a callee-saved register (0087/0092's rule: a helper
+           call clobbers r0-r5, so a lookup after the shape is built destroys it). */
+        ins[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+        ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+        ins[n++] = (struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = BPF_REG_1,
+                                     .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = map_out};
+        ins[n++] = (struct bpf_insn){0};
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+        jout[no++] = n;
+        ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_9, BPF_REG_0);
+
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_get_prandom_u32);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_6, BPF_REG_0);          /* the shaped scalar */
+        ins[n++] = BPF_EMIT_CALL(BPF_FUNC_get_prandom_u32);
+        ins[n++] = BPF_MOV64_REG(BPF_REG_8, BPF_REG_0);          /* path selector */
+
+        const int jsel = n;
+        ins[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_8, 0, 0);        /* -> path 2 */
+
+        /* PATH 1, explored first, so its state becomes the CHECKPOINT (`old`): build the
+           arc. The jump bounds w6 without pinning any bit; the add rotates the base. */
+        jout[no++] = n;
+        ins[n++] = BPF_JMP32_IMM(BPF_JGT, BPF_REG_6, ARMS[a].lim, 0);
+        ins[n++] = BPF_ALU32_IMM(BPF_ADD, BPF_REG_6, 0x7FFFFFF0);
+        const int jmerge = n;
+        ins[n++] = BPF_JMP_IMM(BPF_JA, 0, 0, 0);
+
+        /* PATH 2 (`cur`): a constant that sits in the arc's GAP, [0x11 .. 0x7FFFFFEF]. */
+        ins[jsel].off = n - jsel - 1;
+        ins[n++] = BPF_MOV32_IMM(BPF_REG_6, 0x100);
+
+        /* MERGE. The checkpoint the two paths meet at is the pair we want printed. */
+        ins[jmerge].off = n - jmerge - 1;
+
+        /* CONDITION (b): narrow, then use as a VARIABLE STORE OFFSET so
+           mark_chain_precision walks back and marks r6 precise in the checkpoint. The
+           narrowing also makes the store itself in-bounds on every path. */
+        ins[n++] = BPF_ALU32_IMM(BPF_AND, BPF_REG_6, 0x7);
+        ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_9, BPF_REG_6);
+        ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_9, 0, 0xFF);
+
+        for (int k = 0; k < no; k++)
+            ins[jout[k]].off = n - jout[k] - 1;
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+        ins[n++] = BPF_EXIT_INSN();
+
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 2;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        /* THE MERGE MUST BE A CHECKPOINT, and by default it is not: the heuristic in
+           is_state_visited declines a new state until >=20 jumps or >=100 insns have passed,
+           so both paths walk 17 independently and the only prune lands at the exit block on
+           r10 alone (measured: 4 pairs, scalar_comparisons=0). TEST_STATE_FREQ forces the
+           checkpoint. It makes pruning MORE aggressive, which for the FLAG DIFFERENTIAL is a
+           direction problem (OI-15) — but here the flag is not the detector: it only creates
+           the opportunity to ask, and the decision the model audits is range_within's own. */
+        attr.prog_flags = BPF_F_TEST_STATE_FREQ;
+        g_log[0] = 0;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        int lerr = errno;
+
+        printf("===PROG wraparc2#cd5b460ed1ec#%s type=socket_filter ===\n", ARMS[a].name);
+        printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+               fd >= 0 ? "accept" : "reject", fd >= 0 ? 1 : -1, fd >= 0 ? 0 : lerr);
+        if (fd >= 0) close(fd);
+        printf("---LOG---\n%s\n---END---\n", g_log);
+    }
+    close(map_out);
+}
+
 // ---- calibration probe: the jmp32 pruning decision (--probe-jmp32prune) ----------------
 // Calibration pair FOURTEEN (fd675184fc7a, "bpf: Fix verifier jmp32 pruning decision logic",
 // 2021-02-05) — the SECOND positive control for the subsumption model, and the first one
@@ -10120,6 +10260,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-mixwidth") == 0) {
         run_probe_mixwidth();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-wraparc2") == 0) {
+        run_probe_wraparc2();
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--probe-jmp32prune") == 0) {

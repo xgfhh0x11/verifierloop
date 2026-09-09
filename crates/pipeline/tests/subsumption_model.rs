@@ -385,3 +385,102 @@ fn pair_fourteen_control_arm_is_clean() {
         "the control arm fired on the BUGGY kernel — the signal is not specific to the bug:\n{out}"
     );
 }
+
+// ---- PAIR SIXTEEN: `cd5b460ed1ec`, AND THE INPUT PROBLEM 0100 LEFT OPEN -----------------
+//
+// This one cost no kernel build. The buggy image already existed (0100 built
+// `bzImage-instr-cn` at `cd5b460ed1ec~1`) and the oracle already implemented the predicate;
+// what was missing for four legs was the INPUT. 0100 ended by naming the trigger's three
+// conditions and failing to satisfy them together.
+//
+// CONDITION (c) IS WHY IT FAILED, and the failure was measured rather than guessed: 0100's
+// arc crossed only the UT_MAX/0 boundary, so the s32 projection stayed [-16, 16] and the
+// buggy min/max check refused correctly at `16 >= 272`. To blind min/max, every projection
+// has to open to the full range, which needs an arc containing ST_MAX and ST_MIN too — i.e.
+// covering more than half the space.
+//
+// A CONDITIONAL JUMP CANNOT BUILD THAT. Jumps narrow to contiguous intervals; "not in [a,b]"
+// arrives as two separate states, never as one wrapping arc. The wrap must come from
+// arithmetic, and then it is two instructions:
+//
+//     if w6 > 0x80000020 goto out      -- w6 in [0, 0x80000020], a span wider than 2^31
+//     w6 += 0x7FFFFFF0                 -- rotate: cnum32{base=0x7FFFFFF0, size=0x80000020}
+//
+// which is the commit's own counterexample. Masking first — 0100's `&= 0x20; -= 0x10` — pins
+// the low bits and then condition (a), tnum containment, fails before range_within is even
+// consulted. The jump leaves them unknown, so (a) holds for free.
+//
+// MEASURED, and the captured pair is the commit's example verbatim:
+//
+//     old r6  r32 = {base=0x7ffffff0, size=0x80000020}   prec=1
+//     cur r6  r32 = {base=0x100,      size=0x0}
+//
+// TEST_STATE_FREQ IS PART OF THE INPUT, NOT THE DETECTOR. Without it the default heuristic
+// declines a checkpoint at the merge and both paths walk it independently — measured: 4
+// pairs, `scalar_comparisons=0`, the only prune landing on r10 in the exit block. The flag
+// creates the opportunity to ask; the decision under audit is still range_within's own, and
+// the model — not a flag differential — is what reports it. That distinction is what OI-15
+// is about.
+//
+// THE CONTROL is the same program with `if w6 > 0x20`, so the arc crosses only UT_MAX/0.
+// There the buggy kernel's own min/max check refuses and the merge prune never happens —
+// which is the specificity evidence: the prune appears only when the arc spans BOTH
+// boundaries, i.e. exactly when min/max goes blind.
+//
+// `range_within` has not changed since `cd5b460ed1ec`, so tip is a valid fixed side here
+// (the project's rule is that tip stands in only when nothing touched the code under test).
+
+const WRAPARC2_BUGGY: &str = include_str!("fixtures/volume/wraparc2-instr-buggy-3.log");
+const WRAPARC2_FIXED: &str = include_str!("fixtures/volume/wraparc2-instr-fixed-3.log");
+
+#[test]
+fn pair_sixteen_fires_on_the_buggy_kernel() {
+    let out = run_on_fixture(WRAPARC2_BUGGY, "wa2buggy");
+    assert_eq!(field(&out, "SUBSUME pairs=", "disagree="), "1", "{out}");
+
+    let cand = out
+        .lines()
+        .find(|l| l.starts_with("SUBSUME candidate"))
+        .expect("the buggy capture must name its candidate");
+    assert!(cand.contains("arm=range_within"), "wrong arm: {cand}");
+    assert!(cand.contains("insn=17"), "the merge is insn 17: {cand}");
+
+    // The comparison actually ran — a break with no scalar comparison would mean the model
+    // refused on a type or id mismatch, which is a different claim entirely.
+    assert_ne!(
+        field(&out, "SUBSUME nontrivial_pairs=", "scalar_comparisons="),
+        "0",
+        "{out}"
+    );
+}
+
+#[test]
+fn pair_sixteen_is_silent_on_the_fixed_kernel() {
+    let out = run_on_fixture(WRAPARC2_FIXED, "wa2fixed");
+    assert_eq!(field(&out, "SUBSUME pairs=", "disagree="), "0", "{out}");
+    // And again the event itself is gone rather than merely tolerated: with correct arc
+    // containment the states are not equivalent, so the merge is never pruned and no scalar
+    // is compared anywhere in the capture.
+    assert_eq!(
+        field(&out, "SUBSUME nontrivial_pairs=", "scalar_comparisons="),
+        "0",
+        "the fixed kernel must not prune the merge at all:\n{out}"
+    );
+}
+
+/// THE ARC IS THE POINT, so pin its exact shape. If a future generator change quietly stops
+/// producing a both-boundary arc, every assertion above still passes on a weaker input and
+/// the calibration silently becomes vacuous — the same failure mode as a denominator that
+/// goes to zero unnoticed.
+#[test]
+fn pair_sixteen_capture_carries_the_commits_own_arc() {
+    assert!(
+        WRAPARC2_BUGGY.contains("r32=7ffffff0+80000020"),
+        "the buggy capture must contain cnum32{{base=0x7FFFFFF0, size=0x80000020}} — the \
+         counterexample cd5b460ed1ec's message quotes"
+    );
+    assert!(
+        WRAPARC2_BUGGY.contains("r32=100+0"),
+        "and the second path's constant, which sits in that arc's gap"
+    );
+}

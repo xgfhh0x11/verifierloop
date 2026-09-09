@@ -7700,3 +7700,70 @@ karşılaştırma gerekiyor (11.996 satır / 896 program ≈ 1,5 KB/program, yan
 saatte ~10 GB log; 0094'ün canlılık için ölçtüğü aynı duvar).
 
 Workspace 381 yeşil.
+
+## 0103 — Girdi: 0100'ün açık bıraktığı şekil, ve üçüncü pozitif
+
+0100 `cd5b460ed1ec`'in oracle yarısını kurmuş, girdi yarısında takılmış ve bacağı
+tetikleyicinin **üç koşulunu** adlandırarak kapatmıştı. Bu bacak o üçünü aynı anda sağladı
+— ve **sıfır kernel derlemesiyle**, çünkü hatalı imaj (`bzImage-instr-cn`) zaten kuruluydu.
+Engel dört bacaktır oracle değil girdiydi, ve öyle olduğu ölçülmüştü.
+
+### 1. Koşul (c): yayın HANGİ yay olduğu
+
+0100'ün yayı yalnız `UT_MAX/0` sınırını geçiyordu, bu yüzden s32 izdüşümü `[-16, 16]`
+kalıyor ve hatalı min/max kontrolü `16 >= 272` testinde **doğru şekilde** düşüyordu. min/max'ı
+körleştirmek için her izdüşümün tam aralığa açılması gerekir; o da `ST_MAX` ve `ST_MIN`'i de
+içeren, yani uzayın yarısından fazlasını kaplayan bir yay demek.
+
+**Koşullu atlama bunu üretemez.** Atlamalar bitişik aralığa daraltır; "[a,b] dışında" iki ayrı
+durum olarak gelir, tek bir sarmalı yay olarak asla. Sarma ARİTMETİKTEN gelmek zorunda, ve o
+zaman iki komut:
+
+```
+if w6 > 0x80000020 goto out     ->  w6 ∈ [0, 0x80000020], 2^31'den geniş
+w6 += 0x7FFFFFF0                ->  cnum32{base=0x7FFFFFF0, size=0x80000020}
+```
+
+ki bu commit'in kendi karşı örneği. Ve maskeleme ile başlamak — 0100'ün `&= 0x20; -= 0x10`
+şekli — alt bitleri PİNLER, sonra koşul (a) (tnum içerilmesi) `range_within`'a sıra gelmeden
+düşer. Atlama alt bitleri bilinmez bıraktığı için (a) bedavaya sağlanıyor.
+
+### 2. Ölçüm
+
+`--probe-wraparc2`, iki kol tek şeyde farklı: add öncesi sınırın nereye kadar uzandığı.
+
+| | buggy `cd5b460ed1ec~1` | fixed (tip) |
+|---|---|---|
+| uyuşmazlık | **1** · `insn=17` · `arm=range_within` | **0** |
+| MERGE prune'u | oluyor | **olmuyor**, `scalar_comparisons=0` |
+| kontrol kolu `unsig` | MERGE'de prune yok | MERGE'de prune yok |
+
+Yakalanan çift commit'in örneğinin birebir kendisi:
+
+```
+old r6  r32={base=0x7ffffff0, size=0x80000020}  prec=1
+cur r6  r32={base=0x100,      size=0x0}
+```
+
+Kontrol kolu özgüllüğü veriyor: aynı program, yalnız add öncesi sınır dar, ve orada hatalı
+kernel'in **kendi** min/max kontrolü reddettiği için budama hiç olmuyor. Yani sinyal
+sarmadan değil, **iki sınırı birden geçmekten** geliyor.
+
+`range_within` `cd5b460ed1ec`'ten beri değişmemiş, dolayısıyla tip burada geçerli bir
+"fixed" taraf (projenin kuralı: tip ancak test edilen koda kimse dokunmadıysa vekil olur).
+
+### 3. TEST_STATE_FREQ girdinin parçası, dedektörün değil
+
+Bayraksız ilk koşu ölçüldü: varsayılan sezgisel MERGE'de checkpoint açmıyor, iki yol da 17'yi
+bağımsız yürüyor, ve tek prune çıkış bloğunda r10 üzerinde kalıyor — **4 çift,
+`scalar_comparisons=0`**. Bayrak soruyu sorma fırsatını yaratıyor; denetlenen karar hâlâ
+`range_within`'in kendisi ve raporlayan da bir bayrak farkı değil, model. OI-15'in ayrımı tam
+olarak bu.
+
+### 4. Bilanço
+
+Üç pozitif kalibrasyon, üç ayrı kol: `check_scalar_ids` (0101), min/max `range_within`
+(0102), cnum yay-içerilmesi `range_within` (bu bacak). Kalan yapısal boşluklar değişmedi —
+pointer kolu modellenmiyor, durum hataları görünmez, ve model hâlâ çevrimdışı.
+
+Workspace 384 yeşil.
