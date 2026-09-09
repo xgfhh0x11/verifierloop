@@ -7893,3 +7893,57 @@ hataları yapısal olarak görünmez, ve `1ad2f5838d34` (pointer kolunun kendi k
 çifti) hâlâ borç.
 
 Workspace 390 yeşil.
+
+## 0106 — Bir saatlik av turu: 493.673 çift, ve tavanın üçüncü ölçümü
+
+Model 0105'te av hacmine bağlanmıştı ama yalnız 180 saniye görmüştü. Bu, ilk uzun tur.
+
+```
+iters=2277364  accept=1444876  reject=832488  corpus=167  seen_pcs=6262  elapsed=3601s
+compared=7247122  findings=0  trunc=0
+subsrows=3034952  subspairs=493673  subsnontrivial=197055  subsdisagree=0  subsunsup=0
+livecells=38917721  liverows=14717337  livemiss=0  liveunsup=0
+prunepairs=284810  pruneflip=0  invchecked=180777  invfault=0
+```
+
+### 1. Subsumption modelinin paydası artık gerçek
+
+**493.673 budama çifti**, 896 programlık korpusun (2.038) **242 katı**; ve dürüst payda
+**197.055 önemsiz-olmayan çift**, korpusun 1.017'sinin 194 katı. `subsunsup=0`, yani her
+satır ayrıştırıldı ve yukarıdaki sayılar tam bir paydaya karşı. Uyuşmazlık sıfır.
+
+Bu, modelin sıfırının ilk kez okunabilir olduğu tur: üç kalibrasyon çifti duyarlılığı,
+197 bin önemsiz-olmayan çift de hacmi veriyor.
+
+### 2. Beklediğim maliyet yok
+
+Enstrümantasyonun verimliliği düşüreceğini varsaymıştım. Ölçüm tersini söylüyor:
+
+| tur | süre | iters | iters/sn | seen_pcs |
+|---|---|---|---|---|
+| hunt-05 | 1801s | 1.110.297 | 616 | 6259 |
+| hunt-07 | 1801s | 1.174.881 | 652 | 6199 |
+| hunt-08 (enstrümanlı) | 3601s | 2.277.364 | **632** | 6262 |
+
+632/sn, enstrümansız iki turun tam arasında. Kapılı örneklem programların küçük bir kısmı
+olduğu için PRUNEPAIR dökümü toplam hıza yansımıyor. Varsayım ölçülünce düştü.
+
+### 3. Ve asıl sonuç: tavan artık ÜÇ NOKTALI bir ölçüm
+
+`seen_pcs` üç bağımsız turda %1 içinde aynı yere iniyor — 6199 · 6259 · 6262 — ve bütçeyi
+iki katına çıkarmak hunt-05'in üstüne **+3 PC** getirdi. 0086'nın tabanı 5203'tü; oraya
+kadar olan artış gramere yapılan eklemelerden geldi, bu turdan değil.
+
+Yani hacim artık satın almıyor. Oracle tarafı bu bacakta en güçlü hâlinde (beş oracle, üçü
+kalibre edilmiş bir subsumption modeli dahil, 38,9M canlılık hücresi, 197k önemsiz-olmayan
+budama çifti) ve hepsi aynı doymuş girdiyi okuyor. `oracle x input` kuralı, üçüncü kez ve bu
+sefer üç noktalı bir eğriyle.
+
+### 4. Ne kurulmadı
+
+Sıfır kernel bulgusu. Ama bu turun sıfırı öncekilerden farklı bir şey taşıyor: budama
+kararının 197 bin önemsiz-olmayan çiftte bağımsız bir referansla denetlendiğini. Kalanlar
+değişmedi — model tek yön görüyor, durum hataları görünmez, ve şimdi ölçülmüş olarak
+**girdi doygun**.
+
+Workspace 390 yeşil.
