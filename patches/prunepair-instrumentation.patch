@@ -1,5 +1,5 @@
 diff --git a/kernel/bpf/states.c b/kernel/bpf/states.c
-index 4e6aafad33bd..c0f321137817 100644
+index 4e6aafad33bd..c9da6de0586b 100644
 --- a/kernel/bpf/states.c
 +++ b/kernel/bpf/states.c
 @@ -1238,6 +1238,11 @@ static void mark_all_scalars_imprecise(struct bpf_verifier_env *env, struct bpf_
@@ -39,7 +39,7 @@ index 4e6aafad33bd..c0f321137817 100644
  					loop = true;
  					goto hit;
  				}
-@@ -1402,8 +1407,56 @@ int bpf_is_state_visited(struct bpf_verifier_env *env, int insn_idx)
+@@ -1402,8 +1407,78 @@ int bpf_is_state_visited(struct bpf_verifier_env *env, int insn_idx)
  		}
  		/* See comments for mark_all_regs_read_and_precise() */
  		loop = incomplete_read_marks(env, &sl->state);
@@ -78,6 +78,28 @@ index 4e6aafad33bd..c0f321137817 100644
 +
 +							if (r->type == NOT_INIT)
 +								continue;
++							/* THE POINTER ARMS COMPARE BYTES, NOT FIELDS.
++							 * regsafe's map_value family runs
++							 * memcmp(rold,rcur,offsetof(var_off)) and
++							 * regs_exact runs it to offsetof(id) — over a
++							 * UNION whose members are kernel pointers
++							 * (map_ptr, btf). A model that re-derived those
++							 * fields would be guessing at a layout; printing
++							 * the PREFIX makes the comparison exact by
++							 * construction. `vo` is where the shorter cut
++							 * lands, so one blob serves both arms.
++							 * (Kernel addresses appear here; the VM is
++							 * disposable and the log never leaves it.) */
++							{
++								const unsigned char *rb = (const unsigned char *)r;
++								unsigned int bi;
++
++								verbose(env, "PRUNEPAIR_PFX vo=%u ",
++									(unsigned)offsetof(struct bpf_reg_state, var_off));
++								for (bi = 0; bi < offsetof(struct bpf_reg_state, id); bi++)
++									verbose(env, "%02x", rb[bi]);
++								verbose(env, "\n");
++							}
 +							verbose(env,
 +								"PRUNEPAIR insn=%d exact=%d side=%s fr=%d r%d type=%d delta=%d var=%llx/%llx r64=%llx+%llx r32=%x+%x id=%x pid=%x fno=%d prec=%d\n",
 +								env->insn_idx, (int)vl_dbg_exact, nm[vi], fi, ri,

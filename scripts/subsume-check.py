@@ -30,6 +30,20 @@ UT32 = (1 << 32) - 1
 SCALAR_VALUE = 1
 BPF_ADD_CONST = (1 << 31) | (1 << 30)
 
+# enum bpf_reg_type, ve base_type(t) = t & 0xFF (BPF_BASE_TYPE_BITS = 8).
+PTR_TO_MAP_VALUE, PTR_TO_MAP_KEY, PTR_TO_STACK = 4, 5, 6
+PTR_TO_PACKET_META, PTR_TO_PACKET, PTR_TO_TP_BUFFER = 7, 8, 14
+PTR_TO_MEM, PTR_TO_ARENA, PTR_TO_BUF, PTR_TO_INSN = 17, 18, 19, 21
+# regsafe'in "memcmp + range + tnum + iki check_ids" ailesi.
+PFX_FAMILY = {PTR_TO_MAP_KEY, PTR_TO_MAP_VALUE, PTR_TO_MEM, PTR_TO_BUF, PTR_TO_TP_BUFFER}
+
+def pfx_range(pfx):
+    """`int range`, bpf_reg_state'teki birliğin ilk üyesi — type(4) + delta(4) sonrası,
+    yani bayt 8..12, little-endian ve İŞARETLİ. Ön-ekten türetiliyor çünkü yamanın
+    bastığı ham baytlar zaten orada; ayrıca basmak ikinci bir doğruluk kaynağı olurdu."""
+    b = bytes.fromhex(pfx[16:24])
+    return int.from_bytes(b, 'little', signed=True)
+
 # kernel/bpf/cnum_defs.h'ten transkribe edildi, oradan kopyalanmadı.
 def cnum_is_empty(base, size, mask):
     return base == mask and size == mask
@@ -137,6 +151,12 @@ ROW_MM = re.compile(
 
 # 2021 DÖNEMİ: `live=` alanı hem gerekli (o çağın regsafe'i REG_LIVE_READ ile kapılıyor)
 # hem de dönem işareti — satırın kendisi tüketiciye hangi regsafe'i borçlu olduğunu söylüyor.
+# Pointer kolları BAYT karşılaştırıyor, alan değil: regsafe'in map_value ailesi
+# memcmp(rold,rcur,offsetof(var_off)), regs_exact ise offsetof(id)'ye kadar. Yama o ön-eki
+# ham basıyor, model de dilimliyor — birliğin yerleşimini TAHMİN ETMEDEN, tam olarak aynı
+# karşılaştırma. `vo` kısa kesimin nerede bittiğini söylüyor.
+PFX = re.compile(r'^PRUNEPAIR_PFX vo=(\d+) ([0-9a-f]+)$')
+
 ROW_21 = re.compile(
     r'^PRUNEPAIR insn=(\d+) exact=(\d+) side=(old|cur) fr=(\d+) r(\d+) '
     r'type=(\d+) delta=(-?\d+) var=([0-9a-f]+)/([0-9a-f]+) '
@@ -156,6 +176,7 @@ def parse_lines(lines):
     sayabilsin diye."""
     pairs, cur = [], None
     live_mask, live_n = None, 0
+    pend_pfx = None
     for line in lines:
         line = line.rstrip()
         if line.startswith("===PROG"):
@@ -167,6 +188,10 @@ def parse_lines(lines):
             continue
         if line.startswith("LIVENESS status=unsupported"):
             live_mask, live_n = None, 0
+            continue
+        mp = PFX.match(line)
+        if mp:
+            pend_pfx = (int(mp[1]), mp[2])
             continue
         m = ROW_21.match(line)
         era = '2021'
@@ -184,7 +209,8 @@ def parse_lines(lines):
         if era == 'cnum':
             rec.update(b64=int(m[10], 16), sz64=int(m[11], 16),
                        b32=int(m[12], 16), sz32=int(m[13], 16),
-                       id=int(m[14], 16), prec=int(m[17]))
+                       id=int(m[14], 16), pid=int(m[15], 16), fno=int(m[16]),
+                   prec=int(m[17]))
         else:
             rec.update(umin=int(m[10], 16), umax=int(m[11], 16),
                        smin=s64(int(m[12], 16)), smax=s64(int(m[13], 16)),
@@ -199,6 +225,9 @@ def parse_lines(lines):
             pairs.append(cur)
         if cur is None:
             continue
+        if pend_pfx is not None:
+            rec['vo'], rec['pfx'] = pend_pfx
+            pend_pfx = None
         (cur['old'] if side == 'old' else cur['cur'])[(fr, reg)] = rec
         if side == 'cur':
             cur['done'] = True
@@ -220,6 +249,7 @@ class Stats:
         self.nontrivial_legacy = 0
         self.reasons = {}
         # UYGULANMAYAN KOLLARIN BEDELİ — hiçbiri modelde yok, ikisi yakalamadan sayılabiliyor
+        self.ptr_cmp = 0                 # pointer kolu GERÇEKTEN koştu (0084'ün kuralı)
         self.live_gated = 0              # 2021: REG_LIVE_READ kapısı (o çağda MODELLENİYOR)
         self.ptr_id_pairs = 0            # pointer id'si kernel'in idmap'ini tohumlar, model atlar
         self.dead_reg_cmps = 0           # kernel'in HİÇ karşılaştırmadığı register'da yaptığımız kıyas
@@ -281,9 +311,54 @@ def evaluate(p, st):
             # yani o çağda kapı MODELLENEBİLİR, tahmin gerekmiyor.
             st.live_gated += 1; continue
         if o['t'] != SCALAR_VALUE:
-            st.other_type += 1
-            if o['id'] or c['id']:
-                ptr_id = True            # kernel burada idmap'i doldururdu, model doldurmuyor
+            if 'pfx' not in o or 'pfx' not in c:
+                # Ön-ek taşımayan yakalamalar (dönem varyantları ve 0102 öncesi tip): kol
+                # MODELLENMİYOR ve bu SAYILIYOR. Geçirmek gevşek yön, yani yanlış bulgu
+                # üretmez — ama sessiz kalması B3'ün ta kendisiydi.
+                st.other_type += 1
+                if o['id'] or c['id']:
+                    ptr_id = True
+                continue
+            base = o['t'] & 0xFF
+            st.ptr_cmp += 1
+            if base == PTR_TO_ARENA:
+                continue                              # regsafe: koşulsuz true
+            rw = (cnum_is_subset(o['b64'], o['sz64'], c['b64'], c['sz64'], UT64) and
+                  cnum_is_subset(o['b32'], o['sz32'], c['b32'], c['sz32'], UT32)) \
+                 if o['era'] == 'cnum' else range_within_minmax(o, c)
+            ti = tnum_in(o['vv'], o['vm'], c['vv'], c['vm'])
+            if base in PFX_FAMILY or base == PTR_TO_INSN:
+                if o['pfx'][:o['vo'] * 2] != c['pfx'][:o['vo'] * 2]:
+                    p['arm'] = 'ptr_memcmp'; verdict = 'break'; break
+                if not rw:
+                    p['arm'] = 'ptr_range_within'; verdict = 'break'; break
+                if not ti:
+                    p['arm'] = 'ptr_tnum_in'; verdict = 'break'; break
+                if base != PTR_TO_INSN:               # INSN kolu id karşılaştırmıyor
+                    if not (p['idmap'].check_ids(o['id'], c['id']) and
+                            p['idmap'].check_ids(o['pid'], c['pid'])):
+                        p['arm'] = 'ptr_check_ids'; verdict = 'break'; break
+                continue
+            if base in (PTR_TO_PACKET, PTR_TO_PACKET_META):
+                ro, rc = pfx_range(o['pfx']), pfx_range(c['pfx'])
+                if ro < 0 or rc < 0:
+                    if ro != rc:
+                        p['arm'] = 'pkt_range'; verdict = 'break'; break
+                elif ro > rc:
+                    p['arm'] = 'pkt_range'; verdict = 'break'; break
+                if not p['idmap'].check_ids(o['id'], c['id']):
+                    p['arm'] = 'ptr_check_ids'; verdict = 'break'; break
+                if not (rw and ti):
+                    p['arm'] = 'ptr_range_within'; verdict = 'break'; break
+                continue
+            # PTR_TO_STACK ve varsayılan: regs_exact, yani ön-ekin TAMAMI + iki check_ids.
+            if o['pfx'] != c['pfx']:
+                p['arm'] = 'regs_exact'; verdict = 'break'; break
+            if base == PTR_TO_STACK and o['fno'] != c['fno']:
+                p['arm'] = 'frameno'; verdict = 'break'; break
+            if not (p['idmap'].check_ids(o['id'], c['id']) and
+                    p['idmap'].check_ids(o['pid'], c['pid'])):
+                p['arm'] = 'ptr_check_ids'; verdict = 'break'; break
             continue
         # regsafe'in skaler kolu, sırasıyla:
         if o['era'] == '2021':
@@ -358,6 +433,7 @@ def main(path):
           f"agree={agree} disagree={st.breaks} unmodelled={st.unmodelled}")
     print(f"SUBSUME nontrivial_pairs={st.nontrivial_legacy} scalar_comparisons={st.scalar_cmp} "
           f"shortcircuited_regs={st.shortcircuit} other_type_regs={st.other_type} "
+          f"ptr_cmps={st.ptr_cmp} "
           f"id_checks={st.id_checks}")
     # PAYDA KURALI: dört terminal kategori çift sayısını vermek zorunda.
     print(f"SUBSUME denominator pairs={len(pairs)} trivial={st.agree_trivial} "
@@ -450,6 +526,64 @@ PRUNEPAIR insn=3 exact=2 side=old fr=0 r6 type=1 delta=0 var=0/ffffffffffffffff 
 PRUNEPAIR insn=3 exact=2 side=cur fr=0 r6 type=1 delta=0 var=7/0 u64=7..7 s64=7..7 u32=7..7 s32=7..7 id=0 fno=0 prec=1
 """
 
+# POINTER KOLLARI, uçtan uca. Ön-ek sentetik ama YAPISI gerçek: type(4) + delta(4) +
+# birlik(4) + kuyruk(4), ve vo=12, yani kısa kesim tam olarak birliğin sonunda biter —
+# kernel'deki offsetof(var_off)'un karşılığı. `range` bayt 8..12'den okunuyor.
+def _pfx(t, delta=0, uni=0, tail=0):
+    return (t.to_bytes(4, "little") + (delta & 0xffffffff).to_bytes(4, "little")
+            + (uni & 0xffffffff).to_bytes(4, "little")
+            + (tail & 0xffffffff).to_bytes(4, "little")).hex()
+
+def _row(side, t, pfx, *, reg=6, b64=0, s64=0, b32=0, s32=0, vv=0, vm=0,
+         rid=0, pid=0, fno=0, prec=1):
+    return (f"PRUNEPAIR_PFX vo=12 {pfx}\n"
+            f"PRUNEPAIR insn=5 exact=0 side={side} fr=0 r{reg} type={t} delta=0 "
+            f"var={vv:x}/{vm:x} r64={b64:x}+{s64:x} r32={b32:x}+{s32:x} "
+            f"id={rid:x} pid={pid:x} fno={fno} prec={prec}")
+
+def _cap(rows):
+    return "===PROG selftest#ptr ===\n" + "\n".join(rows) + "\n"
+
+SELFTEST_PTR = [
+    # (ad, satırlar, beklenen kırılma, beklenen kol)
+    ("map_value: ön-ek aynı, old sınırı cur'u içeriyor -> uyum",
+     [_row("old", PTR_TO_MAP_VALUE, _pfx(PTR_TO_MAP_VALUE), s64=UT64, s32=UT32, vm=UT64),
+      _row("cur", PTR_TO_MAP_VALUE, _pfx(PTR_TO_MAP_VALUE))], 0, None),
+    ("map_value: ön-ek FARKLI (birlik alanı) -> memcmp düşer",
+     [_row("old", PTR_TO_MAP_VALUE, _pfx(PTR_TO_MAP_VALUE, uni=1), s64=UT64, s32=UT32, vm=UT64),
+      _row("cur", PTR_TO_MAP_VALUE, _pfx(PTR_TO_MAP_VALUE, uni=2))], 1, 'ptr_memcmp'),
+    ("map_value: ön-ek aynı ama old sınırı DAR -> range_within düşer",
+     [_row("old", PTR_TO_MAP_VALUE, _pfx(PTR_TO_MAP_VALUE)),
+      _row("cur", PTR_TO_MAP_VALUE, _pfx(PTR_TO_MAP_VALUE), s64=UT64, s32=UT32, vm=UT64)],
+     1, 'ptr_range_within'),
+    ("arena: koşulsuz true, sınırlar tutmasa bile",
+     [_row("old", PTR_TO_ARENA, _pfx(PTR_TO_ARENA)),
+      _row("cur", PTR_TO_ARENA, _pfx(PTR_TO_ARENA), s64=UT64, s32=UT32, vm=UT64)], 0, None),
+    ("stack: regs_exact, ön-ekin TAMAMI eşit -> uyum",
+     [_row("old", PTR_TO_STACK, _pfx(PTR_TO_STACK), reg=10),
+      _row("cur", PTR_TO_STACK, _pfx(PTR_TO_STACK), reg=10)], 0, None),
+    ("stack: kuyruk baytı farklı -> regs_exact düşer (kısa kesim bunu görmezdi)",
+     [_row("old", PTR_TO_STACK, _pfx(PTR_TO_STACK, tail=1), reg=10),
+      _row("cur", PTR_TO_STACK, _pfx(PTR_TO_STACK, tail=2), reg=10)], 1, 'regs_exact'),
+    ("stack: aynı ön-ek, FARKLI frameno -> frameno düşer",
+     [_row("old", PTR_TO_STACK, _pfx(PTR_TO_STACK), reg=10, fno=0),
+      _row("cur", PTR_TO_STACK, _pfx(PTR_TO_STACK), reg=10, fno=1)], 1, 'frameno'),
+    ("packet: old.range > cur.range -> pkt_range düşer",
+     [_row("old", PTR_TO_PACKET, _pfx(PTR_TO_PACKET, uni=64), s64=UT64, s32=UT32, vm=UT64),
+      _row("cur", PTR_TO_PACKET, _pfx(PTR_TO_PACKET, uni=32))], 1, 'pkt_range'),
+    ("packet: old.range <= cur.range -> geçer",
+     [_row("old", PTR_TO_PACKET, _pfx(PTR_TO_PACKET, uni=32), s64=UT64, s32=UT32, vm=UT64),
+      _row("cur", PTR_TO_PACKET, _pfx(PTR_TO_PACKET, uni=64))], 0, None),
+    ("packet: negatif range (BEYOND/AT_PKT_END) yalnız EŞİTSE geçer",
+     [_row("old", PTR_TO_PACKET, _pfx(PTR_TO_PACKET, uni=-1), s64=UT64, s32=UT32, vm=UT64),
+      _row("cur", PTR_TO_PACKET, _pfx(PTR_TO_PACKET, uni=-2))], 1, 'pkt_range'),
+    ("map_value: id eşlemesi çakışıyor -> ptr_check_ids düşer",
+     [_row("old", PTR_TO_MAP_VALUE, _pfx(PTR_TO_MAP_VALUE), reg=6, rid=1, s64=UT64, s32=UT32, vm=UT64),
+      _row("old", PTR_TO_MAP_VALUE, _pfx(PTR_TO_MAP_VALUE), reg=7, rid=1, s64=UT64, s32=UT32, vm=UT64),
+      _row("cur", PTR_TO_MAP_VALUE, _pfx(PTR_TO_MAP_VALUE), reg=6, rid=2),
+      _row("cur", PTR_TO_MAP_VALUE, _pfx(PTR_TO_MAP_VALUE), reg=7, rid=3)], 1, 'ptr_check_ids'),
+]
+
 # 2021 DÖNEMİ, uçtan uca. Üç ayrı davranış pinleniyor: REG_LIVE_READ kapısı, ÇİFT TARAFLI
 # kısa devre, ve fd675184fc7a'nın kendi imzası — 64-bit sınırlar aynı, 32-bit sınırlar
 # ayrışıyor. Hatalı kernel yalnız dört 64-bit karşılaştırma yaptığı için budar; model
@@ -495,6 +629,15 @@ def self_test():
 
     for name, a, b, want in SELFTEST_TNUM:
         check("tnum_in", name, tnum_in(a[0], a[1], b[0], b[1]), want)
+
+    for name, rows, want_breaks, want_arm in SELFTEST_PTR:
+        pr = parse_lines(_cap(rows).splitlines())
+        check("pointer kolu", name + " [ayrıştırma]", len(pr), 1)
+        if pr:
+            stp, cp = run(pr)
+            check("pointer kolu", name, stp.breaks, want_breaks)
+            check("pointer kolu", name + " [kol]", cp[0]['arm'] if cp else None, want_arm)
+            check("pointer kolu", name + " [kol koştu]", stp.ptr_cmp > 0, True)
 
     for name, body, want_breaks, want_arm in [
             ("fd675184fc7a imzası: 64-bit aynı, 32-bit ayrışıyor → reddedilmeli",
@@ -542,7 +685,7 @@ def self_test():
     for f in fails:
         print("SELFTEST FAIL " + f)
     total = (len(SELFTEST_SUBSET) + len(SELFTEST_TNUM) + len(SELFTEST_IDS)
-             + len(SELFTEST_MINMAX) + 7 + 10)  # +7 parse/ölü-reg/dönem, +10 2021 kolu
+             + len(SELFTEST_MINMAX) + 7 + 10 + 3 * len(SELFTEST_PTR))
     print(f"SELFTEST vectors={total} failed={len(fails)}")
     return 1 if fails else 0
 

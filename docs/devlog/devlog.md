@@ -7767,3 +7767,62 @@ olarak bu.
 pointer kolu modellenmiyor, durum hataları görünmez, ve model hâlâ çevrimdışı.
 
 Workspace 384 yeşil.
+
+## 0104 — Pointer kolu: fan-out'un adını koyduğu boşluk kapandı
+
+0101'in taraması bir boşluğu adlandırmıştı: `states_equal`'ın **pointer kolu** hiçbir oracle
+tarafından modellenmiyor, ve orada en az bir tarihsel hata var (`1ad2f5838d34`, 2017 —
+`compare_ptrs_to_packet` içinde yanlış budama kararı). Model o güne kadar her skaler-olmayan
+register'ı **sessizce geçiriyordu**: gevşek yön, yani yanlış bulgu üretmez — ama göremez de,
+ve dahası o register'ların id'leri skaler kolun paylaştığı idmap'e hiç girmiyordu (B3c,
+ölçülmüş maruziyet 273 çift).
+
+### 1. Neden yakalamanın değişmesi gerekti
+
+`regsafe`'in her pointer kolu alan değil **bayt** karşılaştırması üstüne kurulu:
+
+```
+map_value ailesi : memcmp(rold, rcur, offsetof(struct bpf_reg_state, var_off)) && ...
+regs_exact       : memcmp(rold, rcur, offsetof(struct bpf_reg_state, id))      && ...
+```
+
+ve aradaki baytlar üyeleri kernel işaretçisi olan (`map_ptr`, `btf`) bir **birlik**. O
+alanları yeniden türeten bir model bir struct yerleşimini tahmin ediyor olurdu, ve tahmin bu
+projenin reddettiği şey. Bu yüzden yama **ön-ekin kendisini** basıyor, model de dilimliyor —
+yapı gereği birebir, ve `vo` kısa kesimin nerede bittiğini söylüyor. Packet kollarının
+ihtiyaç duyduğu `range` de ikinci kez basılmıyor, aynı bloktan (birliğin ilk üyesi, bayt
+8..12) okunuyor: tek doğruluk kaynağı.
+
+### 2. Ölçüm
+
+896 programlık korpus, aynı yakalama artı ön-ek:
+
+```
+önce   other_type_regs=3818  ptr_cmps=0      (her pointer sessizce geçiyordu)
+sonra  other_type_regs=0     ptr_cmps=3818   (her pointer modellenmiş bir koldan)
+disagree=0 her iki yönde · ptr_id_pairs 273 -> 0 · verdict hâlâ 896/896
+```
+
+İki 3818 tutarlılık kontrolü: kollar tam olarak eskiden atlanan register'larda koşuyor.
+Ve sözleşme yeniden koşuldu — yama değişti, iddia her değişiklikte yeniden kanıtlanır
+(0099'un kuralı): stok tip ile yeni yamalı tip, errno dahil 896/896 aynı.
+
+**Uyuşmazlık sıfır**, ve buradaki risk gerçekti: pointer kolları artık aktif ve doğru
+olduğunu bildiğimiz bir kernel'de ateşleselerdi bu bir bulgu değil modelleme hatası olurdu.
+B1'in aynısı, yeni kolda. On bir vektör önden yazıldı (memcmp, range_within, tnum, packet
+range'in negatif kolu dahil, frameno, arena'nın koşulsuz true'su, id çakışması) ve hepsi kol
+adıyla birlikte pinlendi.
+
+### 3. Geri düşüş kolu, kasıtlı
+
+Ön-ek taşımayan bir yakalama hâlâ ayrıştırılıyor ve pointer'ları hâlâ geçiriyor — ama artık
+**sayarak**. Böylece 0101-0103'ün üç kalibrasyon çifti ve bütün dönem varyantları, yakalama
+biçimi her büyüdüğünde kernel yeniden derlenmeden geçerli kalıyor.
+
+### 4. Ne kurulmadı
+
+`1ad2f5838d34`'ün kendisi kalibre EDİLMEDİ: 2017 ağacında `var_off`, `precise`, `delta`,
+cnum — hiçbiri yok, durum `min_value`/`max_value`/`imm`/`id` ile taşınıyor, yani o çift
+dördüncü bir yakalama biçimi ve ayrı bir model gerektirir. Kol artık var; o çift hâlâ borç.
+
+Workspace 387 yeşil.

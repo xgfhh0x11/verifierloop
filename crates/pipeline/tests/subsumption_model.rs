@@ -484,3 +484,84 @@ fn pair_sixteen_capture_carries_the_commits_own_arc() {
         "and the second path's constant, which sits in that arc's gap"
     );
 }
+
+// ---- THE POINTER ARM (leg 0104) --------------------------------------------------------
+//
+// The 0101 fan-out named this gap: `states_equal`'s pointer arm was modelled by no oracle at
+// all, and at least one historical bug lives there (`1ad2f5838d34`, 2017 — a wrong pruning
+// decision inside `compare_ptrs_to_packet`). Until now the model PASSED every non-scalar
+// register silently, which is the loose direction — it cannot manufacture a finding, but it
+// also cannot see one, and worse, the ids on those registers never entered the idmap the
+// scalar arm shares (reviewer finding B3c, measured at 273 exposed pairs).
+//
+// WHY THIS NEEDED A CAPTURE CHANGE. Every pointer arm in `regsafe` is built on a byte
+// comparison, not a field comparison:
+//
+//     map_value family : memcmp(rold, rcur, offsetof(struct bpf_reg_state, var_off)) && ...
+//     regs_exact       : memcmp(rold, rcur, offsetof(struct bpf_reg_state, id)) && ...
+//
+// and the bytes in between are a UNION whose members include kernel pointers (`map_ptr`,
+// `btf`). A model that re-derived those fields would be guessing at a struct layout, and a
+// guess is what this project refuses. So the patch prints the PREFIX itself and the model
+// slices it — exact by construction, with `vo` marking where the shorter cut lands. `range`
+// for the packet arms is read out of that same blob (the union's first member, bytes 8..12)
+// rather than printed twice, so there is only one source of truth for it.
+//
+// MEASURED on the 896-program corpus, same capture as before plus the prefix:
+//
+//     before   other_type_regs=3818  ptr_cmps=0     (every pointer silently passed)
+//     after    other_type_regs=0     ptr_cmps=3818  (every pointer through a modelled arm)
+//     disagree 0 both ways · ptr_id_pairs 273 -> 0 · verdicts still 896/896 vs stock
+//
+// The two 3818s are the consistency check: the arms now run on exactly the registers that
+// used to be skipped. And the fallback is retained on purpose — a capture without `pfx`
+// still parses and still passes pointers, so every era variant and every fixture from legs
+// 0101-0103 keeps working, with the skip COUNTED rather than silent.
+
+const PTR_SAMPLE: &str = include_str!("fixtures/volume/prunepair-ptr-sample.log");
+
+#[test]
+fn pointer_arms_run_and_agree_on_a_real_capture() {
+    let out = run_on_fixture(PTR_SAMPLE, "ptr");
+    assert_eq!(field(&out, "SUBSUME pairs=", "disagree="), "0", "{out}");
+
+    // THE DENOMINATOR. `disagree=0` from an arm that never executed is the zero this
+    // project exists to refuse, so the arm's own count has to be positive and the skip
+    // count has to be zero — the same pair of facts, stated from both sides.
+    let n: usize = field(&out, "SUBSUME nontrivial_pairs=", "ptr_cmps=").parse().unwrap();
+    assert!(n > 0, "the pointer arms must actually have run:\n{out}");
+    assert_eq!(
+        field(&out, "SUBSUME nontrivial_pairs=", "other_type_regs="),
+        "0",
+        "no pointer register may be skipped once the capture carries a prefix:\n{out}"
+    );
+}
+
+/// The capture format is what makes the arm possible, so pin it: a prefix line per register
+/// line. If the patch ever stops emitting it the arm silently reverts to passing everything
+/// and `disagree=0` above still holds — vacuously.
+#[test]
+fn pointer_capture_carries_one_prefix_per_register() {
+    let pfx = PTR_SAMPLE.lines().filter(|l| l.starts_with("PRUNEPAIR_PFX ")).count();
+    let rows = PTR_SAMPLE.lines().filter(|l| l.starts_with("PRUNEPAIR insn=")).count();
+    assert!(rows > 0, "fixture carries no prune pairs at all");
+    assert_eq!(pfx, rows, "every register line needs its prefix line");
+    assert!(
+        PTR_SAMPLE.contains("PRUNEPAIR_PFX vo="),
+        "the prefix must declare where offsetof(var_off) falls, or the short cut is a guess"
+    );
+}
+
+/// The pre-prefix captures must keep working, with the skip COUNTED. This is what lets
+/// pairs thirteen/fourteen/sixteen stay valid across the format change instead of being
+/// re-run on a rebuilt kernel each time the capture grows a field.
+#[test]
+fn captures_without_a_prefix_fall_back_and_say_so() {
+    let out = run_on_fixture(IDBASE_FIXED, "ptrfallback");
+    assert_eq!(field(&out, "SUBSUME nontrivial_pairs=", "ptr_cmps="), "0", "{out}");
+    assert_ne!(
+        field(&out, "SUBSUME nontrivial_pairs=", "other_type_regs="),
+        "0",
+        "the fallback must COUNT what it skips:\n{out}"
+    );
+}
