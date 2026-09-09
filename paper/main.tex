@@ -1,0 +1,141 @@
+%% Where a Test Oracle Reads From
+%% Evidential independence as a design criterion for differential testing
+%%
+%% TARGET: ISSTA (acmart/sigconf). The class is deliberate: ICSE uses the same
+%% class, and the ISSTA-collocated workshops use it in a shorter format, so
+%% moving DOWN (workshop) or SIDEWAYS (ICSE) is a format switch, not a rewrite.
+%% Written to the full-paper shape on purpose — lowering is cheap, raising is not.
+%%
+%% BUILD: needs acmart.cls (texlive-publishers, or Overleaf). Not installed in
+%% the development container; compile on Overleaf or a TeX Live host.
+
+\documentclass[sigconf,review,anonymous]{acmart}
+
+%% PAGE BUDGET — deliberately left as a parameter rather than a number.
+%% ACM/ISSTA limits change per edition; fill from the current CFP, do not
+%% guess. The decision that matters is not the limit but the CAP below.
+%%
+%% THE CAP, and it is the point of this file:
+%%   Sec.5 (case study) MUST NOT EXCEED 2.5 pages.
+%% The material behind it is a 112-entry engineering log, and its weight will
+%% pull the section toward chronology. Chronology is the failure mode: it turns
+%% the case study into the log wearing a paper's clothes. Every paragraph in
+%% Sec.5 must answer "which claim does this carry?" — and the claim is always
+%% the one in the last sentence of Sec.1.
+
+\begin{document}
+
+\title{Where a Test Oracle Reads From}
+\subtitle{Evidential independence as a design criterion for differential testing}
+
+%% \author{...}  % filled at submission; class is set anonymous for review
+
+\begin{abstract}
+%% TODO. Write LAST, from Sec.1's final sentence outward. Four contributions,
+%% in this order, no chronology:
+%%   (1) the axis: evidential vs implementation independence, component-relative
+%%   (2) the procedure: partition the historical defect population by whether a
+%%       defect corrupts an artifact the oracle consumes; bounds reach before
+%%       the oracle is built; costs source reading only
+%%   (3) one deep application, with real-bug calibration on both sides
+%%   (4) the observation that no published defect data is organized on this axis
+\end{abstract}
+
+\maketitle
+
+\section{Introduction}
+%% DRAFTED — see paper/intro.tex. Ends on the sentence that filters Sec.5.
+\input{intro}
+
+\section{Two Axes of Oracle Independence}
+%% The axis, stated generally and without the subject system.
+%% - implementation independence: how the reference was WRITTEN (surveyed, graded)
+%% - evidential independence: what the reference CONSUMES
+%% - the refinement that NoREC forces: evidential independence is defined
+%%   relative to the COMPONENT under test, not the system. NoREC's reference
+%%   runs on the engine it tests, yet is evidentially independent of the
+%%   optimizer; its own stated limitation (both sides may be wrong) is exactly
+%%   what the axis predicts for the part it shares.
+%% - what the axis does NOT explain: of the six failure-to-fire mechanisms
+%%   catalogued in Sec.5, it accounts for two. Say so here, not in Sec.7.
+
+\section{The Procedure}
+%% Operationalization. Input: the system's historical fixed defects. Question
+%% per defect: does it corrupt an artifact the proposed oracle would consume?
+%% Output: an upper bound on the oracle's reach, before it is built.
+%% Cost: source reading. No builds, no execution, no campaign.
+%% Discipline that makes it work, and it is not optional:
+%%   - decide from the SOURCE of the fix, never its title or summary
+%%   - a defect that cannot be decided is counted UNDECIDED, not assumed
+%%   - the population must NOT be the set the tool already found; that measures
+%%     the sighted side and cannot bound the blind one
+
+\section{Evaluation Design}
+%% Why the eBPF verifier: heavily fuzzed already, defects individually
+%% documented with the state they corrupt, correctness safety-relevant.
+%% The controlled contrast: two oracles, identical discipline, one variable.
+%% What calibration means here: for each pair, a kernel BUILT AT THE DEFECT and
+%% one at the fix, configs byte-identical, and the oracle must fire on one and
+%% be silent on the other.
+
+\section{Case Study}
+%% *** HARD CAP: 2.5 PAGES. See the note at the top of this file. ***
+%% Allowed content, in this order, and nothing else:
+%%   5.1 The two oracles, contrasted at the level of their input (the type
+%%       signatures carry the argument; use them).
+%%   5.2 Calibration: how many pairs, and the two anchors — one positive and
+%%       one measured boundary per oracle.
+%%   5.3 The procedure applied ahead of time to the historical population, and
+%%       the number it produced (5% targeted / 58% structurally blind).
+%%   5.4 The blind-spot map as ONE figure. The full matrix goes to Appendix A.
+%% Forbidden: the order in which things were built; what was tried first;
+%% anything whose only justification is that it happened.
+
+\section{Threats to Validity}
+%% Kept honest and specific; these are measured limits, not ritual.
+%%   - the historical partition was produced with assistance and only the
+%%     decision-changing case was audited by hand; zero-undecided is suspicious
+%%   - the contrast is two oracles in one system; confounds are held constant
+%%     but n is two
+%%   - no external validation, and Sec.3's observation says why one cannot be
+%%     assembled from published results
+%%   - the calibration set is not a random sample: it was selected for defects
+%%     whose fix messages quote verifier state, which biases toward defects with
+%%     rich printed state, and that property may correlate with how they were found
+
+\section{Related Work}
+%% Position against, in this order:
+%%   - oracle-source taxonomies: grade implementation independence, do not treat
+%%     input provenance as a distinct axis
+%%   - NoREC: an instance of the axis in practice, framed as a DBMS technique;
+%%     acknowledges shared failure in metamorphic terms (no ground truth), not
+%%     as input provenance
+%%   - EMI: profile-derived variants; states no limitation of the predicted
+%%     shape. Report this: a prediction was pre-registered and falsified, and
+%%     what it measures is that authors do not reliably state their blind class
+%%   - metamorphic testing, compiler/DBMS differential testing generally
+
+\section{Conclusion}
+%% One paragraph. The axis, the procedure, and the call: defect data is not
+%% organized by oracle-visibility, and organizing it would answer the question
+%% this paper can only answer for one system.
+%% Named follow-up, with its DESIGN, not a gesture: take a defect population
+%% NOT drawn from any one tool -- e.g. one release window's wrong-code defects
+%% in a compiler -- and partition it by whether an oracle of a given input
+%% provenance could have observed each. That tests the blind side, which a
+%% tool's own findings cannot.
+
+\appendix
+\section{The Full Blind-Spot Map}
+%% All 56 cells, each filled cell carrying the commit that anchors it, and the
+%% empty cells left visibly empty. An empty cell means UNTESTED, not blind, and
+%% the appendix must say so where a reader will see it.
+
+\section{Calibration Pairs}
+%% One row per pair: defect, what it corrupts, which oracle, positive or
+%% boundary, and the mechanism when it is a boundary.
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{refs}
+
+\end{document}
