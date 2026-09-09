@@ -83,38 +83,24 @@
 \input{casestudy}
 
 \section{Threats to Validity}
-%% Kept honest and specific; these are measured limits, not ritual.
-%%   - the historical partition was produced with assistance and only the
-%%     decision-changing case was audited by hand; zero-undecided is suspicious
-%%   - the contrast is two oracles in one system; confounds are held constant
-%%     but n is two
-%%   - no external validation, and Sec.3's observation says why one cannot be
-%%     assembled from published results
-%%   - the calibration set is not a random sample: it was selected for defects
-%%     whose fix messages quote verifier state, which biases toward defects with
-%%     rich printed state, and that property may correlate with how they were found
+%% DRAFTED — see paper/threats.tex. Each threat names the claim it endangers and
+%% what would settle it. The frame-bias one is first because §5.3 already admits
+%% it: the population satisfies §3.2's precondition and violates its second,
+%% weaker requirement.
+\input{threats}
 
 \section{Related Work}
-%% Position against, in this order:
-%%   - oracle-source taxonomies: grade implementation independence, do not treat
-%%     input provenance as a distinct axis
-%%   - NoREC: an instance of the axis in practice, framed as a DBMS technique;
-%%     acknowledges shared failure in metamorphic terms (no ground truth), not
-%%     as input provenance
-%%   - EMI: profile-derived variants; states no limitation of the predicted
-%%     shape. Report this: a prediction was pre-registered and falsified, and
-%%     what it measures is that authors do not reliably state their blind class
-%%   - metamorphic testing, compiler/DBMS differential testing generally
+%% DRAFTED — see paper/related.tex. Contains the pre-registered prediction about
+%% EMI that was FALSIFIED, reported as such, plus the confirmed-but-weakly-
+%% diagnostic second prediction that is explicitly not counted. Unusual for a
+%% related-work section; it is the evidence for the fourth contribution.
+\input{related}
 
 \section{Conclusion}
-%% One paragraph. The axis, the procedure, and the call: defect data is not
-%% organized by oracle-visibility, and organizing it would answer the question
-%% this paper can only answer for one system.
-%% Named follow-up, with its DESIGN, not a gesture: take a defect population
-%% NOT drawn from any one tool -- e.g. one release window's wrong-code defects
-%% in a compiler -- and partition it by whether an oracle of a given input
-%% provenance could have observed each. That tests the blind side, which a
-%% tool's own findings cannot.
+%% DRAFTED — see paper/conclusion.tex. Ends on the follow-up STUDY DESIGN, not a
+%% gesture: a population drawn independently of any tool, partitioned by oracle
+%% visibility. That tests the blind side.
+\input{conclusion}
 
 \appendix
 \section{The Full Blind-Spot Map}

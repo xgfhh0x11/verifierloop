@@ -1,0 +1,42 @@
+Section~4 asked how a procedure can be evaluated at all. This section asks what
+could make the specific claims of Section~5 wrong, and what would settle each.
+
+\paragraph{The population's frame is biased, and we know the direction.}
+Section~3.2 states two requirements on the population. The first---independence from
+any oracle's findings---is satisfied. The second is not: the forty fixes were
+selected because their messages quote internal state, which is what makes them
+readable. That property may correlate with how a defect was found and reported, so
+the frame is not a random sample of the component's defect history. The direction of
+the bias is toward defects that are well documented, and it is not obvious whether
+that inflates or deflates the blind share. Settling it requires re-running the
+partition over an unfiltered frame---every fix in a release window---which costs
+more reading and no new machinery.
+
+\paragraph{The partition was produced with assistance, and audited once.}
+Classification was carried out with automated help, and only the decision-changing
+case was re-derived by hand. The absence of undecided cases across forty defects is
+the specific reason to doubt it: Section~3.3 permits that answer explicitly, and a
+population in which nothing is ambiguous is more likely to reflect a classifier
+reluctant to say so than a genuinely unambiguous history. An inter-rater study over
+a fixed population, as Section~4.5 describes, is the smallest experiment that would
+settle this.
+
+\paragraph{The contrast is two oracles in one system.}
+Confounds are held constant rather than randomized: same corpus, same discipline,
+same protocol, same author. That is the strength of the design and also its limit.
+Two oracles differing in one respect show that the respect matters here; they do not
+establish an effect size, and no claim of one is made.
+
+\paragraph{Calibration establishes a channel, not a class.}
+Each pair certifies that a specific oracle either fires or cannot fire on one
+specific defect. Generalizing from a pair to a class is an inference the pair does
+not license on its own, and in this work the generalization is carried by the
+partition rather than by the pairs. Where a pair and the partition disagree the pair
+wins, since it is the direct measurement.
+
+\paragraph{The subject is one analysis in one system.}
+The eBPF verifier is an abstract interpreter whose defects are unusually well
+documented, which is why it can serve as a case study at all. That same property
+makes it unrepresentative: most systems do not publish the internal state their
+defects corrupt, and applying the procedure elsewhere may be harder for reasons this
+case study cannot expose.

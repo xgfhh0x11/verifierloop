@@ -1,0 +1,49 @@
+\paragraph{Oracle-source taxonomies.}
+Recent surveys of test-oracle sources grade independence, and grade it along the
+implementation axis: an independently developed reference ranks above a comparison
+among existing implementations, which ranks above consensus among implementations
+drawn from a common origin~\cite{oraclesurvey2026}. Input provenance is not among
+the axes. The closest such work comes is a remark on oracles derived from the code
+itself---that they accept what the code currently does---which is the coarsest case
+of the phenomenon and is not developed into a dimension.
+
+\paragraph{NoREC.}
+NoREC constructs its reference by rewriting a query into a form the optimizer cannot
+apply to, and evaluating it on the same engine~\cite{rigger2020norec}. Read through
+Section~2.2, it is the axis realized: evidential independence from the component
+under test, purchased by construction, while sharing everything else. Its authors
+state the corresponding limitation---``both the unoptimized and optimized query can
+yield an incorrect result''---and attribute it to metamorphic testing's inability to
+establish ground truth. That attribution is correct and coarser than the
+component-relative reading, which says not merely that ground truth is absent but
+which defects escape and which do not.
+
+\paragraph{EMI, and a prediction we registered and lost.}
+EMI derives variants by profiling a program and pruning code the profile marks
+unexecuted~\cite{le2014emi}, so its evidence passes through the system under test
+for everything except the presence of that code. Before reading the paper we
+recorded a falsifiable prediction: that its stated limitations would include the
+class the axis implies---defects affecting a program and its variant identically.
+They do not. The paper's stated limitations concern extension to other languages,
+floating-point equivalence, and undefined behaviour. By the criterion we fixed in
+advance, the prediction failed.
+
+A second prediction, that the reported defects would concentrate in components
+sensitive to surrounding code, holds---``most of the bugs that Orion found in GCC
+are optimizer bugs''---but we do not count it. EMI targets optimizations by
+construction, so the observation does not separate our axis from the technique's own
+stated aim, and a weakly diagnostic confirmation does not offset a falsified
+prediction.
+
+What the failure measures is worth more than either prediction. Authors do not
+reliably state the class their oracle cannot see, and the reported taxonomies are
+organized by symptom---wrong code, crash, performance---and by configuration, never
+by whether an oracle could have observed the defect. Neither the prose nor the tables
+of the published record can validate this axis. That is the observation Section~3
+turns into a call, and it was reached by trying and failing rather than by assuming.
+
+\paragraph{Metamorphic testing and differential testing generally.}
+The axis is orthogonal to the choice between a metamorphic relation and a reference
+implementation: both can be evidentially entangled, and both can be constructed not
+to be. What the axis adds is that the entanglement determines a class rather than a
+degree, and that the class is computable in advance.
