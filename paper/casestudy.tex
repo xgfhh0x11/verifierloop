@@ -1,0 +1,122 @@
+The subject is the in-kernel eBPF verifier: an abstract interpreter that must prove
+memory safety of untrusted programs before the kernel will run them. Two oracles
+were built for it, judging different components of the analysis, and everything
+about them was held constant except the one thing this paper is about.
+
+\subsection{Two oracles, one difference}
+
+Oracle~$A$ judges the verifier's \emph{liveness analysis}---the analysis deciding
+which registers must be compared when two abstract states meet. Oracle~$B$ judges
+the verifier's \emph{state-subsumption predicate}---the decision that one abstract
+state is covered by another, which authorizes pruning the search.
+
+Both are independent reimplementations, written from the algorithm rather than from
+the code, sharing no source with the component they judge. Both follow the same
+rule: where the model cannot decide, it refuses and the case is counted, rather than
+approximated. Both were exercised on the same generated corpus and calibrated by the
+same protocol.
+
+The difference is the consumption set, and it is visible without reading either
+implementation:
+
+\begin{quote}
+\ttfamily\small
+A: run(const insn *ins, int n, result *out)\\
+B: compare(const char *log, cmp *out)
+\end{quote}
+
+\noindent$A$'s premises are the instruction stream---upstream of the component it
+judges, and untouched by it. $B$'s premises are the abstract state the verifier
+itself wrote. Section~2's axis predicts, from these signatures alone, that $A$
+survives defects that corrupt verifier state and $B$ reproduces them.
+
+\subsection{Calibration}
+
+Calibration here means: build the system at a real defect and at its fix, with
+configurations held byte-identical, and require the oracle to fire on one and be
+silent on the other. Sixteen such pairs anchor the map; two per oracle carry the
+argument.
+
+$A$, positive. A defect in control-flow graph construction dropped an edge, so a
+register that was live was recorded dead. The oracle reported a single cell---the
+instruction and register the fix itself names---on the defective build, and nothing
+on the fixed one.
+
+$A$, boundary. A defect made the kernel treat a register as used when it need not
+be. The deviation is conservative, and the oracle is \emph{required} to stay silent;
+it does. A calibration whose correct outcome is silence is what separates an oracle
+from a difference detector.
+
+$B$, positive. A defect in the identity-matching arm of the subsumption predicate.
+The oracle fires on the defective build; on the fixed build the objected-to pruning
+event does not merely become acceptable, it stops occurring, because the predicate
+now refuses the pair.
+
+$B$, boundary, and it is the axis made concrete. A defect corrupts the precision
+flag that the predicate reads to decide whether to compare at all. The defective
+kernel short-circuits on the corrupted flag; the oracle reads the same flag from the
+same state and short-circuits identically. Three lines---the kernel's, that era's
+kernel, and the model's---align on the same condition. The classification was
+derived from source and required no build.
+
+$B$ is not less careful than $A$. It is blind for a reason legible in its signature.
+
+\subsection{The procedure, applied ahead of the oracle}
+
+The population is forty fixes to the component's history. It satisfies Section~3.2's
+precondition: it is not drawn from what any oracle here reported. It does
+\emph{not} satisfy the weaker second requirement---the frame selected fixes whose
+messages quote internal state, a property that may correlate with how a defect was
+found---and that bias is carried into Section~6 rather than left here.
+
+Each fix was classified by the single question of Section~3.3, decided from the
+diff:
+
+\begin{itemize}
+\item \textbf{23 of 40} corrupt an artifact $B$ consumes. Structurally blind.
+\item \textbf{2 of 40} change the predicate itself. Potentially visible.
+\item \textbf{15 of 40} lie outside the state-equivalence path entirely.
+\end{itemize}
+
+The bound is therefore $\mathrm{reach}(B) \le 2/40$. The realized reach is $1/40$:
+the second predicate defect lies in an arm of the predicate that $B$ does not
+implement, which is exactly the gap between a necessary condition and a sufficient
+one that Section~3.4 insists on.
+
+Read the other way: the more sophisticated of the two oracles is structurally blind
+to \textbf{58\%} of its subject's documented defect history, and targets
+\textbf{5\%}. Both numbers were obtainable before the oracle existed, from material
+the project already had, at the cost of opening forty commits.
+
+\subsection{What the campaign could not have told us}
+
+Section~2.4 argued that this failure is silent by construction. The case study
+supplies the instance.
+
+Across every run these oracles performed, agreement was total. The blind class is
+not a region where an oracle disagreed and the disagreement was misread; it is a
+region where it agreed, at volume, for the wrong reason. Nothing in the campaign's
+own output distinguishes that agreement from the sound kind. The blindness became
+visible only when the question was put to an external population of real
+defects---which is the procedure, and is why it is a procedure and not a caution.
+
+\begin{table}[t]
+\caption{Blind-spot map, reduced. \textbullet~calibrated positive;
+\textcircled{~}~measured boundary; \rule[0.5ex]{1.6ex}{0.4pt}~structurally blind.
+\textbf{An empty cell means untested, not blind}---the distinction the map exists to
+preserve. Full matrix with the fix anchoring each cell in Appendix~A.}
+\label{tab:map}
+\small
+\begin{tabular}{lcc}
+\toprule
+defect class & $A$ liveness & $B$ subsumption \\
+\midrule
+state, self-inconsistent      &            & \rule[0.5ex]{1.6ex}{0.4pt} \\
+state, consistent but wrong   &            & \rule[0.5ex]{1.6ex}{0.4pt} \\
+bookkeeping (precision flag)  &            & \textcircled{~} \\
+predicate, modelled arm       &            & \textbullet \\
+predicate, unmodelled arm     &            & \textcircled{~} \\
+liveness / control flow       & \textbullet\ \textcircled{~} & \\
+\bottomrule
+\end{tabular}
+\end{table}
