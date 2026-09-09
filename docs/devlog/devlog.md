@@ -7826,3 +7826,70 @@ cnum — hiçbiri yok, durum `min_value`/`max_value`/`imm`/`id` ile taşınıyor
 dördüncü bir yakalama biçimi ve ayrı bir model gerektirir. Kol artık var; o çift hâlâ borç.
 
 Workspace 387 yeşil.
+
+## 0105 — Model av hacmine bağlandı: VM-içi subsumption
+
+0088 budama kararı için referansı kurdu, 0101-0103 onu üç ayrı kolda üç gerçek kernel
+hatasına kalibre etti — ve bunların hepsi boyunca model yalnız elle kurulmuş ailelerde
+koştu: 896 programlık korpus başına 2.038 çift, 18 MB'lık bir yakalamadan **çevrimdışı**.
+Bu bir kalibrasyon aleti, av aleti değil.
+
+### 1. Duvar, ve neden içeri girmek zorunda
+
+Program başına ~1,5 KB budama-çifti dökümü, saniyede ~1900 programda saatte **~10 GB log**
+eder — bir sayı için. `bpflive.h` 0094'te aynı duvara çarptı ve cevabı aynıydı: karşılaştırma
+VM'in içinde yapılır, dışarı yalnız toplamlar ve gerçek uyuşmazlıklar çıkar.
+
+### 2. İkinci uygulama bir borçtur, ve bu borç ödendi
+
+`harness/bpfsubs.h` aynı yüklemin C'deki ikinci uygulaması. Bu proje bağımsız
+uygulamalardan ancak bağımsızlık **kasıtlıyken** kazanır (`bpfref.h` JIT'e karşı, `bpflive.h`
+`liveness.c`'ye karşı); burada hacim tarafından **zorunlu** kılındı, dolayısıyla ikisinin
+aynı olması gerekir — ve "gerekir" bir alışkanlık değil bir test olmalı.
+
+Python model **referans** kalıyor, çünkü gerçek hatalara kalibre edilmiş olan o. C olan ona
+kalibre edildi, ve eşitlik sayaç sayaç:
+
+```
+896 programlık yakalama, iki uygulama:
+  pairs=2038  agree=2038  nontrivial=1017  scalar=1596  ptr=3818  shortcircuit=584
+```
+
+Yalnız hüküm değil bütün sayaçlar karşılaştırılıyor — iki model "temiz" konusunda
+anlaşırken ne kadar baktıkları konusunda ayrışabilir, ve payda tam olarak o farkı ölçmek
+için var.
+
+### 3. Okuyamadığı biçimi REDDEDİYOR, sessizce sıfırlamıyor
+
+C model tip (cnum) biçimini okuyor. Dönem biçimleri karşısında:
+
+```
+comp-instr-b8 (min/max) : pairs=0 unsup=11866
+jmp32-instr-b21 (2021)  : pairs=0 unsup=24
+vid-instr3 (cnum)       : pairs=2038 unsup=0
+```
+
+Ve bir belirsizlik daha önden kapatıldı: stok kernel'de hiç PRUNEPAIR olmaz, o da `pairs=0`
+verir. `subsrows` sayacı "bu kernel'de enstrümantasyon yok" ile "enstrümanlı ve hiç budama
+olmadı" arasını ayırıyor — ikisi de aynı sayıyı basardı, ve bunlar çok farklı iki olgu.
+
+### 4. Ölçüm
+
+180 saniye, enstrümanlı tip kernel:
+
+```
+iters=119312  subsrows=139924  subspairs=24901  subsnontrivial=7354
+subsdisagree=0  subsunsup=0
+```
+
+**24.901 çift, üç dakikada** — 896 programlık korpusun tamamının on iki katı. Dürüst payda
+7.354. Kıyas için canlılık kapısı aynı koşuda `livecells=1990731`.
+
+### 5. Ne kurulmadı
+
+Sıfır uyuşmazlık, ve bu sıfır artık üç kalibrasyon çifti ve 7.354'lük bir payda taşıyor —
+ama hâlâ tek bir tur. Model hâlâ yalnız kernel'in ALDIĞI prune'ları görüyor (tek yön), durum
+hataları yapısal olarak görünmez, ve `1ad2f5838d34` (pointer kolunun kendi kalibrasyon
+çifti) hâlâ borç.
+
+Workspace 390 yeşil.

@@ -75,6 +75,7 @@
 
 #include "bpfref.h"
 #include "bpflive.h"
+#include "bpfsubs.h"
 
 #define BPF_JMP32_IMM(OP, DST, IMM, OFF)                                       \
     ((struct bpf_insn){.code = BPF_JMP32 | BPF_OP(OP) | BPF_K,                 \
@@ -4657,6 +4658,8 @@ static void run_fuzz(int seconds) {
        can fail. `live_unsup` is the honest scope — programs the model refused rather than
        approximated — and reporting it next to the zero is what keeps the zero readable. */
     unsigned long live_cells = 0, live_rows = 0, live_miss = 0, live_unsup = 0;
+    unsigned long subs_rows = 0, subs_pairs = 0, subs_nontrivial = 0;
+    unsigned long subs_disagree = 0, subs_unsup = 0;
 
     printf("FUZZ start budget=%ds corpus_max=%d\n", seconds, FZ_CORPUS_MAX);
     while (time(NULL) - t0 < seconds) {
@@ -4776,6 +4779,27 @@ static void run_fuzz(int seconds) {
                    loads expensive. `base`'s log already has it, so this costs a parse.
                    Only aggregates and real disagreements leave the VM; a per-program claim
                    would be gigabytes of log for a number. */
+                /* THE SUBSUMPTION MODEL, on the same gated sample and for the same
+                   reason. 11,996 prune-pair rows per 896 programs is ~1.5 KB each; at the
+                   loop's ~1900 programs/sec that is ~10 GB of log per hour if shipped out,
+                   so the comparison happens HERE and only numbers leave. `subs_rows`
+                   separates "this kernel carries no instrumentation" from "instrumented and
+                   nothing pruned" — without it both print pairs=0 and read as clean. */
+                {
+                    struct bpfsubs_cmp sc;
+                    bpfsubs_compare_log(g_log, &sc);
+                    subs_rows += sc.rows;
+                    subs_pairs += sc.pairs;
+                    subs_nontrivial += sc.nontrivial;
+                    subs_unsup += sc.unsupported;
+                    if (sc.disagree) {
+                        subs_disagree += sc.disagree;
+                        printf("FINDING kind=subsumption_candidate iter=%lu %s ",
+                               iters, sc.first);
+                        fz_print_genome(&G);
+                        printf("\n");
+                    }
+                }
                 {
                     struct bpflive_cmp lc;
                     bpflive_compare_log(ins, n, g_log, &lc);
@@ -4920,10 +4944,11 @@ static void run_fuzz(int seconds) {
 
         if ((iters % 2000) == 0)
             printf("STATUS iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
+                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
                    iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
                    truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
-                   max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
+                   max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup,
+           subs_rows, subs_pairs, subs_nontrivial, subs_disagree, subs_unsup, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
     }
     /* THE PC SET ITSELF, so the coverage number can become a FRACTION. 5406 distinct PCs
        is uninterpretable on its own: CONFIG_KCOV_INSTRUMENT_ALL means the list includes the
@@ -4943,10 +4968,11 @@ static void run_fuzz(int seconds) {
         printf("PCSET total=%u\n", printed);
     }
     printf("FUZZ done iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
+           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
            iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
            truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
-           max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
+           max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup,
+           subs_rows, subs_pairs, subs_nontrivial, subs_disagree, subs_unsup, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
     free(corpus);
     free(g_kseen);
     close(map_in);

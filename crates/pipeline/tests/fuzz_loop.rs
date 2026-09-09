@@ -275,3 +275,60 @@ fn the_search_is_deep_enough_for_pruning_to_mean_something() {
     assert!(base >= 8, "deepest base exploration only {base} states");
     assert!(freq > base * 2, "state-freq must widen the deep cases too: {base} -> {freq}");
 }
+
+/// THE SUBSUMPTION MODEL ON THE FUZZ LOOP (leg 0105).
+///
+/// 0088 built the pruning-decision reference, 0101-0103 calibrated it against three real
+/// kernel bugs on three different arms — and through all of that it ran only on hand-built
+/// families: 2,038 prune pairs per 896-program corpus run, evaluated offline from an 18 MB
+/// capture. That is a calibration instrument, not a hunting one.
+///
+/// It could not simply be pointed at the fuzz loop: ~1.5 KB of prune-pair dump per program
+/// at ~1900 programs/sec is ~10 GB of log per hour if the rows leave the VM. So the
+/// comparison moved inside (`harness/bpfsubs.h`), exactly as the liveness gate did in 0094,
+/// and only aggregates plus real disagreements come out.
+///
+/// Measured in 180 seconds: 24,901 pairs — twelve times the whole corpus, every three
+/// minutes — of which 7,354 are non-trivial.
+#[test]
+fn subsumption_model_rides_the_fuzz_loop() {
+    const SUBS: &str = include_str!("fixtures/calibration/fuzz-subs.log");
+    let last = SUBS
+        .lines()
+        .rev()
+        .find(|l| l.starts_with("FUZZ done"))
+        .expect("a completed fuzz run");
+
+    // ROWS FIRST, and this is the ambiguity that made the counter necessary: a stock kernel
+    // carries no instrumentation and reports pairs=0, an instrumented kernel that pruned
+    // nothing also reports pairs=0. Only `subsrows` separates them.
+    assert!(
+        field(last, "subsrows=") > 0,
+        "no prune-pair rows seen at all — the run used a kernel without the instrumentation \
+         patch, which is a different fact from a clean result: {last}"
+    );
+    assert!(
+        field(last, "subspairs=") > 10_000,
+        "the model must see fuzz-scale volume, not corpus-scale: {}",
+        field(last, "subspairs=")
+    );
+
+    // THE DENOMINATOR, again. A pair whose every register short-circuited on precision
+    // proves nothing; `subsnontrivial` counts the ones where range/tnum actually ran, and
+    // it is the number a zero should be read against.
+    assert!(
+        field(last, "subsnontrivial=") > 1_000,
+        "agreement on trivial pairs is not agreement: {}",
+        field(last, "subsnontrivial=")
+    );
+
+    // A FORMAT THE IN-VM MODEL CANNOT READ MUST RAISE, NOT PASS. Zero here means every row
+    // parsed; a non-zero would mean the loop was silently measuring less than it reported.
+    assert_eq!(
+        field(last, "subsunsup="),
+        0,
+        "the in-VM model refused rows it could not parse — the numbers above are then \
+         reported against an incomplete denominator: {last}"
+    );
+    assert_eq!(field(last, "subsdisagree="), 0, "unexpected candidate: {last}");
+}

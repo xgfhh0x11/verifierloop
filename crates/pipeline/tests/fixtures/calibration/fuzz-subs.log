@@ -1,0 +1,2 @@
+FUZZ start budget=180s corpus_max=4096
+FUZZ done iters=119312 accept=68528 reject=50784 corpus=140 seen_pcs=6167 compared=372978 findings=0 trunc=0 prunepairs=15035 pruneflip=0 pruneartifact=0 maxstates=48/171 avgstates=4 invchecked=8635 invfault=0 livecells=1990731 liverows=757450 livemiss=0 liveunsup=0 subsrows=139924 subspairs=24901 subsnontrivial=7354 subsdisagree=0 subsunsup=0 iteremitted=65649 iterskipped=28746 elapsed=180s

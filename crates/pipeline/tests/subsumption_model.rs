@@ -565,3 +565,90 @@ fn captures_without_a_prefix_fall_back_and_say_so() {
         "the fallback must COUNT what it skips:\n{out}"
     );
 }
+
+// ---- THE IN-VM MODEL, AND WHY ITS EQUIVALENCE IS A TEST (leg 0105) ----------------------
+//
+// `harness/bpfsubs.h` is a second implementation of the same predicate, in C, so the
+// comparison can happen inside the VM. That is not a preference: 11,996 prune-pair rows per
+// 896 programs is ~1.5 KB each, and at the fuzz loop's ~1900 programs/sec shipping them out
+// is ~10 GB of log per hour, for a number. `bpflive.h` hit this exact wall in 0094.
+//
+// A SECOND IMPLEMENTATION IS A LIABILITY unless the two are pinned together. This project
+// benefits from independent implementations only when the independence is DELIBERATE
+// (`bpfref.h` against the JIT, `bpflive.h` against liveness.c); here it is forced by volume,
+// which means the two must agree, and "must agree" has to be a test rather than a habit.
+// The Python model stays the reference — it is the one calibrated against real kernel bugs
+// (pairs thirteen, fourteen, sixteen) — and the C one is calibrated against it.
+//
+// Measured at the moment of writing, on the 896-program capture: both report
+// pairs=2038 agree=2038 nontrivial=1017 scalar=1596 ptr=3818 shortcircuit=584, counter for
+// counter. And on captures in an era format the C model cannot read, it REFUSES loudly
+// (`unsup=11866` on the min/max capture, `unsup=24` on the 2021 one) instead of reporting
+// the zero that would read as clean.
+
+fn run_c_model(body: &str, tag: &str) -> String {
+    let root = repo_root();
+    let dir = std::env::temp_dir().join(format!("vl-subsdrv-{}-{tag}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin = dir.join("subsdrv");
+    let out = Command::new("cc")
+        .args(["-O2", "-I"])
+        .arg(root.join("harness"))
+        .arg("-o")
+        .arg(&bin)
+        .arg(root.join("harness/subsdrv.c"))
+        .output()
+        .expect("cc must be available: the in-VM model is C, and an unbuildable second \
+                 implementation cannot be shown equivalent to the reference one");
+    assert!(
+        out.status.success(),
+        "bpfsubs.h failed to compile:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let log = dir.join("capture.log");
+    std::fs::write(&log, body).unwrap();
+    let run = Command::new(&bin).arg(&log).output().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    String::from_utf8_lossy(&run.stdout).into_owned()
+}
+
+/// THE EQUIVALENCE. Same capture, two implementations, every counter compared — not just
+/// the verdict, because two models can agree on "clean" while disagreeing about how much
+/// they looked at, and that difference is exactly what a denominator is for.
+#[test]
+fn the_c_model_matches_the_python_reference() {
+    let py = run_on_fixture(PTR_SAMPLE, "equivpy");
+    let c = run_c_model(PTR_SAMPLE, "equivc");
+
+    for (pyline, pykey, ckey) in [
+        ("SUBSUME pairs=", "pairs=", "pairs="),
+        ("SUBSUME pairs=", "agree=", "agree="),
+        ("SUBSUME pairs=", "disagree=", "disagree="),
+        ("SUBSUME pairs=", "unmodelled=", "unmodelled="),
+        ("SUBSUME nontrivial_pairs=", "nontrivial_pairs=", "nontrivial="),
+        ("SUBSUME nontrivial_pairs=", "scalar_comparisons=", "scalar="),
+        ("SUBSUME nontrivial_pairs=", "ptr_cmps=", "ptr="),
+        ("SUBSUME nontrivial_pairs=", "shortcircuited_regs=", "sc="),
+    ] {
+        let a = field(&py, pyline, pykey);
+        let b = field(&c, "pairs=", ckey);
+        assert_eq!(a, b, "{pykey} differs: python={a} c={b}\npython:\n{py}\nc:\n{c}");
+    }
+}
+
+/// A FORMAT THE C MODEL CANNOT READ MUST REFUSE, LOUDLY. The fuzz loop runs at tip, but the
+/// era captures exist and will be re-run; a silent `pairs=0` from an unreadable capture is
+/// the denominator-zero trap wearing the costume of a clean result.
+#[test]
+fn the_c_model_refuses_era_formats_instead_of_reporting_zero() {
+    let c = run_c_model(IDBASE_BUGGY, "erarefuse");
+    assert_eq!(field(&c, "pairs=", "pairs="), "0", "{c}");
+    assert_ne!(
+        field(&c, "pairs=", "unsup="),
+        "0",
+        "an unreadable capture must raise `unsupported`, not report a clean zero:\n{c}"
+    );
+    // ...and it must still say it SAW the rows, so "no instrumentation" stays
+    // distinguishable from "instrumented and nothing pruned".
+    assert_ne!(field(&c, "pairs=", "rows=").to_string(), "0", "{c}");
+}
