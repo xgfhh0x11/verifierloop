@@ -69,21 +69,23 @@ fn sampled_fuzz_stores_reach_the_store_location_oracle() {
     );
 }
 
-/// AND THE VERDICT — NOT YET TRUSTWORTHY, AND IGNORED FOR A NAMED REASON.
+/// AND THE VERDICT, now that the input it judges is trustworthy.
 ///
-/// The oracle fires on this sample, and hand-derivation says the fault is OURS: block 15's
-/// `STORE insn=29` points at `29: (07) r1 += -256 ; R1=fp-256`, a STACK pointer, while the
-/// program's map-value store sequence is at 57/58/59 (`r1 = r8`, `r1 += A`, the store). The
-/// instruction index the loop declares does not match the program the log describes, so
-/// every judgement built on it is judging the wrong claim — the seventh attribution-shaped
-/// mistake in this channel and the second on the emission side.
+/// It took two more corrections to get here, and neither was in the oracle. First, a
+/// program with two variable store sites emitted two claims and every observed byte was
+/// judged against one of them. Then — the harder one — the declared instruction did not
+/// match the log at all: `STORE insn=36` against `36: (bf) r6 = (s32)r7`. A self-check of
+/// the site list against the instruction array came back clean (`storestale=0`), which is
+/// what forced the search to the other side: the level-2 load rides the
+/// `fresh > 0 || (iters & 7) == 0` gate, so on seven eighths of iterations `g_log` still
+/// held an EARLIER program's log. The sampler was pairing this program's stores with that
+/// program's claims. 0085's stale-artefact shape, arriving in a new place.
 ///
-/// It is ignored rather than deleted because the denominator test above IS meaningful and
-/// must keep running, and because an ignored test with a written reason is a smaller lie
-/// than a deleted one. Sampled blocks now carry their genome (`REPLAY genes=...`), so the
-/// next attempt can replay a flagged block instead of reasoning about it.
+/// Eight corrections in this channel, and not one of them was in the PREDICATE — every
+/// single one was either attribution (which observation belongs to which claim) or
+/// freshness (which program the evidence describes).
+///
 #[test]
-#[ignore = "emission declares a store insn that does not match the log; see the doc comment"]
 fn sampled_fuzz_stores_show_no_desync() {
     let (norm, out) = run_diff(SAMPLE, "verdict");
     let desync: Vec<_> = out

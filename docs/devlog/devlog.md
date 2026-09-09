@@ -8160,3 +8160,59 @@ ikincisinde her düzeltme bir sonrakini doğuruyor. Bir dahaki "şunu da VM'e ta
 önerisinde sorulacak soru bu.
 
 Workspace 391 yeşil, 3 ignored.
+
+## 0111 — Store-location kanalı kapandı: sekiz hata, hiçbiri yüklemde
+
+0110 bu kanalı yarım bıraktı ve nerede tökezlediğini yazdı. Bu bacak onu bitirdi.
+
+### 1. Kalan iki hata
+
+**Yedinci — atıf.** Bir programda iki değişken mağaza yeri varken ikisinin de iddiası
+basılıyor, gözlenen bütün baytlar tek iddiaya karşı yargılanıyordu. Örnekleme belirsizlik
+taşımayan programlarla sınırlandı (tek değişken yer, tek gözlenen bayt); `storeunamb`
+bedelini ölçüyor.
+
+**Sekizinci — tazelik, ve tahminle bulunamazdı.** İlan edilen komut indeksi logdakiyle
+uyuşmuyordu: `STORE insn=36` derken log `36: (bf) r6 = (s32)r7` gösteriyordu, 86 bloğun
+79'unda. Site listesini komut dizisine karşı doğrulayan bir öz-kontrol eklendi ve **temiz
+döndü** (`storestale=0`) — asıl işi bu yaptı, çünkü aramayı zorunlu olarak diğer tarafa
+kaydırdı.
+
+Sebep: pahalı oracle'lar `fresh > 0 || (iters & 7) == 0` kapısına biniyor, örnekleyici ise
+kapının dışındaydı. Sekizde yedi iterasyonda `g_log` **bir önceki programın** logu, ve blok
+"bu programın mağaza yeri + o programın iddiası" diye çiftleniyordu. 0085'in yanlış-artefakt
+biçimi, yeni bir yerde.
+
+Düzeltmeden sonra: **21/21 blokta ilan edilen indeks kendi logundaki gerçek mağaza.**
+
+### 2. Kanal artık kapalı ve hüküm olgun oracle'da
+
+```
+180 sn:  storeprogs=15078  storeunamb=1355  storesampled=21  storestale=0
+pipeline: store_locations_checked=21  ayrıştırma temiz  store_location_desync=0
+```
+
+Döngü yalnız dürüstçe ölçebildiğini tutuyor; hükmü `check_store_location` veriyor — yani
+`3878ae04e9fc`'ye karşı kalibre edilmiş olan. Saatlik ~420 güvenilir blok; elle kurulmuş
+korpusun toplam paydası 4560 idi, yani mertebe aynı ama şekiller fuzz'dan geliyor.
+
+### 3. Bu kanalın dersi, sekiz hatada damıtılmış
+
+**Hiçbiri yüklemde değildi.** Sekizinin de kökü iki yerden birindeydi:
+
+- **atıf** — hangi gözlemi hangi iddiaya karşı yargılıyorum (yer listesi eksik, mağazanın
+  kendi immediate'i, `had_claim`'in anlamı, birden çok yer)
+- **tazelik** — elimdeki kanıt hangi programa ait (`g_log` bayat), ve okunamayan bir
+  görünümün birleşimi sessizce daraltması
+
+Bir oracle'ın zor kısmı karşılaştırmanın kendisi değilmiş. Ve 0110'un kuralı bu bacakla
+tamamlandı: VM-içi ikinci uygulama kapalı formda bir yüklemde çalışır, konvansiyon
+yığınında çalışmaz — ama **hükmü dışarı taşımak da yetmez**; dışarıya verilen kanıtın
+atfı ve tazeliği ayrıca kanıtlanmak zorunda.
+
+### 4. Ne kurulmadı
+
+Sıfır bulgu, ve payda tek bir 180 saniyelik turdan: 21. Bu, kanalın çalıştığının kanıtı,
+hacminin değil. Uzun turda ~420/saat bekleniyor ve o henüz koşulmadı.
+
+Workspace 391 yeşil.

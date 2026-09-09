@@ -4700,7 +4700,7 @@ static void run_fuzz(int seconds) {
     unsigned long subs_disagree = 0, subs_unsup = 0;
     unsigned long subsf_pairs = 0, subsf_nontrivial = 0, subsf_disagree = 0, subsf_unsup = 0;
     unsigned long store_progs = 0, store_bytes = 0, store_none = 0, store_readfail = 0;
-    unsigned long store_sampled = 0, store_unamb = 0;
+    unsigned long store_sampled = 0, store_unamb = 0, store_stale = 0;
 
     printf("FUZZ start budget=%ds corpus_max=%d\n", seconds, FZ_CORPUS_MAX);
     while (time(NULL) - t0 < seconds) {
@@ -4778,7 +4778,17 @@ static void run_fuzz(int seconds) {
            is by definition the one worth the second look; everything else is sampled.
            The cheap oracle, the reference-interpreter comparison, still runs on all of
            them. */
-        if (fresh > 0 || (iters & 7) == 0) {
+        /* WHETHER `g_log` DESCRIBES THIS PROGRAM. The level-2 load rides this gate, so on
+           the other seven eighths of iterations the buffer still holds an EARLIER program's
+           log. The store sampler ran outside the gate and emitted blocks pairing this
+           program's store sites with that program's log: 79 of 86 sampled blocks declared
+           an instruction the log showed as something else entirely (`STORE insn=36` against
+           `36: (bf) r6 = (s32)r7`). The site list itself was fine — a self-check against the
+           instruction array reported storestale=0 — which is exactly why the mismatch had to
+           be looked for on the OTHER side. Same shape as 0085's stale artefact: a report
+           about the wrong image. */
+        const int log_is_current = (fresh > 0 || (iters & 7) == 0);
+        if (log_is_current) {
             /* TWO MORE ORACLES, ON THE SAME KERNEL. Screening the 21 historical fixes found
                that three of them are triggerable by this grammar today and STILL invisible,
                because they are cross-state pruning defects that no single-state check can see.
@@ -5061,11 +5071,27 @@ static void run_fuzz(int seconds) {
                                against a byte written by a different site). The oracle was
                                right; the input was ambiguous. One site, one observed byte,
                                and the pairing is forced. */
-                            int nvar = 0;
-                            for (int si = 0; si < g_gi_nstores; si++)
-                                if (g_gi_stores[si].fixed < 0) nvar++;
-                            if (nvar == 1 && seen == 1) store_unamb++;
-                            if (nvar == 1 && seen == 1 && (store_unamb & 0x3F) == 0) {
+                            /* VERIFY THE SITE AGAINST THE PROGRAM BEFORE TRUSTING IT.
+                               The declared index is only useful if `ins[insn+1]` really is
+                               the one-byte store this site describes; block 15 of the first
+                               sampled batch declared insn=29 while the log showed
+                               `29: (07) r1 += -256` — a stack pointer. Rather than reason
+                               about how that happens, the harness now checks and COUNTS. */
+                            int nvar = 0, stale = 0;
+                            for (int si = 0; si < g_gi_nstores; si++) {
+                                if (g_gi_stores[si].fixed >= 0) continue;
+                                nvar++;
+                                int at = g_gi_stores[si].insn + 1;
+                                if (at < 0 || at >= n ||
+                                    ins[at].code != (BPF_ST | BPF_MEM | BPF_B) ||
+                                    ins[at].dst_reg != BPF_REG_1)
+                                    stale = 1;
+                            }
+                            if (stale) store_stale++;
+                            if (nvar == 1 && seen == 1 && !stale && log_is_current)
+                                store_unamb++;
+                            if (nvar == 1 && seen == 1 && !stale && log_is_current &&
+                                (store_unamb & 0x3F) == 0) {
                                 store_sampled++;
                                 printf("===PROG fuzzstore#%lu type=socket_filter ===\n"
                                        "RESULT decision=accept fd=1 errno=0 load_ns=0\n",
@@ -5125,14 +5151,14 @@ static void run_fuzz(int seconds) {
 
         if ((iters % 2000) == 0)
             printf("STATUS iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu storeprogs=%lu storebytes=%lu storenone=%lu storereadfail=%lu storesampled=%lu storeunamb=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
+                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu storeprogs=%lu storebytes=%lu storenone=%lu storereadfail=%lu storesampled=%lu storeunamb=%lu storestale=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
                    iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
                    truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
                    max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup,
            subs_rows, subs_pairs, subs_nontrivial, subs_disagree, subs_unsup,
            subsf_pairs, subsf_nontrivial, subsf_disagree, subsf_unsup,
            store_progs, store_bytes, store_none, store_readfail,
-           store_sampled, store_unamb, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
+           store_sampled, store_unamb, store_stale, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
     }
     /* THE PC SET ITSELF, so the coverage number can become a FRACTION. 5406 distinct PCs
        is uninterpretable on its own: CONFIG_KCOV_INSTRUMENT_ALL means the list includes the
@@ -5152,14 +5178,14 @@ static void run_fuzz(int seconds) {
         printf("PCSET total=%u\n", printed);
     }
     printf("FUZZ done iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu storeprogs=%lu storebytes=%lu storenone=%lu storereadfail=%lu storesampled=%lu storeunamb=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
+           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu storeprogs=%lu storebytes=%lu storenone=%lu storereadfail=%lu storesampled=%lu storeunamb=%lu storestale=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
            iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
            truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
            max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup,
            subs_rows, subs_pairs, subs_nontrivial, subs_disagree, subs_unsup,
            subsf_pairs, subsf_nontrivial, subsf_disagree, subsf_unsup,
            store_progs, store_bytes, store_none, store_readfail,
-           store_sampled, store_unamb, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
+           store_sampled, store_unamb, store_stale, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
     free(corpus);
     free(g_kseen);
     close(map_in);
