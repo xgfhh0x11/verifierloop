@@ -4661,6 +4661,7 @@ static void run_fuzz(int seconds) {
     unsigned long subs_rows = 0, subs_pairs = 0, subs_nontrivial = 0;
     unsigned long subs_disagree = 0, subs_unsup = 0;
     unsigned long subsf_pairs = 0, subsf_nontrivial = 0, subsf_disagree = 0, subsf_unsup = 0;
+    unsigned long store_progs = 0, store_bytes = 0, store_none = 0, store_readfail = 0;
 
     printf("FUZZ start budget=%ds corpus_max=%d\n", seconds, FZ_CORPUS_MAX);
     while (time(NULL) - t0 < seconds) {
@@ -4954,6 +4955,33 @@ static void run_fuzz(int seconds) {
                 t.test.repeat = 1;
                 if (bpf(BPF_PROG_TEST_RUN, &t, sizeof(t)) < 0) continue;
                 compared++;
+
+                /* THE STORE-LOCATION CHANNEL'S DENOMINATOR, asked BEFORE the oracle is
+                   built. `check_store_location` is the one oracle whose reference is the
+                   runtime landing site rather than the verifier's own claim, and the 0101
+                   fan-out measured that 58% of historical verifier bugs are STATE bugs —
+                   the class every consistency oracle misses and this one is aimed at. It
+                   is also the only oracle NOT on this loop: 4,560 comparisons on a
+                   hand-built corpus against the pruning model's 283,361.
+                   Before plumbing it in, the question 0084 would ask: does the channel have
+                   any volume here at all? GI_STORE offsets the map-value pointer by a
+                   SCALAR register and writes one 0xFF byte, and map_out is zeroed before
+                   every run — so any 0xFF read back is that store, and a program with none
+                   contributes nothing no matter how good the oracle is. */
+                {
+                    unsigned char mv[RTW_VALUE_SIZE];
+                    memset(mv, 0, sizeof(mv));
+                    if (rt_map_get(map_out, 0, mv) == 0) {
+                        int seen = 0;
+                        for (int b = 0; b < 16; b++)
+                            if (mv[b] == 0xff) { seen++; store_bytes++; }
+                        if (seen) store_progs++;
+                        else store_none++;
+                    } else {
+                        store_readfail++;
+                    }
+                }
+
                 if (t.test.retval != (uint32_t)ref.retval) {
                     findings++;
                     printf("FINDING iter=%lu input=0x%08x kernel=0x%08x reference=0x%08x ",
@@ -4986,12 +5014,13 @@ static void run_fuzz(int seconds) {
 
         if ((iters % 2000) == 0)
             printf("STATUS iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
+                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu storeprogs=%lu storebytes=%lu storenone=%lu storereadfail=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
                    iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
                    truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
                    max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup,
            subs_rows, subs_pairs, subs_nontrivial, subs_disagree, subs_unsup,
-           subsf_pairs, subsf_nontrivial, subsf_disagree, subsf_unsup, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
+           subsf_pairs, subsf_nontrivial, subsf_disagree, subsf_unsup,
+           store_progs, store_bytes, store_none, store_readfail, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
     }
     /* THE PC SET ITSELF, so the coverage number can become a FRACTION. 5406 distinct PCs
        is uninterpretable on its own: CONFIG_KCOV_INSTRUMENT_ALL means the list includes the
@@ -5011,12 +5040,13 @@ static void run_fuzz(int seconds) {
         printf("PCSET total=%u\n", printed);
     }
     printf("FUZZ done iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
+           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu storeprogs=%lu storebytes=%lu storenone=%lu storereadfail=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
            iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
            truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
            max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup,
            subs_rows, subs_pairs, subs_nontrivial, subs_disagree, subs_unsup,
-           subsf_pairs, subsf_nontrivial, subsf_disagree, subsf_unsup, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
+           subsf_pairs, subsf_nontrivial, subsf_disagree, subsf_unsup,
+           store_progs, store_bytes, store_none, store_readfail, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
     free(corpus);
     free(g_kseen);
     close(map_in);

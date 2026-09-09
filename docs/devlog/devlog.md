@@ -8046,3 +8046,55 @@ Bu enstrümanda **saat satın almak bitti, dağılım denetim satın alıyor ama
 almıyor**, ve erişim için ödenecek tek para gramerdir.
 
 Workspace 390 yeşil.
+
+## 0109 — Store-location kanalının paydası, oracle kurulmadan önce
+
+0108 erişimin gramere bağlı ve doygun olduğunu ölçtü; kalan tek kaldıraç, **zaten
+ulaştığımız kodda görmediğimiz sınıf**. 0101'in taraması onu adlandırmıştı: tarihsel
+hataların %58'i DURUM hatası, ve onları gören tek şey referansı verifier'ın iddiası değil
+çalışma zamanındaki iniş noktası olan `check_store_location`.
+
+O oracle fuzz döngüsünde **yok**. Elle kurulmuş korpusta `store_locations_checked=4560`,
+budama modeli az önce 283.361 aldı — altmış iki kat fark, ve küçük olan tarihsel sınıfa
+nişanlı.
+
+### 1. Zemin sandığımdan hazır çıktı
+
+Bunu "gramer + çalışma zamanı yürütmesi, iki-üç bacak" diye tahmin etmiştim. Kaynağa
+bakınca üçü de zaten vardı:
+
+- döngü programları **çalıştırıyor** (`BPF_PROG_TEST_RUN`, diffharness.c:4955)
+- `map_out` her koşudan önce sıfırlanıyor, yani geri okunan her `0xFF` o mağazadan
+- `GI_STORE` geni map value işaretçisini bir **skaler register kadar** kaydırıp bir bayt
+  yazıyor — store-location'ın tam ihtiyaç duyduğu değişken-ofsetli şekil
+
+Gerçek eksik tek şey: verifier'ın o komuttaki iddiasını VM içinde okumak.
+
+### 2. Ama önce payda (0084'ün kuralı)
+
+Kaç program gerçekten gözlemlenebilir bir mağaza bırakıyor bilinmeden kurulan bir oracle'ın
+sıfırı okunamaz. 150 saniye:
+
+```
+compared=216248  storeprogs=15736  storebytes=24767  storenone=200512  storereadfail=0
+```
+
+**%7,3.** Saatlik ~377 bin gözlemlenebilir mağaza, yani elle kurulmuş korpusun toplam
+paydasının ~80 katı. Kanal hacimli; oracle kurmaya değer.
+
+Ve %92,7 de bir bilgi: mağaza doğrulanıyor ama genomun dallanması yüzünden çalışma
+zamanında çoğu kez o yola girilmiyor. **Oracle'ın dürüst paydası `compared` değil
+`storeprogs`**, ve bu şimdiden yazılı.
+
+### 3. Kalan tek parça, ve neden basitleşmiyor
+
+Mağaza `*(u8 *)(r8 + A + K) = 0xFF`. Çalışma zamanında gözlenen ofset `A`'nın gerçek
+değerini veriyor. Soru: **`A`'nın o komuttaki verifier iddiası bu değeri kabul ediyor mu?**
+Bu, `admits()`'in ta kendisi, ve iddia yalnız logda — yani VM içinde küçük bir durum
+ayrıştırıcısı gerekiyor.
+
+Buna kestirme yok: referans interpreter'ın tahminiyle karşılaştırmak farklı bir kanal olur
+(çalışma zamanı ile model, verifier'ın PROOF'u ile değil), ve o bir JIT/interpreter hatası
+yakalar, verifier hatası değil.
+
+Workspace 390 yeşil.
