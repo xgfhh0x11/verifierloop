@@ -4660,6 +4660,7 @@ static void run_fuzz(int seconds) {
     unsigned long live_cells = 0, live_rows = 0, live_miss = 0, live_unsup = 0;
     unsigned long subs_rows = 0, subs_pairs = 0, subs_nontrivial = 0;
     unsigned long subs_disagree = 0, subs_unsup = 0;
+    unsigned long subsf_pairs = 0, subsf_nontrivial = 0, subsf_disagree = 0, subsf_unsup = 0;
 
     printf("FUZZ start budget=%ds corpus_max=%d\n", seconds, FZ_CORPUS_MAX);
     while (time(NULL) - t0 < seconds) {
@@ -4785,6 +4786,47 @@ static void run_fuzz(int seconds) {
                    so the comparison happens HERE and only numbers leave. `subs_rows`
                    separates "this kernel carries no instrumentation" from "instrumented and
                    nothing pruned" — without it both print pairs=0 and read as clean. */
+                /* AND THE SAME MODEL ON A DIFFERENT CHECKPOINT POLICY.
+                 *
+                 * 0106 measured the input saturated: three rounds, coverage flat at ~6260,
+                 * doubling the budget bought +3 PCs. More of the same hour buys nothing, so
+                 * this round changes WHICH pairs the model sees rather than how many.
+                 *
+                 * The reason that is not cosmetic was measured in 0103: the default
+                 * checkpoint heuristic DECLINES a new state at a merge until >=20 jumps or
+                 * >=100 insns have passed, so the pair `--probe-wraparc2` needed did not
+                 * exist at all until TEST_STATE_FREQ forced it — 4 pairs with
+                 * scalar_comparisons=0 became a real comparison at the merge. Every shape of
+                 * that kind is invisible to the model today.
+                 *
+                 * The differential's own freq load stays at log_level=1 and untouched: it
+                 * needs a state COUNT, this needs the prune-pair dump, and quietly changing
+                 * a level under an existing oracle would move its denominator without
+                 * saying so. So this is a separate load, and its cost is honest.
+                 *
+                 * DIRECTION, and it is the same one OI-15 turns on: the flag only makes
+                 * pruning more aggressive. It cannot make the kernel take an unsound prune
+                 * it would otherwise refuse — it can only offer more prunes to audit, and
+                 * the audit is still `range_within`'s own decision, judged by the model.
+                 */
+                {
+                    struct prune_load fq2 = prune_load_typed(ins, n, BPF_F_TEST_STATE_FREQ,
+                                                             g_log2, sizeof(g_log2),
+                                                             BPF_PROG_TYPE_SOCKET_FILTER);
+                    struct bpfsubs_cmp fc;
+                    bpfsubs_compare_log(g_log2, &fc);
+                    subsf_pairs += fc.pairs;
+                    subsf_nontrivial += fc.nontrivial;
+                    subsf_unsup += fc.unsupported;
+                    if (fc.disagree) {
+                        subsf_disagree += fc.disagree;
+                        printf("FINDING kind=subsumption_candidate_freq iter=%lu %s ",
+                               iters, fc.first);
+                        fz_print_genome(&G);
+                        printf("\n");
+                    }
+                    (void)fq2;   /* the helper owns the fd; only its log is wanted here */
+                }
                 {
                     struct bpfsubs_cmp sc;
                     bpfsubs_compare_log(g_log, &sc);
@@ -4944,11 +4986,12 @@ static void run_fuzz(int seconds) {
 
         if ((iters % 2000) == 0)
             printf("STATUS iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
+                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
                    iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
                    truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
                    max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup,
-           subs_rows, subs_pairs, subs_nontrivial, subs_disagree, subs_unsup, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
+           subs_rows, subs_pairs, subs_nontrivial, subs_disagree, subs_unsup,
+           subsf_pairs, subsf_nontrivial, subsf_disagree, subsf_unsup, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
     }
     /* THE PC SET ITSELF, so the coverage number can become a FRACTION. 5406 distinct PCs
        is uninterpretable on its own: CONFIG_KCOV_INSTRUMENT_ALL means the list includes the
@@ -4968,11 +5011,12 @@ static void run_fuzz(int seconds) {
         printf("PCSET total=%u\n", printed);
     }
     printf("FUZZ done iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
+           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
            iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
            truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
            max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup,
-           subs_rows, subs_pairs, subs_nontrivial, subs_disagree, subs_unsup, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
+           subs_rows, subs_pairs, subs_nontrivial, subs_disagree, subs_unsup,
+           subsf_pairs, subsf_nontrivial, subsf_disagree, subsf_unsup, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
     free(corpus);
     free(g_kseen);
     close(map_in);

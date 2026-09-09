@@ -7947,3 +7947,56 @@ değişmedi — model tek yön görüyor, durum hataları görünmez, ve şimdi 
 **girdi doygun**.
 
 Workspace 390 yeşil.
+
+## 0107 — İkinci uzun tur: hacim değil DAĞILIM, ve tahminimin tuttuğu/tutmadığı yer
+
+0106 girdinin doygun olduğunu üç noktayla ölçmüştü. Aynı turu tekrar atmak +3 PC getirirdi;
+bu yüzden bu tur aynı bütçeyi harcadı ama **hangi çiftlerin görüldüğünü** değiştirdi.
+
+### 1. Değişiklik, ve neden kozmetik değil
+
+Model 0105'ten beri yalnız `g_log`'u, yani VARSAYILAN checkpoint politikası altındaki
+yüklemeyi okuyordu. 0103 ölçmüştü ki o sezgisel MERGE noktalarında yeni durum açmayı
+reddediyor: `--probe-wraparc2`'nin ihtiyaç duyduğu çift bayraksız **hiç var olmadı**
+(4 çift, `scalar_comparisons=0`). O şekildeki bütün aile modele görünmezdi.
+
+Bu bacak modele ikinci bir politika altında da baktırıyor: kapılı örnekleme
+`BPF_F_TEST_STATE_FREQ` ile **seviye-2** bir yükleme daha eklendi. Budama farkının kendi
+freq yüklemesine dokunulmadı — o bir durum SAYISI istiyor, bu budama-çifti DÖKÜMÜ, ve mevcut
+bir oracle'ın altından seviye değiştirmek onun paydasını sessizce kaydırmak olurdu.
+
+### 2. Ölçüm, hunt-08'e karşı (aynı bütçe, aynı kernel)
+
+| | hunt-08 | hunt-09 |
+|---|---|---|
+| iters | 2.277.364 | 1.979.546 (**550/sn**, -%13) |
+| `subspairs` / önemsiz-olmayan | 493.673 / 197.055 | 345.465 / 131.247 |
+| `subsfpairs` / önemsiz-olmayan | — | **497.938 / 152.114** |
+| toplam önemsiz-olmayan | 197.055 | **283.361** |
+| `seen_pcs` | 6262 | **6319** |
+| uyuşmazlık | 0 | 0 (her iki politika) |
+
+**Daha az program, daha çok denetlenmiş çift.** Zorlanmış politika varsayılandan %44 fazla
+çift ve %16 fazla önemsiz-olmayan çift üretiyor; toplam dürüst payda 197k'dan 283k'ya
+çıkıyor, hem de %13 daha az programla.
+
+### 3. Tahminimin tutmadığı yer
+
+`seen_pcs`'in yine ~6260'ta duracağını, çünkü kapsamanın gramerden geldiğini söylemiştim.
+**6319 çıktı** — hunt-08'in üstüne +57, yani bütçeyi iki katına çıkarmanın getirdiği +3'ün
+on dokuz katı. Girdi dağılımını değiştirmek, saatleri iki katına çıkarmaktan daha çok yeni
+kod gösterdi.
+
+**Ama atıf kurulmadı, ve bunu iddiaya çevirmiyorum.** +57 PC iki şeyden gelebilir: (a)
+yoğunlaşmış checkpoint'lerin gerçekten yeni doğrulama mantığına ulaşması, ya da (b)
+seviye-2 log yolunun daha kalabalık bir durum listesi altında yeni yazdırma kodu koşması.
+İkisi çok farklı şeyler ve `coverage-fraction.py`'nin nesne bazlı tablosu bunu ayırır;
+bu bacakta koşulmadı. Sayı kayıtlı, atıf borç.
+
+### 4. Ne kurulmadı
+
+Sıfır kernel bulgusu, iki politikada da, ve `subsunsup=0` ile `trunc=0` sayesinde ikisi de
+tam paydaya karşı. Turun gerçek çıktısı bir bulgu değil bir yön: **bu enstrümanda saat
+satın almak bitmiştir, dağılım satın almak bitmemiştir** — ve bunun ilk sayısı yukarıda.
+
+Workspace 390 yeşil.

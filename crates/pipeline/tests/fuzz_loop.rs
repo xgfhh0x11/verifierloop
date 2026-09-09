@@ -331,4 +331,27 @@ fn subsumption_model_rides_the_fuzz_loop() {
          reported against an incomplete denominator: {last}"
     );
     assert_eq!(field(last, "subsdisagree="), 0, "unexpected candidate: {last}");
+
+    // THE SECOND CHECKPOINT POLICY (leg 0107). The model saw only the DEFAULT policy until
+    // now, and 0103 measured what that hides: the heuristic declines a new state at a merge
+    // until >=20 jumps or >=100 insns have passed, so the pair `--probe-wraparc2` needed did
+    // not exist at all without TEST_STATE_FREQ. Every shape of that family was invisible.
+    //
+    // Measured over an hour: the forced policy yields 44% more pairs and 16% more
+    // non-trivial ones (497,938 / 152,114 against 345,465 / 131,247), so the honest total
+    // denominator rose from 197k to 283k on 13% FEWER programs. Buying distribution beat
+    // buying hours — which is what 0106's saturation curve implied and this is its number.
+    assert!(
+        field(last, "subsfpairs=") > field(last, "subspairs="),
+        "forcing checkpoints must yield MORE pairs than the default heuristic, or the second \
+         load is paying throughput for nothing: {last}"
+    );
+    assert!(field(last, "subsfnontrivial=") > 1_000, "{last}");
+    assert_eq!(
+        field(last, "subsfunsup="),
+        0,
+        "the forced-policy rows must all parse too — a partial denominator on one policy \
+         would make the two numbers incomparable: {last}"
+    );
+    assert_eq!(field(last, "subsfdisagree="), 0, "unexpected candidate (freq): {last}");
 }
