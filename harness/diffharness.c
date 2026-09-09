@@ -76,6 +76,7 @@
 #include "bpfref.h"
 #include "bpflive.h"
 #include "bpfsubs.h"
+#include "bpfclaim.h"
 
 #define BPF_JMP32_IMM(OP, DST, IMM, OFF)                                       \
     ((struct bpf_insn){.code = BPF_JMP32 | BPF_OP(OP) | BPF_K,                 \
@@ -3902,8 +3903,23 @@ static void gi_genome_random(struct gi_ctx *c, struct gi_genome *G) {
 }
 
 /* Emit one genome. Every choice comes from the gene, never from an rng. */
+/* Store sites emitted by the LAST gi_emit_body() call, so the fuzz loop can ask the
+   verifier what it claimed about each one. A file-scope array rather than another
+   out-parameter: gi_emit_body has three call sites and only one of them wants this. */
+#define GI_MAXSTORES 32
+/* `fixed >= 0` means the site's landing offset is a CONSTANT and needs no claim from the
+   log — the atomic gene writes at a literal offset. Registering those matters as much as
+   registering the variable ones: the first run left them out and 15,696 of 16,084 observed
+   bytes had no claim, while the ones that did were judged against a DIFFERENT site's claim
+   and produced 79 desyncs on a kernel known to be correct. All ours, all from an incomplete
+   site list. */
+struct gi_store_site { int insn; int k; int fixed; };
+static struct gi_store_site g_gi_stores[GI_MAXSTORES];
+static int g_gi_nstores;
+
 static int gi_emit_body(const struct gi_genome *G, struct bpf_insn *ins, int n,
                         int *jexit, int *nx, char *recipe, size_t rsz) {
+    g_gi_nstores = 0;
     /* Only r6/r7/r9 are seeded by the prologue; picking r8 read an uninitialised register
        and cost 207 of an early run's 512 programs a STRUCTURAL rejection (0074). */
     static const int REGS[3] = { 6, 7, 9 };
@@ -4058,6 +4074,22 @@ static int gi_emit_body(const struct gi_genome *G, struct bpf_insn *ins, int n,
                r1 is dead after the prologue's helper call and serves as scratch. */
             ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_8);
             ins[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_1, A);
+            if (g_gi_nstores < GI_MAXSTORES) {
+                /* The claim to ask for is r1's, ON the store instruction: for a pointer the
+                   printed bounds ARE the variable offset, and `K` is the instruction's own
+                   immediate on top of it. The store-location family declares exactly this
+                   triple (`STORE insn= reg= off=`) and the offline oracle has judged it
+                   since 0044 — so the in-VM reader is calibrated against that, not invented. */
+                /* ASK AT THE ADD, NOT AT THE STORE. The verifier prints only the registers
+                   an instruction CHANGED, and a store changes none — measured on a replayed
+                   candidate, whose store line was `37: (72) *(u8 *)(r1 +2) = -1   ;` with
+                   nothing after the semicolon at all. r1 gets its value on the preceding
+                   `r1 += A`, and that is where the claim is printed. */
+                g_gi_stores[g_gi_nstores].insn = n - 1;
+                g_gi_stores[g_gi_nstores].k = (int)(K % 8);
+                g_gi_stores[g_gi_nstores].fixed = -1;
+                g_gi_nstores++;
+            }
             ins[n++] = BPF_ST_MEM(BPF_B, BPF_REG_1, (short)(K % 8), -1);
             break;
         }
@@ -4117,6 +4149,12 @@ static int gi_emit_body(const struct gi_genome *G, struct bpf_insn *ins, int n,
                                              .off = soff, .imm = imm};
             } else {
                 const short moff = (short)(dw ? 0 : 4);
+                for (int q = 0; q < (dw ? 8 : 4) && g_gi_nstores < GI_MAXSTORES; q++) {
+                    g_gi_stores[g_gi_nstores].insn = n;
+                    g_gi_stores[g_gi_nstores].k = 0;
+                    g_gi_stores[g_gi_nstores].fixed = moff + q;
+                    g_gi_nstores++;
+                }
                 ins[n++] = BPF_STX_MEM(sz, BPF_REG_8, B, moff);
                 ins[n++] = (struct bpf_insn){.code = BPF_STX | BPF_ATOMIC | sz,
                                              .dst_reg = BPF_REG_8, .src_reg = A,
@@ -4662,6 +4700,7 @@ static void run_fuzz(int seconds) {
     unsigned long subs_disagree = 0, subs_unsup = 0;
     unsigned long subsf_pairs = 0, subsf_nontrivial = 0, subsf_disagree = 0, subsf_unsup = 0;
     unsigned long store_progs = 0, store_bytes = 0, store_none = 0, store_readfail = 0;
+    unsigned long store_sampled = 0, store_unamb = 0;
 
     printf("FUZZ start budget=%ds corpus_max=%d\n", seconds, FZ_CORPUS_MAX);
     while (time(NULL) - t0 < seconds) {
@@ -4973,10 +5012,82 @@ static void run_fuzz(int seconds) {
                     memset(mv, 0, sizeof(mv));
                     if (rt_map_get(map_out, 0, mv) == 0) {
                         int seen = 0;
-                        for (int b = 0; b < 16; b++)
-                            if (mv[b] == 0xff) { seen++; store_bytes++; }
-                        if (seen) store_progs++;
-                        else store_none++;
+                        for (int b = 0; b < 16; b++) {
+                            if (mv[b] != 0xff) continue;
+                            seen++; store_bytes++;
+
+                            /* THE ORACLE. `b` is where the store actually landed; the
+                               question is whether the verifier's own claim admits it.
+                               A finding needs NO site to admit it — the union over sites
+                               AND over the paths each was printed on. Both unions only
+                               lose sensitivity: the run took one path and wrote through
+                               one site, and we cannot tell which from here, so anything
+                               narrower would manufacture findings out of our ignorance.
+                               Same rule as the idmap arm the subsumption model refuses to
+                               guess at. */
+                            /* THE VERDICT MOVED OUT OF THE VM, and this is a measured
+                               retreat rather than a preference.
+                               Five corrections were made to an in-VM claim reader, every
+                               one a real bug and not one of them in the PREDICATE: the
+                               map_value print shape, the store's own immediate, what
+                               `had_claim` must mean, an unreadable occurrence silently
+                               narrowing the union, and `imm=N` as a fifth spelling of a
+                               constant offset. False desyncs on a kernel known to be
+                               correct went 79 -> 247 -> 8 -> 18 -> 49. It was not
+                               converging, and the reason is structural: the thing being
+                               re-implemented in here is not a closed-form predicate (as
+                               `cnum_is_subset` was for the subsumption model, where eight
+                               counters matched the reference exactly) but the kernel's
+                               PRINTING CONVENTIONS, which the offline parser has spent
+                               forty legs getting right and which 0065 and 0070 already
+                               charged this project for once each.
+                               So the loop keeps only what it can measure honestly — how
+                               many observable stores there are — and SAMPLES the rest out
+                               with its verifier log, for the mature oracle to judge.
+                               Volume permits it: ~28k storing programs per 150s, of which
+                               1-in-256 is ~2,700/hour, against the hand-built corpus's
+                               4,560 store comparisons in total. Less volume, and a verdict
+                               that is not a fifth guess at a log format. */
+                            (void)0;
+                        }
+                        if (seen) {
+                            store_progs++;
+                            /* SAMPLE ONLY WHAT IS UNAMBIGUOUS. A program with two variable
+                               store sites emits two claims, and the observed bytes cannot
+                               be attributed to one of them from out here — feed that to the
+                               oracle and it judges every byte against a single claim, which
+                               is exactly how the first sampled batch produced desyncs on a
+                               correct kernel ("a store through R1 at insn 28 lands in 4+[0,..]"
+                               against a byte written by a different site). The oracle was
+                               right; the input was ambiguous. One site, one observed byte,
+                               and the pairing is forced. */
+                            int nvar = 0;
+                            for (int si = 0; si < g_gi_nstores; si++)
+                                if (g_gi_stores[si].fixed < 0) nvar++;
+                            if (nvar == 1 && seen == 1) store_unamb++;
+                            if (nvar == 1 && seen == 1 && (store_unamb & 0x3F) == 0) {
+                                store_sampled++;
+                                printf("===PROG fuzzstore#%lu type=socket_filter ===\n"
+                                       "RESULT decision=accept fd=1 errno=0 load_ns=0\n",
+                                       iters);
+                                /* SELF-DESCRIBING, because the triage rule's first step is
+                                   to re-derive by hand and a block that cannot be replayed
+                                   cannot be triaged. */
+                                printf("REPLAY ");
+                                fz_print_genome(&G);
+                                printf("\n");
+                                for (int si = 0; si < g_gi_nstores; si++)
+                                    if (g_gi_stores[si].fixed < 0)
+                                        printf("STORE insn=%d reg=1 off=%d size=1\n",
+                                               g_gi_stores[si].insn + 1, g_gi_stores[si].k);
+                                for (int b2 = 0; b2 < 16; b2++)
+                                    if (mv[b2] == 0xff)
+                                        printf("RUNTIME input=0x%08x store_off=%d "
+                                               "store_len=1 store_size=1 executed=1\n",
+                                               in, b2);
+                                printf("---LOG---\n%s\n---END---\n", g_log);
+                            }
+                        } else store_none++;
                     } else {
                         store_readfail++;
                     }
@@ -5014,13 +5125,14 @@ static void run_fuzz(int seconds) {
 
         if ((iters % 2000) == 0)
             printf("STATUS iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu storeprogs=%lu storebytes=%lu storenone=%lu storereadfail=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
+                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu storeprogs=%lu storebytes=%lu storenone=%lu storereadfail=%lu storesampled=%lu storeunamb=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
                    iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
                    truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
                    max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup,
            subs_rows, subs_pairs, subs_nontrivial, subs_disagree, subs_unsup,
            subsf_pairs, subsf_nontrivial, subsf_disagree, subsf_unsup,
-           store_progs, store_bytes, store_none, store_readfail, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
+           store_progs, store_bytes, store_none, store_readfail,
+           store_sampled, store_unamb, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
     }
     /* THE PC SET ITSELF, so the coverage number can become a FRACTION. 5406 distinct PCs
        is uninterpretable on its own: CONFIG_KCOV_INSTRUMENT_ALL means the list includes the
@@ -5040,13 +5152,14 @@ static void run_fuzz(int seconds) {
         printf("PCSET total=%u\n", printed);
     }
     printf("FUZZ done iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu storeprogs=%lu storebytes=%lu storenone=%lu storereadfail=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
+           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu storeprogs=%lu storebytes=%lu storenone=%lu storereadfail=%lu storesampled=%lu storeunamb=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
            iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
            truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
            max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup,
            subs_rows, subs_pairs, subs_nontrivial, subs_disagree, subs_unsup,
            subsf_pairs, subsf_nontrivial, subsf_disagree, subsf_unsup,
-           store_progs, store_bytes, store_none, store_readfail, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
+           store_progs, store_bytes, store_none, store_readfail,
+           store_sampled, store_unamb, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
     free(corpus);
     free(g_kseen);
     close(map_in);

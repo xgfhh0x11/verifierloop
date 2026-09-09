@@ -8098,3 +8098,65 @@ Buna kestirme yok: referans interpreter'ın tahminiyle karşılaştırmak farkl�
 yakalar, verifier hatası değil.
 
 Workspace 390 yeşil.
+
+## 0110 — Store-location'ı döngüye bağlama denemesi: bir negatif, ve nerede durduğu
+
+0109 kanalın hacimli olduğunu ölçtü. Bu bacak hükmü kurmayı denedi ve **kuramadı** —
+kaydedilen şey bulgu değil, yaklaşımın kendisi hakkında bir negatif.
+
+### 1. VM-içi iddia okuma yakınsamadı
+
+İlk tasarım, iki kez işe yaramış olanı tekrarladı: karşılaştırmayı VM'e taşı (canlılık 0094,
+subsumption 0105). Burada olmadı. Doğru olduğunu bildiğimiz kernel'de sahte desync eğrisi:
+
+```
+79  ->  247  ->  8  ->  18  ->  49
+```
+
+Beş düzeltme, hepsi gerçek hata, **hiçbiri yüklemde değil**: `map_value(` basım biçimi ·
+mağazanın kendi immediate'i · `had_claim`'in "en az bir yer" değil "yazmış olabilecek her
+yer" demesi gerektiği · ayrıştırılamayan bir görünümün birleşimi sessizce daraltması ·
+`imm=N`'in sabit ofsetin beşinci yazılışı olması.
+
+**Subsumption'dan farkı yapısal.** Orada ikinci uygulamanın karşısındaki şey kapalı formda
+bir yüklemdi (`cnum_is_subset`, `check_scalar_ids`) ve sekiz sayaç birebir eşleşti. Burada
+karşısındaki şey kernel'in **yazdırma konvansiyonları**, ki offline ayrıştırıcı onları kırk
+bacakta öğrendi ve bu proje 0065 ile 0070'te birer kez bedelini ödedi. Aynı şeyi ikinci kez
+yazmak üçüncü kez ödemekti.
+
+### 2. Hüküm dışarı taşındı, ve orada da atıf tökezledi
+
+Döngü artık yalnız dürüstçe ölçebildiğini tutuyor — kaç gözlemlenebilir mağaza var — ve
+gerisini verifier loguyla **örnekleyip** dışarı veriyor; hükmü `check_store_location`
+veriyor. Ölçüldü: 150 saniyede 16.988 mağaza taşıyan program, bunların **10.062'si
+belirsizlik taşımıyor** (tek değişken mağaza yeri, tek gözlenen bayt), ve 157'si örneklendi.
+
+İlk örneklem partisi oracle'ı ateşledi ve sebep yine atıftı: bir programda iki değişken
+mağaza yeri varken ikisinin de iddiası basılıyor, gözlenen bütün baytlar tek iddiaya karşı
+yargılanıyordu. Örnekleme belirsizlik taşımayan programlarla sınırlandı.
+
+### 3. Ve hâlâ duruyor — nerede durduğu yazılı
+
+Belirsizlik giderildikten sonra da oracle ateşliyor, ve elle türetme **kusurun bizde
+olduğunu** söylüyor: 15. bloğun `STORE insn=29` ilanı programda `29: (07) r1 += -256 ;
+R1=fp-256`'ya, yani bir **stack** işaretçisine denk geliyor; o programın map-value mağaza
+dizisi 57/58/59'da (`r1 = r8`, `r1 += A`, store). Döngünün ilan ettiği komut indeksi logun
+tarif ettiği programla uyuşmuyor, dolayısıyla üstüne kurulan her hüküm yanlış iddiayı
+yargılıyor.
+
+Yedinci atıf-biçimli hata, ve emisyon tarafındaki ikincisi. Sebebi tahminle aranmadı;
+bunun yerine örneklenen bloklar artık **genomlarını taşıyor** (`REPLAY genes=...`), yani bir
+sonraki deneme işaretlenmiş bir bloğu akıl yürüterek değil `--fuzz-replay` ile yeniden
+üreterek çözebilir. Triyaj kuralının birinci maddesi zaten buydu.
+
+Payda testi koşuyor ve anlamlı; hüküm testi **gerekçesi yazılı biçimde ignore**. Silinmedi,
+çünkü gerekçesi yazılı bir ignore, silinmiş bir testten daha küçük bir yalandır.
+
+### 4. Bu bacağın kalıcı çıktısı
+
+Bir kural: **VM-içi ikinci uygulama, karşısındaki şey kapalı formda bir yüklemse çalışır;
+bir konvansiyon yığınıysa çalışmaz.** İlkinde eşdeğerlik sekiz sayaçta kanıtlanabilir,
+ikincisinde her düzeltme bir sonrakini doğuruyor. Bir dahaki "şunu da VM'e taşıyalım"
+önerisinde sorulacak soru bu.
+
+Workspace 391 yeşil, 3 ignored.
