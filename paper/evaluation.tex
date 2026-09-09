@@ -1,0 +1,69 @@
+A procedure is not a tool, and the question ``does it work'' does not reduce to a
+benchmark score. What Section~3 produces is a partition and a bound, not a
+measurement, so this section states what evaluating such an output can and cannot
+mean before Section~5 applies it.
+
+Four questions are answerable, and they are not equally strong. A fifth is not
+answerable here and is named as such.
+
+\subsection{Did the bound hold?}
+
+The partition claims that defects corrupting an artifact the oracle consumes are
+invisible to it. The claim is testable one defect at a time: build the system at the
+defect, run the oracle, and see whether it fires.
+
+The evidence divides, and the division matters. Most calibration in Section~5 was
+carried out before the partition existed and for other oracles, so it does not test
+this partition. Of the calibration performed afterwards, three pairs were
+\emph{selected using} the partition and are therefore confirmatory rather than
+independent: the partition said where to look, and looking there succeeded.
+
+Exactly one case is genuinely held out. A defect was classified as invisible by the
+procedure alone---three source lines aligned, no system built---and the
+classification was then checked against the fix and the oracle's own predicate. It
+held. One held-out case is what we have, and reporting it as one is the point: a
+procedure whose first independent test is $n=1$ should say so rather than count the
+confirmatory cases alongside it.
+
+\subsection{Can a reader check it?}
+
+For a procedure whose output is a classification, auditability is a more appropriate
+evaluation than accuracy, and a stronger one to offer. Every decision in the
+partition cites the fix that anchors it and the location in that fix which settles
+the question. The unit of verification is one commit: a reader who doubts a row can
+open it and re-derive the decision in minutes, without the system, the corpus, or
+any part of our infrastructure.
+
+This is what a classification procedure can offer in place of a score. The claim is
+not ``trust the partition'' but ``check any row of it''.
+
+\subsection{Did it change what was done?}
+
+A bound that changes no decision has no value regardless of its correctness. One
+instance is recorded. Before the partition, the next calibration target had been
+chosen by reading fix summaries. The partition classified that target as
+structurally invisible to the oracle in question and redirected the choice to a
+different defect. The redirected target produced a positive calibration; the
+original would have required building two versions of the system to discover that it
+could not have fired. The procedure replaced a build with a reading.
+
+\subsection{Does it generalize?}
+
+It is not shown here, and the reason is itself a result rather than an omission.
+Validating the bound outside one system requires a defect population classified by
+whether an oracle could have observed each defect. No such data exists: published
+taxonomies organize defects by symptom and by configuration, and a technique's own
+bug list measures its sighted side and cannot bound anyone's blind one---including
+its own. Section~7 names the study that would supply the missing data and the design
+it must have.
+
+\subsection{What is not evaluated}
+
+Reproducibility. Two analysts applying Section~3 to the same population should
+produce the same partition, and we have not measured whether they do. Our own
+partition was produced with assistance and only the decision-changing case was
+audited by hand; the absence of undecided cases in a forty-defect population is
+suspicious rather than reassuring, since the procedure explicitly permits that
+answer and something should have used it. An inter-rater study over a fixed
+population is the smallest experiment that would settle this, and it needs no system
+at all---which is the same property that makes the procedure cheap.

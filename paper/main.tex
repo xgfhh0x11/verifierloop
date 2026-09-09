@@ -62,13 +62,15 @@
 %% calibration rather than replacing it.
 \input{procedure}
 
-\section{Evaluation Design}
-%% Why the eBPF verifier: heavily fuzzed already, defects individually
-%% documented with the state they corrupt, correctness safety-relevant.
-%% The controlled contrast: two oracles, identical discipline, one variable.
-%% What calibration means here: for each pair, a kernel BUILT AT THE DEFECT and
-%% one at the fix, configs byte-identical, and the oracle must fire on one and
-%% be silent on the other.
+\section{Evaluating a Procedure}
+%% DRAFTED — see paper/evaluation.tex.
+%% NOT "we ran our tool on a benchmark": there is no tool to score. Four
+%% answerable questions of unequal strength (bound held / auditable / changed a
+%% decision / generalizes), and a fifth named as unmeasured (reproducibility).
+%% 4.1 splits confirmatory from held-out and reports n=1 as n=1.
+%% 4.4 reports the absence of external validation as a RESULT, per the fourth
+%% contribution — not as an apology.
+\input{evaluation}
 
 \section{Case Study}
 %% *** HARD CAP: 2.5 PAGES. See the note at the top of this file. ***
