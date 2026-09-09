@@ -8000,3 +8000,49 @@ tam paydaya karşı. Turun gerçek çıktısı bir bulgu değil bir yön: **bu e
 satın almak bitmiştir, dağılım satın almak bitmemiştir** — ve bunun ilk sayısı yukarıda.
 
 Workspace 390 yeşil.
+
+## 0108 — 0107'nin manşetini geri çekiyorum: dağılım ERİŞİM satın almıyor, DENETİM satın alıyor
+
+0107'yi "girdi dağılımını değiştirmek saatleri iki katına çıkarmaktan on dokuz kat daha çok
+yeni kod gösterdi" diye kapattım ve atfın kurulmadığını yazdım. Atıf şimdi kuruldu ve
+cümleyi çürütüyor.
+
+Aynı vmlinux (`bzImage-instr` 0104'ten beri yeniden derlenmedi, yani 0085'in yanlış-vmlinux
+tuzağı kurulu değil), iki turun PCSET'i:
+
+```
+hunt-08   COVFRAC verification_pass hit=3678 pct=35.9   verifier payı %60.2
+hunt-09   COVFRAC verification_pass hit=3674 pct=35.8   verifier payı %59.7
+```
+
+`seen_pcs` 6262 -> 6319 YÜKSELDİ, ama **doğrulama geçişindeki isabet 3678 -> 3674 DÜŞTÜ**,
+ve kapsamamızın verifier olan payı %60,2'den %59,7'ye indi. +57 PC doğrulama mantığı değil;
+kapsama dışarı kaydı — en olası yer, ek seviye-2 yüklemesinin log yolu, ki `log + disasm
+printing` zaten 362 puanlık adlandırılmış bir tema.
+
+### Ayırmadığım iki şey
+
+Karıştırdığım şey şuydu ve ayrı tutulmaları gerekiyor:
+
+- **ERİŞİM** — hangi verifier kodu koşuyor. Gramere bağlı. **Doygun**, ve artık dört nokta:
+  ne saatler (hunt-05/07/08: +3) ne de checkpoint politikası (hunt-09: -4) kıpırdatıyor.
+- **DENETİM DERİNLİĞİ** — kaç karar bağımsız bir referansla kontrol ediliyor. Checkpoint
+  politikası bunu ciddi biçimde artırıyor: önemsiz-olmayan çift 197.055 -> 283.361.
+
+0107'nin payda kazancı **ayakta**: %13 daha az programla %44 fazla çift, ve bu gerçek bir
+kazanç. Geri çektiğim şey ondan çıkardığım erişim iddiası.
+
+### Ve bu, 0106'yı zayıflatmıyor — güçlendiriyor
+
+Doygunluk sonucu artık yalnız "daha uzun koşmak işe yaramıyor" değil: **girdinin BİÇİMİNİ
+değiştirmek de erişimi kıpırdatmıyor**, çünkü değiştirilen şey gramerin ürettiği program
+uzayı değil, o programların nasıl doğrulandığıydı. Erişim kaldıracı hâlâ tek yerde:
+gramerin üretemediği şekiller. Ulaşılmayan temalar adlandırılmış durumda — kfunc/BTF 211,
+reference/spin lock 241, callback/subprog 160, dynptr/iterator 94, packet pointers 89.
+
+### Sonucu, tek cümlede
+
+Bu enstrümanda **saat satın almak bitti, dağılım denetim satın alıyor ama erişim satın
+almıyor**, ve erişim için ödenecek tek para gramerdir.
+
+Workspace 390 yeşil.
