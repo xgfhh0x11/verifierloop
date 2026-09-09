@@ -8216,3 +8216,57 @@ Sıfır bulgu, ve payda tek bir 180 saniyelik turdan: 21. Bu, kanalın çalışt
 hacminin değil. Uzun turda ~420/saat bekleniyor ve o henüz koşulmadı.
 
 Workspace 391 yeşil.
+
+## 0112 — Konumlandırma: mevcut araçlar bu sınıflarda nerede duruyor
+
+0111 kör nokta matrisini kurdu ve kendi zayıflıklarını listeledi. Dördüncüsü asıl boşluktu:
+mevcut araçların bu sınıfları görüp görmediğine dair tek satır ölçüm yoktu. Bir negatif
+sonuç ancak o soruya cevap verirse "bu araç göremedi"den "bu sınıf bu tür araçlarla
+görülemez"e yükselir.
+
+### 1. Ölçüm yeni koşu gerektirmedi
+
+Her fix commit'i nasıl bulunduğunu kendisi söylüyor: `Reported-by:`, syzbot adresi, ya da
+gövdedeki fuzzer adı. On yedi kalibrasyon commit'inin keşif rotası:
+
+```
+syzbot (sürekli, otomatik)          1    3157f7e29996  — canlılık / CFG
+başka fuzzer (kBdysch)              2    fd675184fc7a, f54c7898ed1c
+adı geçen insan araştırmacı         8    Kuee K1r0a x2, Manfred Paul, Shung-Hsi Yu/Zac Ecob,
+                                         Nathaniel Theis, STAR Labs SG, Jenny Guanni Qu, ...
+atıfsız — inceleme / iç bulgu       6    af9e89d8dd39, 811c363645b3, 871ef8d50e7c,
+                                         cd5b460ed1ec, 1ad2f5838d34, 22c7fa171a02
+```
+
+Atıfsız altısı tek tek doğrulandı: `syzbot|syzkaller|Closes:|Reported-by|fuzz` hiçbirinde
+geçmiyor.
+
+### 2. Kesişim
+
+Otomatik sürekli fuzzing on yedi hatanın **birini** buldu, ve o hata tam olarak canlılık
+kapımızın kalibre-pozitif olduğu sınıfta. Tarihsel çoğunluğu oluşturan **değer izleme**
+sınıfları — matriste bizim yapısal olarak kör olduğumuz yer — insanlar tarafından, kod
+okunarak bulunmuş.
+
+Yani buradaki körlük büyük ölçüde **otomatik yaklaşımların ortak körlüğü**, bu enstrümana
+özgü bir eksiklik değil. Reviewer'ın "ilginç dal" dediği durum bu.
+
+### 3. Ve çekincesi, ciddi
+
+On yedilik küme **rastgele değil**: kalibrasyon için seçildiler ve seçim ölçütü commit
+mesajının verifier durumu alıntılaması idi. Bu, zengin basılmış durumu olan hatalara doğru
+bir yanlılık yaratır, ve o özellik hatanın nasıl bulunduğuyla ilişkili olabilir. Ayrıca
+syzbot atfı bir **alt sınır**: atıfsız düzeltilen syzbot bulguları bu sayıya girmiyor.
+
+Bu yüzden iddia "fuzzing bu sınıfları bulamaz" değil, **"bu on yedilik kümede otomatik
+fuzzing'in payı 3/17, ve üçü de bizim pozitif olduğumuz sınıflarda"**.
+
+### 4. Kalan boşluk, daraltılmış
+
+§05'in dördüncü maddesi kapanmadı, **daraldı**: keşif rotası ölçüldü ("nasıl bulundu"), ama
+"mevcut selftest'ler bu sınıfı bugün yakalar mı" ölçülmedi. Kardeş-commit yoluyla denendi ve
+güvenilmez çıktı — mainline'a merge sırasıyla girildiği için komşu commit'ler alakasız
+(Rust, i3c, media merge'leri). Doğru yol, tip'teki selftest ağacını sınıf sınıf taramak; ayrı
+bir iş.
+
+Workspace 392 yeşil.
