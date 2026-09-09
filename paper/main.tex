@@ -60,15 +60,11 @@
 %%   catalogued in Sec.5, it accounts for two. Say so here, not in Sec.7.
 
 \section{The Procedure}
-%% Operationalization. Input: the system's historical fixed defects. Question
-%% per defect: does it corrupt an artifact the proposed oracle would consume?
-%% Output: an upper bound on the oracle's reach, before it is built.
-%% Cost: source reading. No builds, no execution, no campaign.
-%% Discipline that makes it work, and it is not optional:
-%%   - decide from the SOURCE of the fix, never its title or summary
-%%   - a defect that cannot be decided is counted UNDECIDED, not assumed
-%%   - the population must NOT be the set the tool already found; that measures
-%%     the sighted side and cannot bound the blind one
+%% DRAFTED — see paper/procedure.tex.
+%% Population independence is a PRECONDITION (3.2), not a caution: violating it
+%% yields no bound at all. Cost is foregrounded (3.5): the procedure aims
+%% calibration rather than replacing it.
+\input{procedure}
 
 \section{Evaluation Design}
 %% Why the eBPF verifier: heavily fuzzed already, defects individually
