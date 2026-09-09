@@ -6566,6 +6566,90 @@ static void run_probe_wraparc(void) {
     close(map_out);
 }
 
+// ---- calibration probe: the jmp32 pruning decision (--probe-jmp32prune) ----------------
+// Calibration pair FOURTEEN (fd675184fc7a, "bpf: Fix verifier jmp32 pruning decision logic",
+// 2021-02-05) — the SECOND positive control for the subsumption model, and the first one
+// that lands on `range_within` rather than `check_scalar_ids`.
+//
+// WHY THIS PAIR. The 0101 fan-out screened 40 historical state-quoting verifier fixes under
+// the predicate/state typology and found exactly ONE the model can see. This is it: the
+// entire fix is four comparisons ADDED to range_within —
+//
+//     +	       old->u32_min_value <= cur->u32_min_value &&
+//     +	       old->u32_max_value >= cur->u32_max_value &&
+//     +	       old->s32_min_value <= cur->s32_min_value &&
+//     +	       old->s32_max_value >= cur->s32_max_value;
+//
+// so the buggy kernel judges a jmp32-narrowed pair on 64-bit bounds alone. The fields are
+// written correctly; only the decision taken from them is wrong. That is the whole reason
+// the model reaches it: our range_within_minmax implements all eight.
+//
+// THE PROGRAM IS THE COMMIT'S OWN, transcribed from its bpftool dump. The commit even
+// quotes the disagreeing pair's bounds, so the expected signal is known in advance:
+//
+//     old: s32_min=0x80000000 s32_max=0x00003030  u32_min=0x0        u32_max=0xffffffff
+//     cur: s32_min=0x00003031 s32_max=0x7fffffff  u32_min=0x00003031 u32_max=0x7fffffff
+//
+// old.s32_max (12336) >= cur.s32_max (2147483647) is FALSE, so the eight-comparison form
+// refuses; the four-comparison form sees only the 64-bit bounds, which agree, and prunes.
+//
+// THE ARMS DIFFER IN ONE THING: whether the two narrowing jumps are jmp32 or jmp64. A
+// 64-bit jump narrows the 64-bit bounds, which the buggy range_within DOES compare — so the
+// control must behave identically on both kernels, and the model must stay silent on it.
+//
+// The runtime consequence upstream reported is a HANG (the unwalked branch is dead-code
+// rewritten to `goto pc-1`), which is why this probe does not run the program: the detector
+// here is the model on the PRUNEPAIR capture, not execution. See the f54c7898ed1c channel
+// verification for why a hang is not observable by any oracle this project has.
+static void run_probe_jmp32prune(void) {
+    static const struct { const char *name; int use32; } ARMS[] = {
+        {"jmp32", 1},   /* trigger: narrowing lands ONLY on the 32-bit bounds */
+        {"jmp64", 0},   /* control: narrowing lands on the 64-bit bounds too   */
+    };
+
+    for (unsigned a = 0; a < sizeof(ARMS) / sizeof(ARMS[0]); a++) {
+        struct bpf_insn ins[16];
+        int n = 0;
+        const int u32 = ARMS[a].use32;
+
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 808464450);
+        ins[n++] = BPF_MOV32_IMM(BPF_REG_4, 808464432);
+        ins[n++] = BPF_ALU32_REG(BPF_MOD, BPF_REG_4, BPF_REG_0);
+        ins[n++] = BPF_JMP32_IMM(BPF_JSGT, BPF_REG_4, 0x30303030, 0);
+        ins[n++] = BPF_ALU64_REG(BPF_RSH, BPF_REG_0, BPF_REG_0);
+        ins[n++] = BPF_ALU32_REG(BPF_MOD, BPF_REG_4, BPF_REG_0);
+        /* THE ARM. insn 6 creates the checkpoint state, insn 7 is where the prune lands. */
+        ins[n++] = u32 ? BPF_JMP32_IMM(BPF_JSGT, BPF_REG_0, 0x3030, 0)
+                       : BPF_JMP_IMM(BPF_JSGT, BPF_REG_0, 0x3030, 0);
+        ins[n++] = u32 ? BPF_JMP32_IMM(BPF_JSLE, BPF_REG_0, 0x303030, 1)
+                       : BPF_JMP_IMM(BPF_JSLE, BPF_REG_0, 0x303030, 1);
+        ins[n++] = BPF_MOV32_IMM(BPF_REG_4, 0);   /* the arm the buggy kernel never walks */
+        ins[n++] = BPF_EXIT_INSN();
+
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 2;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        /* NO prog_flags: BPF_F_TEST_REG_INVARIANTS does not exist in 2021, and the commit's
+           own trace prunes under DEFAULT checkpointing — adding TEST_STATE_FREQ would change
+           the very decision under test. */
+        g_log[0] = 0;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        int lerr = errno;
+
+        printf("===PROG jmp32prune#fd675184fc7a#%s type=socket_filter ===\n", ARMS[a].name);
+        printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+               fd >= 0 ? "accept" : "reject", fd >= 0 ? 1 : -1, fd >= 0 ? 0 : lerr);
+        if (fd >= 0) close(fd);
+        printf("---LOG---\n%s\n---END---\n", g_log);
+    }
+}
+
 // ---- calibration probe: the fake_reg corruption (--probe-fakereg) -----------
 // The SECOND kind of calibration. 0061 tested the oracle against a bug whose inconsistent
 // state the commit message printed, so no kernel had to be built. This one cannot work
@@ -10036,6 +10120,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-mixwidth") == 0) {
         run_probe_mixwidth();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-jmp32prune") == 0) {
+        run_probe_jmp32prune();
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--probe-wraparc") == 0) {

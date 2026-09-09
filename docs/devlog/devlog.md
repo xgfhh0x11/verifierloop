@@ -7449,3 +7449,254 @@ Kurulmayan: modelin gerçek bir sağlamsız prune'u yakaladığının gösterimi
 **girdi** — ve engelin adı artık üç maddeyle yazılı.
 
 Workspace 371 yeşil.
+
+## 0101 — Modelin dişleri, ve pruning kanalının ilk POZİTİF kalibrasyonu
+
+Bu bacak bir reviewer turunun kuyruğunu koştu: B1 düzelt → modeli teste bağla → üç kolu
+sayaca çevir → sonra hedef. Sıra tesadüfi değil; son adım hatalı bir kernel'de ilk gerçek
+uyuşmazlığı üretiyor, ve modelde bilinen bir yanlış-uyuşmazlık kaynağı açıkken oraya
+girmek gerçek pozitifi gürültüden ayırmayı gereksiz zorlaştırırdı.
+
+### 1. B1 — maskesiz toplama, modelde gerçek bir hata
+
+Kernel `cnum_is_subset`'in son karşılaştırmasını `ut` içinde yapar, yani toplama **sarar**
+(`cnum_defs.h:244`). `subsume-check.py` aynı satırı Python'un sınırsız tamsayısıyla yazmıştı.
+İkisi `bigger.size == UT_MAX` ve yeniden-temellenen `smaller` sardığında ayrışır:
+
+```
+old r32={0, 0xffffffff}   cur r32={0xfffffff0, 0x20}   ->  kernel True,  model False
+```
+
+Yön **yanlış bulgu** yönü, ve tetiklenme şartı — checkpoint'te bilinmeyen skaler, güncel
+durumda sarmalı yay — tam olarak `--probe-wraparc`'ın üretmeye çalıştığı şeklin komşusu.
+Düzeltme: `((sb + ss) & mask) <= bs`. **İki korpus koşusu bit bit aynı kaldı**: hata bu
+girdide hiç ateşlememişti, ve düzeltme daha önce ölçülmüş hiçbir sayıyı değiştirmedi.
+
+### 2. Dişler — ve bir testin ne zaman o hatanın testi OLMADIĞI
+
+Model, projedeki tek test edilmemiş oracle'dı: `prunepair-sample.log` fixture dizininde 37
+kardeşinin yanında duruyor ve hiçbir yerden okunmuyordu. Şimdi `--self-test` var (29 vektör:
+cnum yay-içerilmesi, tnum, `check_scalar_ids`, dönem min/max kolu, uçtan uca ayrıştırma) ve
+`crates/pipeline/tests/subsumption_model.rs` onu `cargo test` içine bağlıyor.
+
+Ölçüt, geçmek değil **düşmek**: B1 geri alındığında
+
+```
+SELFTEST FAIL cnum_is_subset: B1 · old BİLİNMEYEN, cur SARMALI YAY ...   (3 vektör, exit 1)
+cargo test --test subsumption_model   ->  model_self_test_passes ... FAILED
+```
+
+İki yanda da geçen bir vektör o hatanın testi değil, yanından geçen bir vektördür.
+
+Model Python, suite Rust; **kasıtlı olarak porte edilmedi, çağrıldı**. Aynı yüklemin ikinci
+bir uygulaması birinciden sapmakta serbest olurdu, ve bu proje bağımsız uygulamalardan ancak
+bağımsızlık KASITLIYKEN kazanır (`bpfref.h`, `bpflive.h`), dilin tesadüfüyle değil.
+
+### 3. Payda bölüntüsü, ve sayılamayan kolun adı
+
+```
+SUBSUME denominator pairs=2038 trivial=1021 nontrivial=1017 breaks=0 unmodelled=0 sums=ok
+SUBSUME unimplemented_arms ptr_id_pairs=273 dead_reg_cmps=0 live_reg_cmps=2117
+    pairs_without_liveness_claim=864 pairs_without_tracked_reg=462
+    refsafe_idmap_seed=not-observable-from-capture
+```
+
+Gerçek payda **1017**, ve tamamlayıcısı artık basılıyor: çiftlerin **%50.1'inde** range/tnum
+hiç koşmuyor. Uygulanmayan üç kolun ikisi sayılabildi (canlılık kapısı: kernel'in hiç
+karşılaştırmadığı register'da yaptığımız kıyas **0**; pointer id'si idmap'i tohumlayan çift
+273), üçüncüsü **sayılamıyor** — yama `refs[]`/`active_lock_id` basmıyor — ve bunu söylemek
+sayının kendisi.
+
+Yazarken bir sayaç hatası çıktı ve ölçülerek ayrıldı: **462 çift yalnız r10 taşıyor**.
+`live_regs_before` r0–r9'u izler, yani orada kernel de hiçbir register karşılaştırmaz;
+"iddia yok" (864) ile "iddia var ama denetlenecek hücre yok" (462) aynı sayaca karışmıştı.
+
+### 4. Onüçüncü çift — `2f2ec8e7730e`, ve bu kanalın ilk POZİTİFİ
+
+Aday `f54c7898ed1c` DEĞİL: o, kanal doğrulamasıyla elle düşürüldü (durum hatası — bozulan
+alan `precise`, ve model onu yakalamadan okuduğu için körlüğü yapısal). `2f2ec8e7730e` saf
+bir **yüklem** hatası: on altı satırın tamamı `check_scalar_ids` içinde, hiçbir alanı
+değiştirmiyor, ve model o yüklemin düzeltilmiş sürümünü uyguluyor.
+
+Hedeflenmiş şekil (`--probe-idbase`, 0092'de kurulmuştu):
+
+| kol | buggy `2f2ec8e7730e^` | fixed `2f2ec8e7730e` |
+|---|---|---|
+| `unlinked` (tetikleyici) | **accept** | **reject, errno 22** |
+| `linked` (kontrol) | accept | accept |
+| model | `disagree=1 arm=check_scalar_ids` | `disagree=0` |
+
+Çift, commit'in kendi örneğinin birebir kendisi — old `r2.id=1, r3.id=0x80000001`, cur
+`r2.id=1, r3.id=0x80000002`: bileşik id'ler temiz eşleşiyor, taban id'ler çakışıyor.
+**Alternatif açıklamalar aynı çıktıda sıfır ölçülü** (`dead_reg_cmps=0`, `ptr_id_pairs=0`),
+yani triyaj artefaktın kendisinden okunuyor, sonradan yeniden kurulmuyor.
+
+Ve payda da hareket ediyor, ki bu teyit edici: buggy yakalama iki çift taşıyor, fixed **bir**.
+Düzeltilmiş kernel'de `states_equal` false döner, `hit:`e hiç ulaşılmaz — modelin itiraz
+ettiği prune olayı var olmuyor.
+
+**Korpus ölçeğinde, 896 program:**
+
+| kernel | çift | uyuşmazlık | önemsiz-olmayan |
+|---|---|---|---|
+| era buggy `2f2ec8e7730e^` | 2019 | **15**, hepsi `arm=check_scalar_ids` | 992 |
+| era fixed `2f2ec8e7730e` | 2038 | **0** | 1016 |
+| tip (fix'i içeriyor) | 2038 | 0 | 1017 |
+
+Onbeşi de ayrı programda (896'nın 15'i), yani tek bir dejenere programın tekrarı değil.
+Biri elle yeniden türetildi: `insn=51`, `exact=2` (kısa devre yok), old `r6.id=1` &
+`r9.id=0x80000001`, cur `r6.id=0` & `r9.id=0x80000001` — r6'nın `cur_id=0`'ı geçici bir id
+ürettiği için idmap'e `1 → temp` giriyor, sonra r9'un taban çapraz-kontrolü `1 → 1` istiyor
+ve çakışıyor. Hatalı kernel taban kontrolü olmadığı için buduyor.
+
+**0092 bunu göremeyeceğini ölçmüştü.** `--probe-idbase` budama farkının ilk pozitif kontrolü
+olarak kurulmuş ve fark hiçbir şey rapor etmemişti, çünkü `BPF_F_TEST_STATE_FREQ` yalnız
+budamayı artırır ve bu, varsayılanın **zaten aldığı** bir prune (OI-15). Model görüyor.
+
+**Beklenmedik bir çapraz kontrol:** era-fixed korpusunun bütün sayıları, 0100'ün
+`cd5b460ed1ec^` koşusununkilerle **birebir aynı** — iki farklı revizyon, iki farklı yakalama
+biçimi (`..` min..max ve `+` base+size), aynı 2038/1016/1594/586/3813/140. 0100'ün "korpus
+sarmalı yay üretmiyor" sonucunun bağımsız teyidi, ve dönem ayrıştırıcısının çalıştığının
+kanıtı.
+
+### 5. Dönem tabanı kaldırıldı — ve gerekçesi düzeltildi
+
+`patches/prunepair-instrumentation-minmax.patch`: aynı enstrümantasyon, pre-cnum ağaç için
+(`verifier.c`, min/max alanları, `parent_id` yok). Ayıraç yüklemi söylüyor: **`+` yay**,
+**`..` aralık**, ve model her yakalamada o dönemin KENDİ yüklemini uyguluyor — dönemin
+zayıflığını da birebir taşıyarak.
+
+0100'ün gerekçesi yanlıştı: "model `cnum_is_subset` uyguluyor, o yüklem eskide yok." Yüklemin
+eski kernel'de olmaması modelin sınırı değil, **varlık sebebi** — `cd5b460ed1ec` zaten
+`is_subset`'i EKLEYEN commit. Gerçek taban alanlardan geliyordu, ve alanlardan gelen bir taban
+**kaldırılabilir**. Bu yüzden 2023-11-11 REG_INVARIANTS tabanının kardeşi değil: o ontolojik,
+bu seçilmiş yakalama biçiminin sonucuydu.
+
+### 6. Sözleşme, ilk kez doğru kontrolle
+
+0100'ün dönem koşusu era-yamalı ↔ **tip**-stok karşılaştırmıştı, ki bu yamayı izole etmez.
+Bu sefer iki yarı da aynı revizyonda:
+
+```
+stok  bzImage-buggy8      896 blok, 775 accept / 121 reject
+yama  bzImage-instr-b8    896 blok, 775 accept / 121 reject
+verdict dizisi, errno DAHİL: AYNI    ·    PRUNEPAIR: yamalı 11.866, stok 0
+```
+
+### 7. Ne kurulmadı
+
+Kalibrasyon modeli **`check_scalar_ids` yüklemine karşı** belgeliyor, o kadar. Durum hataları
+hakkında bir şey söylemiyor (`f54c7898ed1c` sınırı), `range_within` yüklem hataları hakkında
+da söylemiyor — 0100 korpusun o şekle ulaşmadığını ölçmüştü ve bu bacak onu değiştirmedi.
+Ve model "kernel, düzeltilmiş yüklemin reddedeceği yerde budadı" diyor; onbeşinin her birinin
+*sağlamsız* bir prune olduğunu söylemiyor. O ayrı bir soru, ve modelin cevapladığı soru değil.
+
+Bir de kendi testimin hatası: paralel koşan iki test aynı geçici dosya adını paylaşıyordu ve
+tek başına koşarken şansla geçiyordu. Tam suite yakaladı.
+
+Workspace 378 yeşil.
+
+## 0102 — Modelin duyarlılığı ölçüldü, ve ikinci pozitif: `fd675184fc7a`
+
+### 1. Fan-out: 40 aday, 15 ajan, sıfır UNCLEAR
+
+`git log --grep=Fixes:` ile verifier dosyalarına dokunan ve gövdesinde verifier durumu
+alıntılayan **50 commit**; kalibre edilmiş 13 çift ve elle düşen `f54c7898ed1c` çıkarılınca
+**40 aday**. Her biri tek soruya tabi tutuldu: fix bir **YÜKLEM**'i mi (iki durumu
+karşılaştıran fonksiyon) yoksa bir **DURUM**'u mu (modelin ham okuduğu alanı yazan kod)
+değiştiriyor — ve kararın commit başlığından değil KAYNAKTAN, `dosya:satır` alıntısıyla
+verilmesi şartıyla.
+
+```
+STATE      23   (%58)   modelin okuduğu alanı bozuyor   -> yapısal olarak görünmez
+UNRELATED  15   (%38)   durum-eşdeğerliği yolunda değil
+PREDICATE   2   (%5)
+```
+
+Ve tür sayısıyla aynı olmayan asıl sayı: **modelin görebileceği aday 40'ta 1.** İki
+PREDICATE'in biri (`1ad2f5838d34`, 2017) `states_equal`'ın **pointer** kolunda; model o kolu
+uygulamıyor ve gereken alanları (`off`, `range`, `strict_alignment`) yakalamıyor bile.
+
+Bilinenlerle birlikte **43 tarihsel hatada 3**: `2f2ec8e7730e` (kalibre), `cd5b460ed1ec`
+(yüklem hatası, ama 0100 korpusun şekli üretmediğini ölçtü), `fd675184fc7a` (yeni).
+Fuzzer'ın 14/21'inin karşılığı bu, ve dürüst okuması: **model dar bir enstrüman.**
+
+Sayının iki okuması var ve ikisi de ölçülü. Tarihsel sıklık düşük; buna karşılık dört yüklem
+hatasının **ikisi son altı ayda**, ikisi de en yeni kodda (`states.c` 2026-04'te ayrıldı,
+cnum 2026-04'te geldi). Yüzey şu anda çalkalanıyor ve model tam oraya nişanlı.
+
+**Dört başlık tuzağı daha**, sayaç dörtten sekize çıktı: `71b547f56124` ("Fix incorrect
+verifier pruning...", kaynak `backtrack_insn`, yani `precise` üreticisi) · `763aa759d3b2`
+("retval_range_within", budama yüklemi değil, program-çıkışı yolunda ayrı bir fonksiyon) ·
+`cc52d9140aa9` (`precise`'ı okuyan kolu değil yazan kodu düzeltiyor) · `4cabc5b186b5`
+(mesajı "considered as well in states_equal()" diyor, `states_equal` metinsel olarak hiç
+değişmemiş; etki struct-yerleşimi üzerinden `memcmp`'e dolaylı).
+
+**Ve adı konmuş yeni bir boşluk:** `states_equal`'ın **pointer kolu** hiçbir oracle
+tarafından modellenmiyor, ve orada en az bir tarihsel hata var.
+
+### 2. Onbeşinci çift: `fd675184fc7a` — ve farklı bir kol
+
+Onüçüncü çift `check_scalar_ids`'i kalibre etmişti; bu `range_within`'i, beş yıl daha eski
+bir hatadan. Fix'in tamamı dört karşılaştırma **eklemek**:
+
+```
++	       old->u32_min_value <= cur->u32_min_value &&
++	       old->u32_max_value >= cur->u32_max_value &&
++	       old->s32_min_value <= cur->s32_min_value &&
++	       old->s32_max_value >= cur->s32_max_value;
+```
+
+`--probe-jmp32prune` commit'in kendi bpftool dökümünü transkribe ediyor; kollar TEK şeyde
+farklı — daraltan iki atlamanın jmp32 mi jmp64 mü olduğu (64-bit atlama, hatalı
+`range_within`'in zaten karşılaştırdığı sınırları daraltır).
+
+| | buggy `fd675184fc7a~1` | fixed `fd675184fc7a` |
+|---|---|---|
+| prune çifti | 4 | **2** |
+| uyuşmazlık | **2**, ikisi de `arm=range_within`, ikisi de `insn=7` | **0** |
+| kontrol kolu `jmp64` | uyuşuyor | uyuşuyor |
+| verdict, iki kol | accept / accept | accept / accept |
+
+**Verdict kanalı kör, ve mesele bu.** Her iki kernel de her iki kolu kabul ediyor; upstream'in
+bildirdiği sonuç bir **hang** (yürünmeyen dal `goto pc-1`'e yeniden yazılıyor), ve hang bu
+projenin hiçbir oracle'ı tarafından gözlenemiyor — `run-harness-vm.sh:66` boot'u
+`timeout … || true` ile sarıyor, yani yavaş bir turdan ayırt edilemez. Bu hatayı gören tek
+şey model.
+
+**Elle doğrulandı, alan alan:** yakalanan çift commit'in alıntıladığı sınırlarla birebir aynı
+(`old s32=80000000..3030`, `cur s32=3031..7fffffff`, ve dört 64-bit alan da). Düşen
+karşılaştırma `old.s32_max (12336) >= cur.s32_max (2147483647)`.
+
+Ve yine payda hareket ediyor: 4 → 2. Düzeltilmiş kernel'de `range_within` reddettiği için
+o budama olayları var olmuyor.
+
+### 3. Üçüncü yakalama biçimi, ve BTF sınırı
+
+`patches/prunepair-instrumentation-2021.patch`: o çağda `exact_level` yok, cnum yok,
+`delta`/`BPF_ADD_CONST` yok, ve `regsafe`'in skaler kolu tam olarak bir `REG_LIVE_READ`
+kapısı → **çift taraflı** precision kısa devresi → `range_within && tnum_in`. `live=` alanı
+hem kapı için gerekli hem de dönem işareti: satır, tüketicisine hangi `regsafe`'i borçlu
+olduğunu kendisi söylüyor.
+
+Kapı **tahmin edilmiyor, uygulanıyor** — o çağda canlılık register başına basılabiliyor
+(`live_gated_regs=2`). Bugünün `live_regs_before` kapısı için aynı şey doğru değil ve B3'te
+sayaç olarak kalıyor.
+
+Ölçülmüş bir engel: 2021 ağacı modern pahole ile `BTFIDS` adımında düşüyor
+(`FAILED: load BTF from vmlinux`). BTF bu prob için gereksiz (socket_filter, düz ALU, harita
+yok), `EXTRA_FRAG` ile kapatıldı. gcc 11.4 ağacın geri kalanını sorunsuz derliyor.
+
+### 4. Ne kurulmadı
+
+Duyarlılık sayısı bir tahmin değil ama bir GARANTİ de değil: 40 adayın taraması ajanlarla
+yapıldı ve kararı değiştiren tek cevap (`fd675184fc7a`) elle açıldı, diğerleri açılmadı.
+Sıfır UNCLEAR fazla temiz olabilir; diff'lerin çoğu birkaç satır olduğu için makul, ama
+örnekleme denetimi yapılmadı.
+
+Model hâlâ yalnız **skaler kol yüklem** hatalarını görüyor. Pointer kolu boş, durum hataları
+yapısal olarak görünmez, ve model hâlâ çevrimdışı — fuzz hacmine bağlanması için VM-içi
+karşılaştırma gerekiyor (11.996 satır / 896 program ≈ 1,5 KB/program, yani ~1900 program/sn'de
+saatte ~10 GB log; 0094'ün canlılık için ölçtüğü aynı duvar).
+
+Workspace 381 yeşil.

@@ -38,6 +38,32 @@ diff <(grep -oE '^RESULT decision=[a-z]+ .*errno=[0-9]+' /tmp/stock.log) \
 **Bir bulgu asla yamalı kernel'de bırakılmaz.** Yama oracle'dır, hüküm değil: yamalı
 kernel'de çıkan her şey stok kernel'de yeniden türetilmek zorundadır.
 
+## `prunepair-instrumentation-minmax.patch` — dönem varyantı (pre-cnum)
+
+Aynı enstrümantasyon, 2026-04-24 ÖNCESİ ağaç için. İki fark:
+
+- dosya `kernel/bpf/verifier.c` (o revizyonda `kernel/bpf/states.c` yok),
+- alanlar `r64`/`r32` yerine `umin..umax` / `smin..smax` / `u32` / `s32`, ve `parent_id` yok.
+
+Ayıraç anlamlıdır ve tüketicinin hangi yüklemi borçlu olduğunu söyler: **`+` base+size yayı**
+(cnum, `cnum_is_subset`), **`..` min..max aralığı** (pre-cnum, sekiz karşılaştırmalı
+`range_within`). `scripts/subsume-check.py` iki biçimi de okur ve her yakalamada o dönemin
+KENDİ yüklemini uygular — dönemin hatasını da birebir taşıyarak, çünkü aksi hâlde aradaki her
+fark bir "bulgu" gibi görünür.
+
+Kurulum ve zorunlu doğrulama, tip varyantıyla aynı; `2f2ec8e7730e` çifti için **iki yarı da**
+koşuldu:
+
+```
+stok  .lab/build/bzImage-buggy8     896 blok, 775 accept / 121 reject
+yama  .lab/build/bzImage-instr-b8   896 blok, 775 accept / 121 reject
+verdict dizisi, errno DAHİL: AYNI    ·    PRUNEPAIR: yamalı 11.866, stok 0
+```
+
+Bu, sözleşmenin ilk kez **doğru kontrolle** koşulmasıdır: karşılaştırılan iki kernel aynı
+revizyonda ve yalnızca yamada ayrılıyor. 0100'ün dönem koşusu era-yamalı ↔ tip-stok
+karşılaştırmıştı, ki o yamayı izole etmez.
+
 ## Dönem hassasiyeti
 
 Yama, bastığı ALANLARA bağlı olarak dönem hassastır ve her kalibrasyon hedefi için küçük
@@ -47,7 +73,15 @@ bir varyant gerekebilir. Ölçülmüş sınırlar:
 |---|---|
 | `r64` / `r32` (cnum) | **2026-04-24**, `bbc631085503` — bundan eski bir kernel'de yama derlenmez |
 | `parent_id` | `cd5b460ed1ec~1`'den sonra |
+| `kernel/bpf/states.c` | dosya olarak sonradan ayrıldı; pre-cnum ağaçta hepsi `verifier.c` |
 
-Bu, `subsumption` modelinin de dönem tabanıdır: model `cnum_is_subset`'i uyguluyor, ve o
-yüklem 2026-04-24'ten önce mevcut değil. 2026-04-11 tarihli `2f2ec8e7730e` bu yüzden bu
-modelle kalibre EDİLEMEZ — projenin 2023-11-11 REG_INVARIANTS tabanının kardeşi bir sınır.
+**DÜZELTME (bacak 0101).** Bu taban ÖNCE yanlış gerekçelendirilmişti: "model
+`cnum_is_subset`'i uyguluyor, o yüklem 2026-04-24'ten önce mevcut değil." Yüklemin eski
+kernel'de olmaması modelin sınırı DEĞİL — varlık sebebi o; nitekim `cd5b460ed1ec`
+`is_subset`'i `cnum_defs.h`'e EKLEYEN commit'tir, yani hatalı ağaçta o yüklem hiç yok.
+
+Gerçek taban **alanlardır**: yama `r64`/`r32` olmadan derlenmez. Ve alanlardan gelen bir
+taban **kaldırılabilir** — bu dosyadaki min/max varyantı onu kaldırdı. Bu yüzden 2023-11-11
+REG_INVARIANTS tabanının kardeşi değildir: o taban ontolojiktir (bayrak kernel'de yok), bu
+taban seçilmiş yakalama biçiminin sonucuydu. `2f2ec8e7730e` (2026-04-11) bu ayrım sayesinde
+kalibre EDİLDİ, edilemez değil.
