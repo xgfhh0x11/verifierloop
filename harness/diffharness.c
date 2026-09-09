@@ -4644,7 +4644,7 @@ static void run_fuzz_replay(const char *spec) {
     close(map_in); close(map_out);
 }
 
-static void run_fuzz(int seconds) {
+static void run_fuzz(int seconds, unsigned seed) {
     /* Resolve the iterator kfuncs ONCE, and tell the independent liveness model their
        arities. Without the registration bpflive.h refuses every program containing the gene
        — correctly, since guessing an arity is a false LIVE claim in exactly the direction
@@ -4681,7 +4681,12 @@ static void run_fuzz(int seconds) {
         printf("FUZZ abort reason=map_create errno=%d\n", errno); return;
     }
 
-    struct gi_ctx c; c.rng = 0xC0FFEEu;
+    /* THE WALK'S SEED, and why it had to become an argument (leg 0113). hunt-05..10
+       were six rounds of the SAME program sequence: a fixed 0xC0FFEE meant every
+       round replayed the previous one's genomes byte for byte (verified by diffing
+       the CORPUS lines of hunt-08/09/10). Flat coverage across rounds was therefore
+       tautological, not evidence about the grammar. 0 keeps the historical walk. */
+    struct gi_ctx c; c.rng = seed ? seed : 0xC0FFEEu;
     const time_t t0 = time(NULL);
     unsigned long iters = 0, accepted = 0, rejected = 0, compared = 0, findings = 0;
     /* A load whose PC list filled the buffer lost coverage, and lost coverage looks exactly
@@ -4702,7 +4707,8 @@ static void run_fuzz(int seconds) {
     unsigned long store_progs = 0, store_bytes = 0, store_none = 0, store_readfail = 0;
     unsigned long store_sampled = 0, store_unamb = 0, store_stale = 0;
 
-    printf("FUZZ start budget=%ds corpus_max=%d\n", seconds, FZ_CORPUS_MAX);
+    printf("FUZZ start budget=%ds corpus_max=%d seed=0x%08x\n",
+           seconds, FZ_CORPUS_MAX, c.rng);
     while (time(NULL) - t0 < seconds) {
         struct gi_genome G;
         if (corpus_n > 0 && gi_pick(&c, 10) < 8)
@@ -4975,9 +4981,6 @@ static void run_fuzz(int seconds) {
                     printf("\n");
                 }
             }
-
-            if (cnt >= KCOV_ENTRIES - 1) truncated++;
-            unsigned fresh = 0;
         }
 
         if (fd >= 0) {
@@ -10519,7 +10522,8 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--fuzz") == 0) {
         report_jit_mode(argc, argv);
-        run_fuzz(argc > 2 ? atoi(argv[2]) : 300);
+        run_fuzz(argc > 2 ? atoi(argv[2]) : 300,
+                 argc > 3 ? (unsigned)strtoul(argv[3], NULL, 0) : 0u);
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--probe-uninit") == 0) {
