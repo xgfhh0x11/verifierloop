@@ -33,3 +33,6 @@ id_rsa*
 /harness/diffharness
 /harness/f2probe
 harness/*.o
+
+# LaTeX derleme çıktısı (paper/ kaynaktan yeniden üretilir)
+/paper/build/

@@ -1,20 +1,29 @@
 %% Only entries whose content was read from the source, not from an abstract.
 %% Anything added later must meet the same bar: the claim cited must have been
 %% checked in the paper itself.
+%%
+%% The provenance note for each entry sits in the %%-comment ABOVE it, not in a
+%% `note` field. BibTeX ignores everything outside an @entry, so the rule survives
+%% and the bibliography stops printing our reading notes at the reader.
 
+%% PROVENANS: Read from source. Bug classification: wrong code 95, crash 33,
+%%   performance 19. Components: ``Most of the bugs that Orion found in GCC
+%%   are optimizer bugs.'' States no limitation of the form ``defects
+%%   affecting both variants identically are invisible''.
 @inproceedings{le2014emi,
   author    = {Le, Vu and Afshari, Mehrdad and Su, Zhendong},
   title     = {Compiler validation via equivalence modulo inputs},
   booktitle = {Proceedings of the 35th ACM SIGPLAN Conference on Programming
                Language Design and Implementation (PLDI)},
   year      = {2014},
-  doi       = {10.1145/2594291.2594334},
-  note      = {Read from source. Bug classification: wrong code 95, crash 33,
-               performance 19. Components: ``Most of the bugs that Orion found
-               in GCC are optimizer bugs.'' States no limitation of the form
-               ``defects affecting both variants identically are invisible''.}
+  doi       = {10.1145/2594291.2594334}
 }
 
+%% PROVENANS: Read from source. Frames the shared-failure limitation in
+%%   metamorphic terms: ``A limitation of metamorphic testing is that it
+%%   cannot establish a ground truth. For NoREC, this implies that both the
+%%   unoptimized and optimized query can yield an incorrect result.'' The key
+%%   insight is stated as a DBMS technique.
 @inproceedings{rigger2020norec,
   author    = {Rigger, Manuel and Su, Zhendong},
   title     = {Detecting optimization bugs in database engines via
@@ -23,24 +32,19 @@
                Conference and Symposium on the Foundations of Software
                Engineering (ESEC/FSE)},
   year      = {2020},
-  doi       = {10.1145/3368089.3409710},
-  note      = {Read from source. Frames the shared-failure limitation in
-               metamorphic terms: ``A limitation of metamorphic testing is that
-               it cannot establish a ground truth. For NoREC, this implies that
-               both the unoptimized and optimized query can yield an incorrect
-               result.'' The key insight is stated as a DBMS technique.}
+  doi       = {10.1145/3368089.3409710}
 }
 
+%% PROVENANS: Read from source. Grades IMPLEMENTATION independence (``an
+%%   independently developed reference implementation, a differential
+%%   comparison among existing implementations, and a consensus among
+%%   implementations the same model generates carry successively weaker
+%%   independence assumptions''). Input provenance is not one of its three
+%%   axes.
 @misc{oraclesurvey2026,
   title  = {{LLM-Based} Test Oracles: Source-of-Authority Taxonomy---A
             Systematic Literature Review},
   year   = {2026},
   eprint = {2607.05031},
-  archivePrefix = {arXiv},
-  note   = {Read from source. Grades IMPLEMENTATION independence
-            (``an independently developed reference implementation, a
-            differential comparison among existing implementations, and a
-            consensus among implementations the same model generates carry
-            successively weaker independence assumptions''). Input provenance
-            is not one of its three axes.}
+  archivePrefix = {arXiv}
 }
