@@ -8270,3 +8270,86 @@ güvenilmez çıktı — mainline'a merge sırasıyla girildiği için komşu co
 bir iş.
 
 Workspace 392 yeşil.
+
+## 0113 — F2: stok kernel kendi invariant'ını ihlal ediyor, ve bunun ne olduğu / ne olmadığı
+
+Av turu 11 (tohum `0x5EED0011`) stok bpf-next `dffc1150e2cc` üzerinde bir
+`REG INVARIANTS VIOLATION` üretti. Küçültüldü (20 gen → 4 gen), mekanizma kaynakta
+çivilendi, atıf byte-özdeş config'li iki derlemeyle tek commit'e (`bbc631085503`) indirildi,
+ve **ayrı bir inceleme bacağında dört kernelde bağımsız olarak yeniden koşuldu.**
+Tam kayıt: `docs/findings/F2-sync-linked-regs-empty-range/`.
+
+### 1. Ne bulundu
+
+Koşullu bir dalın **imkânsız** kolunda, karşılaştırmaya girmeyen üçüncü bir register
+`sync_linked_regs()` ile boş aralığa düşüyor. Denetim (`regs_bounds_sanity_check_branches`,
+17050) yalnız `true_reg1/2` ve `false_reg1/2`'yi görüyor; `sync_linked_regs` 17063–17071'de,
+yani **denetimden sonra** koşuyor. Kernel'in kendi logu ikisini yan yana yazıyor:
+rafine edilen R7 iyi biçimli `[12,16]`, sonra yazılan R6 `smin=-1, smax=-2`.
+
+### 2. İki şeyi ayırmak zorunlu, ve ilk taslak ayırmamıştı
+
+**Gözlem etkisi değil.** `BPF_F_TEST_REG_INVARIANTS` tüm kernel'de tek yerde okunuyor
+(2217), ve rapordan sonra. Bayrak hiçbir durum hesabına giremiyor; boş aralık bayraksız da
+oluşuyor. Harness tarafında da parite tam — üç yüklemenin üçü de `log_level=2`, tek değişen
+`prog_flags`.
+
+**Ama "accept" unsoundness kanıtı değil.** Bayraksız yolda 2219 koşuyor:
+`__mark_reg_unbounded(reg)` — boş kümeyi ⊤'ye genişletiyor, yani sound yön. Stok kernel
+programı `r6=∅` ile değil `r6=⊤` ile doğruluyor, ve `WARN_ONCE` olduğu için ilkinden
+sonrası sessiz. İlk taslak ihlal ile kabul tablosunu yan yana koyup okuyucuya bunu bir
+soundness iddiası gibi sunuyordu; düzeltildi. Kalan içerik yine de gerçek: verifier kendi
+invariant'ının yasakladığı durumu, hiçbir denetimin kapsamadığı bir yoldan kuruyor.
+
+### 3. Yenilik iki kez inceldi
+
+İlk taslak sınıfın bilindiğini (Vishwanathan RFC, lkml 2025-11-07) dürüstçe yazıyordu. İnceleme
+bir şey daha buldu: RFC'nin kendi kapak mektubu, fuzzing kampanyalarının bu semptomu **zaten**
+rapor ettiğini söylüyor. Yani bilinen şey sadece sınıf değil, "bir fuzzer bunu buldu" olgusunun
+kendisi de. Ayakta kalan katkı tek cümle, ve kaynaktan doğrulanabilir: RFC entegrasyon noktası
+olarak `regs_refine_cond_op()` sonrasını (~16169) işaret ediyor, `sync_linked_regs()` 17063'te
+koşuyor — oraya konan denetim bu şekli yakalamaz.
+
+Bu, projenin kendi tezinin kendi bulgusuna uygulanmış hâli: bir oracle'ın ne göreceği, neyi
+okuduğundan çıkar. RFC'nin önerdiği denetim doğru sınıfı hedefliyor ama yanlış noktadan
+okuyor.
+
+### 4. İki kanıt boşluğu açıldı — OI-18, OI-19
+
+İnceleme bacağı iki altyapı zayıflığı buldu, ikisi de bu projenin daha önce yandığı türden:
+ihlal vermeyen koşumlar **kendi kernel kimliklerini taşımıyor** (kalibrasyonun sessiz tarafı,
+yani tasarımın bel bağladığı taraf, en az kanıt taşıyan taraf), ve `.lab/harness-serial.log`
+tek paylaşımlı dosya (eşzamanlı av koşumu inceleme sırasında üstüne yazdı). İkisi de
+OPEN-ITEMS'a alındı; F2'nin kendisi için elle kapatıldı, yapısal olarak kapatılmadı.
+
+---
+
+## 0113b — Tur 16'nın `store_location_desync`'i: kanalın DOKUZUNCU atıf hatası, yine bizim
+
+Tur 16 (tohum `0x5EED0016`) olgun oracle'da 1 × `store_location_desync` verdi. Elle türetildi
+ve **çürütüldü**. Program (blok 86):
+
+```
+ 8: (61) r7 = *(u32 *)(r0 +4)                        r7 = in ^ 0x5a5a5a5a
+ 9: (61) r9 = *(u32 *)(r0 +8)                        r9 = in + 3
+17: (67) r9 <<= 21
+18: (63) *(u32 *)(r8 +4) = r7                        map_value[4..7] = r7
+19: (c3) r9 = atomic_fetch_or((u32 *)(r8 +4), r9)    map_value[4..7] |= r9
+27: (55) if r6 != 0x2 goto pc+20                     r6 = in;  in != 2  ->  48'e atla
+42: (0f) r1 += r7                                    (r7 = 0, döngüden çıkışta)
+43: (72) *(u8 *)(r1 +5) = -1                         ilan edilen mağaza — SENTİNEL 0xFF
+```
+
+`input=0xfffffff9` için `r7 = 0xa5a5a5a3`, `r9 = 0xfffffffc << 21` → düşük 32 bit
+`0xFF800000`. 19'daki atomic OR: `0xa5a5a5a3 | 0xFF800000 = 0xFFA5A5A3` → little-endian
+`[4]=A3 [5]=A5 [6]=A5 [7]=FF`. Gözlenen "mağaza yeri 7" işte bu bayt — insn 19'un yazdığı,
+insn 43'ün değil. Üstelik 27'deki dal (r6 ≠ 2) 28..47'yi tamamen atlıyor: **ilan edilen mağaza
+hiç çalışmıyor.** Verifier'ın iddiası (`R1=map_value+0`, `r1+5`) ve `R7=0` kanıtı doğru.
+
+**Hata türü: sentinel gözlem penceresinde BENZERSİZ DEĞİL.** Aynı map value'ya yazan başka bir
+komut aynı bayt değerini (0xFF) başka bir ofsete koyabiliyor; örnekleyicinin "tek değişken
+mağaza yeri" kısıtı bunu elemiyor, çünkü diğer yazıcılar SABİT ofsetli. 0111'in listesine
+dokuzuncu madde: yine atıf, yine yüklemde değil.
+
+Gece sürücüsü artık bu türde durmuyor; her örneği `.lab/storeloc-rNN.txt` olarak saklayıp
+devam ediyor.

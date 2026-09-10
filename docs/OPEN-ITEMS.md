@@ -613,3 +613,44 @@ requires the *document itself* to grow, which is outside this project's control.
   reads rather than a finding the oracles count. A crash channel with its own denominator —
   "accepted programs that were run" — would make it countable. Note the serial interleaves
   harness stdout with printk character by character, so parsing it needs care.
+
+---
+
+## OI-18 — A run that produces no warning leaves no record of which kernel produced it
+
+- **Opened:** 2026-09-10 (F2 review leg).
+- **Status:** OPEN. Closed by hand for F2; not closed structurally.
+- **What happened.** F2's attribution rests on four runs of one program against four kernels.
+  The two that violate the invariant stamp their own identity into the captured output, because
+  the WARNING dump carries `Not tainted 7.2.0-g<sha>`. The two **negative controls do not** —
+  no warning, no version line. Their provenance lives in the `KERNEL=` environment variable at
+  run time and nowhere in the artifact.
+- **Why it matters here specifically.** A calibration pair's whole value is that one side is
+  silent. So the side that carries the least evidence of what it ran is, by construction, the
+  side the design depends on. This is the same shape as the store-location freshness defect
+  (devlog 0111, error eight): the artifact looked right and was about the wrong thing.
+- **Cost of closing.** One line: have the harness print `uname -r` (or the `LINUX_VERSION_CODE`
+  it was built against) in its own output, before the first program block. Then every captured
+  log names its kernel whether or not anything fired.
+- **Until then.** Any claim of the form "kernel A is silent on this program" must be re-run,
+  not read from an archived log.
+
+---
+
+## OI-19 — `.lab/harness-serial.log` is a single shared file across concurrent runs
+
+- **Opened:** 2026-09-10 (F2 review leg).
+- **Status:** OPEN.
+- **What happened.** `run-harness-vm.sh` writes the serial console to a fixed path,
+  `$LAB/harness-serial.log`. During the F2 review the night driver was running hunt round 28 in
+  its own VM; its serial output overwrote the review's mid-check, and a kernel-identity grep
+  against that file returned nothing for a run that had in fact stamped its version.
+- **What is at risk.** Only evidence that lives *solely* in the serial log. The extracted
+  `$OUT` file is per-run and safe, and the crash path (OI-17) copies to `<out>-crash-serial.log`,
+  which is also per-run. The exposure is the window between boot and extraction, and any manual
+  inspection of `harness-serial.log` while a second run is live.
+- **Cost of closing.** Derive the serial path from `$OUT` the way the crash log already does
+  (`${OUT%.log}-serial.log`), so the serial is per-run like everything else it documents.
+- **Related.** The default `SSHPORT=10022` is also fixed, so a second concurrent VM fails to
+  boot with a host-forwarding error that `run-harness-vm.sh` reports as "markers not found" —
+  an infrastructure collision wearing a harness failure's clothes. `SSHPORT=<other>` works.
