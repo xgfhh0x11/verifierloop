@@ -1,4 +1,4 @@
-# Parti 3 — SONUÇLAR: simetri tezi test edildi ve **desteklenmedi**
+# Parti 3 — SONUÇLAR: simetri **yapısal olarak icra edilemedi**, ve sebebi bulgunun kendisi
 
 Ön kayıt: `PREREGISTRATION-batch3.md`, commit `4c2e455`. Bu dosya ondan **sonra**.
 Doğrulama bu sefer kaynak okuması değil, **koşum** — `.lab/build/bzImage-instr`
@@ -75,8 +75,40 @@ Yani ayakta duran iddia: *bu oracle, bu şekillerde, yanlış-atıflı gerçek-p
 üretmedi ve üretmemesinin sebebi tüketilen bir alanın kapı işlevi görmesi.*
 Genel bir "yanlış atıf hiç olmaz" iddiası **değil**.
 
-## Sayım
+## Kapı ONTOLOJİK, incidental değil — kaynaktan doğrulandı
 
-- Ön kayıtlı öngörü: 3 (P1, P2, P3). Tutan: 2. Sıra gelmeyen: 1. Yanlışlanan: 0.
+Kritik soru: 375. satırın kısa-devresi script'imin optimizasyonu mu, yoksa sadık her
+modelin yapmak zorunda olduğu bir şey mi? **Kernel'in aynası, yani ontolojik:**
+
+```
+kernel bugün (tip)   kernel/bpf/states.c:548   if (!rold->precise && exact == NOT_EXACT) return true;
+kernel dffc1150e2cc  kernel/bpf/states.c:551   if (!rold->precise && exact == NOT_EXACT) return true;
+kernel 2019-12       kernel/bpf/verifier.c:7096 if (!rold->precise && !rcur->precise)     return true;
+model                scripts/subsume-check.py:375  if o['prec'] == 0 and p['exact'] == 0: continue
+```
+
+Kernel `prec`'te kapı yaptığı için model de yapmak zorunda. Kapı **ilkeye ait, bu
+oracle'a değil**.
+
+## Ve bu kapı zaten haritada — iki bağımsız yol aynı yere iniyor
+
+`f54c7898ed1c` (2019-12, "Fix precision tracking for unbounded scalars") bu oracle'a
+tam bu kapı yüzünden görünmez: checkpoint'te old R1 sabit, cur R1 tamamen bilinmeyen,
+**ikisi de imprecise** → kısa-devre ateşler → durum budanır → yürünmeyen dal
+`goto pc-1`'e yeniden yazılır → program **askıda kalır**. Bu, kanal doğrulamasıyla
+2026-09-08'de elle düşürülmüştü (kaynak düzeyinde, kernel kurulmadan).
+
+Yani parti 3 yeni bir gözlem değil: **belgelenmiş bir yapısal körlüğün mekanizmasının
+koşum-doğrulaması**, ve ona simetri sondajından, bağımsız bir yoldan varıldı.
+
+## Sayım ve doğru çerçeve
+
+- Ön kayıtlı önerme: 3 (P1, P2, P3). Tutan: 2. Sıra gelmeyen: 1. Yanlışlanan: 0.
 - Doğrulama düzeyi: **koşum** (parti 1–2'nin kaynak-okuması çekincesi bu partide yok).
-- Simetri tezi: **desteklenmedi.** Paper'a "doğrulandı" olarak girmiyor.
+
+**Çerçeve dikkatli kurulmalı.** "Test edildi ve desteklenmedi" düz hâliyle yanıltıcı,
+çünkü yeniden hesap **hiç koşmadı** (`scalar_comparisons=0`) — simetriye şans
+verilmedi, yolu kapalıydı. Doğrusu: ön kayıtlı simetri örneklemesi koştu; yeniden
+hesap **tüketilen bir alanla kapatıldı**; `may_goto` ile boş-register'lı `exact=2`
+çifti zorlanamadı; dolayısıyla **simetri yapısal olarak icra edilemedi, ve neden
+edilemediğinin koşum-doğrulanmış cevabı elimizde.**

@@ -117,6 +117,21 @@ found the consequence was refusal, not unsoundness. The agreement was uninformat
 and the disagreement was inconsequential for one reason: what the oracle reads is
 what the component already says about itself.
 
+A run-verified refinement sharpens what ``reads'' means here, and it is not the same
+claim as component-relativity. A consumed value need not merely feed the oracle's own
+recomputation; it can decide whether that recomputation happens. The comparison this
+oracle reimplements begins, in the component, with a short-circuit on a bookkeeping
+flag---a register never marked precise is accepted without examination---and any
+faithful model must mirror it, so the flag the component wrote governs the model's
+independent arithmetic as a switch rather than as an operand. Fed a capture in which
+a register's range had been emptied by an upstream defect, the oracle's range
+comparison never executed: every scalar register was short-circuited out and the
+oracle agreed without looking. The same switch is what makes a documented
+precision-tracking defect in this component's history invisible here. A defect above
+such a switch is not mis-decided; it is never examined---which is a stronger and
+narrower statement than blindness by shared value, and the one the axis should be
+read to make.
+
 \begin{table}[t]
 \caption{Blind-spot map, reduced. \textbullet~calibrated positive;
 \textcircled{~}~measured boundary; \rule[0.5ex]{1.6ex}{0.4pt}~structurally blind.
