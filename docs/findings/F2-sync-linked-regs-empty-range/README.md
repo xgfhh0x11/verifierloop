@@ -1,12 +1,23 @@
 # F2 — `sync_linked_regs()` bir register'ı BOŞ aralığa düşürüyor, ve bunu hiçbir denetim görmüyor
 
-**Kernel:** bpf-next `7.2.0-gdffc1150e2cc` (2026-09-03), stok, `Not tainted`
+**Kernel:** bpf-next `5e289c5a4a52` (2026-08-22) + bir yerel yama; VM'de `7.2.0-gdffc1150e2cc`
+**Ve bugünün tip'inde de üretiliyor:** `7.3.0-rc2-gaf0b84a9215d` (bpf-next, 2026-09-08)
 **Bulan:** verifierloop, av turu 11, tohum `0x5EED0011` (2026-09-10)
-**Sınıf:** verifier iç invariant ihlali (`REG INVARIANTS VIOLATION`) — **bellek güvenliği hatası DEĞİL**
+**Sınıf:** verifier iç invariant ihlali (`REG INVARIANTS VIOLATION`).
+**GÜVENLİK ETKİSİ YOK** — ölçüldü, varsayılmadı: bkz. "Kapı 2".
 **Atıf:** `bbc631085503` ("bpf: replace min/max fields with struct cnum{32,64}") — tek commit'e indirildi
-**Durum:** stok kernel'de yeniden üretildi, küçültüldü, mekanizma kaynakta çivilendi,
-atıf iki byte-özdeş config'li derlemeyle kapatıldı, **inceleme bacağında bağımsız olarak dört kernelde
-yeniden koşuldu**. Upstream'e gönderilmedi.
+**Durum:** stok kernel'de yeniden üretildi, küçültüldü, elle yazılmış üç-kontrol-kollu minimal
+repro'ya indirildi, mekanizma kaynakta çivilendi, atıf iki byte-özdeş config'li derlemeyle
+kapatıldı, ve **iki ağacın bugünkü tip'ine karşı kontrol edildi**. Upstream'e gönderilmedi.
+
+> **PROVENANS DÜZELTMESİ.** İlk taslak (ve ilk incelemem) kernel'i "temiz upstream
+> dffc1150e2cc" diye tanımlıyordu. **Yanlış.** `dffc1150e2cc` bizim kendi commit'imiz —
+> F1'in `kernel/bpf/disasm.c` guard'ı, 4 satır. Gerçek upstream taban `5e289c5a4a52`
+> (2026-08-22). Ayrıca `Not tainted` kaynak yaması hakkında hiçbir şey söylemez; ağaç-dışı
+> modül yüklenmediğini söyler, ve ben onu ilk incelemede yanlış dayanak olarak kullandım.
+> Bulgu ayakta kalıyor çünkü o yama yalnızca disassembler'ın basım yolunu değiştiriyor ve
+> verifier durum hesabına giremez — ama iddia artık ölçüme dayanıyor: **aynı program, hiçbir
+> yerel yaması olmayan bugünün upstream tip'inde de aynı ihlali veriyor.**
 
 ---
 
@@ -167,14 +178,101 @@ boşalan register koşulun rafine ettiği register değil, ondan sonra yazılan 
 Aynı sınıf gerçek dünyada da görülmüş (Cilium/Talos, kernel 6.18.x — siderolabs/talos#12726;
 bu atıf ikinci elden, doğrulanmadı).
 
+## Üç kapı — F1'in dersi, ölçülerek uygulandı
+
+F1'de bulgu gerçekti ama upstream zaten düzeltmişti ve biz eski checkout'taydık. Bu sefer üç
+kapı da açıkça geçildi. Alet: `harness/f2probe.c` — **diffharness'a hiç dokunmayan** ayrı,
+kendi kendine yeten bir ikili (eşzamanlı av turu o aleti kullanıyor). Koşum:
+`scripts/run-f2probe-vm.sh`.
+
+### Kapı 1 — tip-uç mu, duplicate mi? **Tip-uçta üretiliyor. Duplicate değil.**
+
+Klonun `origin/master`'ı 2026-08-22'de donmuştu ve hiç fetch edilmemişti (`FETCH_HEAD` yoktu).
+İki ağaç da fetch edildi:
+
+| ağaç | tip | sonuç |
+|---|---|---|
+| bpf-next | `af0b84a9215d` (2026-09-08), tabanımızdan **9889 commit** ileri | derlendi, `P0` **aynı ihlali veriyor** |
+| bpf (fixes) | `e4a62833adff` (2026-09-09) | sıra değişmemiş (denetim 17050, sync 17063/17069) |
+
+Aradaki 9889 commit'in **hiçbiri `sync_linked_regs`'e dokunmuyor.** Aralıkta tek bir
+`REG INVARIANTS` düzeltmesi var — `150aeba624e8` ("Fix REG INVARIANTS VIOLATION on speculative
+pointer arithmetic") — ve o `adjust_ptr_min_max_vals` içinde `__mark_reg32_unbounded`'ı
+`sanitize_ptr_alu` sonrasına taşıyor: başka bir yol, bizim şeklimize değmiyor.
+
+Kalan artık: `bpf.git`'e son bir günde girip henüz bpf-next'e akmamış bir düzeltme kontrol
+edilmedi (fixes tip'i 2026-09-09).
+
+### Kapı 2 — bug mı, bayrağın tasarım gereği işi mi? **Güvenlik etkisi YOK, ve bu ölçüldü.**
+
+Soru şuydu: boş aralıklı R6 bir bellek erişimine base+offset olarak girerse ne oluyor?
+Kontrollü deney — **aynı erişim, aynı değer aralığı**, tek fark register'ın boşalıp boşalmaması:
+
+| program | R6 boş mu | yükleme | çalıştırma |
+|---|---|---|---|
+| `M1_store_via_ptr` (`r1 = r8; r1 += r6; *(u8*)(r1+0) = 0x41`) | **evet** | **reject, errno 13** | — |
+| `M2_load_via_ptr` | **evet** | **reject, errno 13** | — |
+| `M3_store_no_link` (bağ yok → R6 hiç boşalmıyor) | hayır | **accept** | koştu, temiz |
+| `M4_load_no_link` | hayır | **accept** | koştu, temiz |
+
+Kontrol kolu reddin sebebini izole ediyor: erişim ve aralık aynı, **boşluk kaldırılınca kabul
+ediliyor.** Yani ret boşluktan kaynaklanıyor, sıradan bir sınır kontrolünden değil. Ve reddin
+metni yönü söylüyor:
+
+```
+Suggestion: Preserve a pointer-valued register where needed, or reload and revalidate
+the pointer after scalar arithmetic, helper calls, or other operations that can invalidate it.
+```
+
+**Yön KONSERVATİF: boş aralık verifier'ı daha katı yapıyor, daha gevşek değil.** KASAN'lı
+kernel'de hiçbir oops/KASAN raporu yok.
+
+Kaynak bunu açıklıyor. `CNUM64_EMPTY = {base=U64_MAX, size=U64_MAX}` accessor'lardan şöyle
+görünüyor:
+
+- `urange_overflow` → doğru ⇒ `umin=0`, `umax=U64_MAX` — **işaretsiz görünüm tamamen serbest**,
+  yani "hiçbir şey bilmiyorum", güvenli yön.
+- `srange_overflow` → yanlış (çünkü `contains()` boşta hep false) ⇒ `smin=(s64)U64_MAX=-1`,
+  `smax=(s64)(U64_MAX+U64_MAX)=-2` — **ters çevrilmiş işaretli aralık**, ve `smin < 0`
+  denetimi olan her yer reddediyor.
+
+Üstelik `include/linux/cnum.h` bunu açıkça yazıyor: *"The caller should ensure `!is_empty(cnum)`
+holds when calling `cnum{T}_umin`/`umax`/`smin`/`smax`."* İhlal edilen şey belgelenmiş bir ön
+koşul; sonucu ise her iki yönde de reddetme.
+
+**Sonuç: F1 ile aynı sınıf** — gerçek, kaynakta çivili, ama güvenlik-etkisiz. Kanıtlanan şey
+"verifier kendi invariant'ını ihlal ediyor ve bunu kendisi bug diye adlandırıyor"; kanıtlanan
+şey OOB ya da yanlış-accept **değil**.
+
+### Kapı 3 — deterministik, kontrol-kollu minimal repro. **19 komut, üç kontrol.**
+
+Genom değil, elle yazılmış program. Her kontrol kolu **tek bir bileşeni** kaldırıyor:
+
+| program | kaldırılan | ihlal |
+|---|---|---|
+| `P0_alu` (19 komut) | — | **VAR** (`ctx=alu`) |
+| `C1_no_addconst` | `r7 += 8` (BPF_ADD_CONST) | yok |
+| `C2_no_link` | bağ (r7 bağımsız yükleniyor, aynı aralık) | yok |
+| `C3_no_umin` | `if w6 > 3` (umin'i 4'e çeken dal) | yok |
+
+Üçü de hem stokta hem bugünün tip'inde aynı. Yani ihlal üç bileşenin **kesişimi**: bağlı
+register + sabit ofset + umin daraltması.
+
+Dördüncü bir gözlem, dokümante etmeye değer: `N0_no_payload` — boşalan R6'ya sonradan hiç
+dokunulmazsa **hiçbir tanı çıkmıyor ve program kabul ediliyor**. Onarım (`__mark_reg_unbounded`)
+yalnızca `reg_bounds_sanity_check`'in çağrıldığı yerlerde koşuyor (2265, 6703, 10507, 16060,
+16621–24), ve bunların hiçbiri bellek erişimi değil. Yani boş durum, kendisini denetleyen bir
+işlem gelene kadar sessizce yaşıyor.
+
 ## Ne KANITLANMADI
 
-- **Sömürülebilirlik gösterilmedi.** Yol ölü; ölü yolun ürettiği durumların canlı yolları
-  budamakta kullanılıp kullanılmadığı ayrı bir soru. (0092/`92424801261d` bu riskin tarihsel
-  örneği: "fix state pruning of fake registers".)
-- Bu, tek başına bir *unsoundness* iddiası değildir. Kanıtlanan şey: kernel kendi
-  invariant'ını ihlal ediyor, kendi deyimiyle "verifier bug", ve bayraksız yolda bunu
-  sessiz bir genişletmeyle örtüyor.
+- **Budama (pruning) yönü açık.** Ölü yolun ürettiği durumların canlı yolları budamakta
+  kullanılıp kullanılmadığı ölçülmedi. `N0_no_payload` bu riskin neden gerçek olduğunu
+  gösteriyor: boş durum hiçbir tanı üretmeden var olabiliyor. (0092/`92424801261d` tarihsel
+  örnek: "fix state pruning of fake registers".) Bunu kapatmak ayrı bir deney.
+- **Sömürülebilirlik gösterilmedi, ve Kapı 2 aksi yönde kanıt üretti** — doğrudan bellek
+  erişimi yolu ölçüldü ve reddediliyor.
+- Bu bir *unsoundness* iddiası değildir.
 
 ## İkinci, bağımsız şekil (tur 12)
 
@@ -196,6 +294,19 @@ grep "REG INVARIANTS" .lab/replay-min-stock.log
 ```
 
 Negatif kontrol için `KERNEL=$PWD/.lab/build/bzImage-cn-a` (accept, ihlal yok).
+
+Elle yazılmış, kontrol-kollu prob (genom gerektirmez, diffharness'a dokunmaz):
+
+```bash
+cc -O2 -static -o harness/f2probe harness/f2probe.c
+SSHPORT=10122 KERNEL=$PWD/.lab/build/bzImage \
+  scripts/run-f2probe-vm.sh .lab/f2-stock.log
+grep '^F2 name=' .lab/f2-stock.log
+# beklenen: P0 viol=1 ctx=alu; C1/C2/C3 viol=0; M1/M2 reject 13; M3/M4 accept
+```
+
+Bugünün tip'ine karşı: `KERNEL=$PWD/.lab/build/bzImage-tip` (worktree `.lab/bpf-tip`,
+`SRC=... OUT=... scripts/build-kernel.sh` ile derlenir).
 
 ## Provenans ve kanıt boşlukları
 

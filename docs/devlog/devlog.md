@@ -8353,3 +8353,50 @@ dokuzuncu madde: yine atıf, yine yüklemde değil.
 
 Gece sürücüsü artık bu türde durmuyor; her örneği `.lab/storeloc-rNN.txt` olarak saklayıp
 devam ediyor.
+
+## 0113c — F2'nin üç dış kapısı, ve provenans hatasının düzeltilmesi
+
+0113 bulguyu iç triyajdan geçirdi. Reviewer üç dış kapı koydu — F1'in dersleri — ve üçü de
+ölçüldü. Alet: `harness/f2probe.c`, elle yazılmış program + kontrol kolları, diffharness'a
+dokunmayan ayrı ikili (eşzamanlı av turu o aleti kullanıyor).
+
+### 0. Önce bir düzeltme: kernel "temiz upstream" değildi
+
+0113 ve ilk incelemem kernel'i "temiz upstream `dffc1150e2cc`" diye tanımlıyordu. Yanlış:
+`dffc1150e2cc` **bizim kendi commit'imiz**, F1'in disasm guard'ı. Gerçek upstream taban
+`5e289c5a4a52` (2026-08-22). Ayrıca `Not tainted`'ı "yamasız kaynak" kanıtı gibi kullanmıştım;
+taint ağaç-dışı modül hakkındadır, kaynak yaması hakkında hiçbir şey söylemez. Yama yalnızca
+disassembler basım yolunu değiştirdiği için bulgu ayakta kaldı — ama artık iddia çıkarıma
+değil ölçüme dayanıyor.
+
+### 1. Tip-uç mu, duplicate mi? Tip-uçta üretiliyor
+
+Klon 2026-08-22'de donmuştu ve hiç fetch edilmemişti. İki ağaç da çekildi: bpf-next
+`af0b84a9215d` (2026-09-08, tabandan **9889 commit** ileri) ve bpf `e4a62833adff` (2026-09-09).
+Tip derlendi ve `P0` **aynı ihlali verdi**. 9889 commit'in hiçbiri `sync_linked_regs`'e
+dokunmuyor; aralıktaki tek `REG INVARIANTS` düzeltmesi (`150aeba624e8`) `adjust_ptr_min_max_vals`
+içinde, başka bir yol.
+
+### 2. Bug mı, bayrağın işi mi? Güvenlik etkisi YOK — ve bu ölçüldü, varsayılmadı
+
+Kontrollü deney: aynı bellek erişimi, aynı değer aralığı, tek fark register'ın boşalması.
+Boş olanlar (`M1/M2`) **reddediliyor** (errno 13, "reload and revalidate the pointer"); bağ
+kaldırılıp boşluk önlenince (`M3/M4`) **kabul ediliyor** ve temiz koşuyor. Yani ret boşluktan
+kaynaklanıyor — ve **yönü konservatif**.
+
+Kaynak bunu açıklıyor: `CNUM64_EMPTY` accessor'lardan işaretsizde `[0, U64_MAX]` (tamamen
+serbest — güvenli yön), işaretlide `smin=-1, smax=-2` (ters aralık — `smin<0` denetimi olan
+her yer reddeder) görünüyor. `cnum.h` zaten *"caller should ensure !is_empty"* diyor: ihlal
+edilen şey belgelenmiş bir ön koşul, sonucu her iki yönde de reddetme.
+
+**Sınıf F1 ile aynı: gerçek, kaynakta çivili, güvenlik-etkisiz.**
+
+### 3. Minimal kontrol-kollu repro: 19 komut, üç kontrol
+
+`P0` ihlal veriyor; `C1` (sabit ofset yok), `C2` (bağ yok), `C3` (umin daraltması yok) üçü de
+sessiz — hem stokta hem tip'te. İhlal üç bileşenin kesişimi.
+
+Ve dördüncü gözlem: `N0_no_payload` — boşalan register'a sonradan dokunulmazsa **hiçbir tanı
+çıkmıyor**, program kabul ediliyor. Onarım yalnızca `reg_bounds_sanity_check`'in çağrıldığı beş
+yerde koşuyor ve hiçbiri bellek erişimi değil. Budama yönü hâlâ açık: boş durum sessizce
+yaşayabiliyor.
