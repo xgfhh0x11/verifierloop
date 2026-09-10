@@ -49,6 +49,9 @@
 #define BPF_ST_MEM(SIZE, DST, OFF, IMM)                                        \
     ((struct bpf_insn){.code = BPF_ST | BPF_SIZE(SIZE) | BPF_MEM,              \
                        .dst_reg = DST, .src_reg = 0, .off = OFF, .imm = IMM})
+#define BPF_STX_MEM(SIZE, DST, SRC, OFF)                                       \
+    ((struct bpf_insn){.code = BPF_STX | BPF_SIZE(SIZE) | BPF_MEM,             \
+                       .dst_reg = DST, .src_reg = SRC, .off = OFF, .imm = 0})
 #define BPF_LD_MAP_FD(DST, FD)                                                 \
     ((struct bpf_insn){.code = BPF_LD | BPF_DW | BPF_IMM, .dst_reg = DST,      \
                        .src_reg = BPF_PSEUDO_MAP_FD, .off = 0, .imm = (FD)}),  \
@@ -67,7 +70,7 @@ static int bpf(int cmd, union bpf_attr *attr, unsigned int size) {
 static char g_log[1 << 22];
 
 /* Değişken kısım: ihlalin oluştuğu noktaya konan yük. Her varyant burada ayrışıyor. */
-enum payload { PL_ALU, PL_STORE, PL_LOAD, PL_NONE };
+enum payload { PL_ALU, PL_STORE, PL_LOAD, PL_NONE, PL_CONVERGE, PL_KEEPLIVE, PL_MAYGOTO };
 
 /* Kontrol kolları: her biri TEK bir bileşeni kaldırır.
    NO_ADDCONST — r7 = r6 ama +8 yok      -> kesişim {16}, boş değil
@@ -108,7 +111,9 @@ static int build(struct bpf_insn *p, int map_fd, enum arm arm, enum payload pl) 
     }
 
     /* İmkânsız kol: r7 > 16'nın DÜŞEN kolu. Yük oraya konuyor. */
-    int npl = (pl == PL_ALU) ? 1 : (pl == PL_STORE ? 3 : (pl == PL_LOAD ? 3 : 0));
+    int npl = (pl == PL_ALU) ? 1 : (pl == PL_STORE ? 3 : (pl == PL_LOAD ? 3 :
+              (pl == PL_CONVERGE ? 3 : (pl == PL_KEEPLIVE ? 4 :
+              (pl == PL_MAYGOTO ? 3 : 0)))));
     p[n++] = BPF_JMP_IMM(BPF_JGT, BPF_REG_7, 16, npl);
 
     switch (pl) {
@@ -126,6 +131,35 @@ static int build(struct bpf_insn *p, int map_fd, enum arm arm, enum payload pl) 
         p[n++] = BPF_LDX_MEM(BPF_B, BPF_REG_0, BPF_REG_1, 0);
         break;
     case PL_NONE: break;
+    case PL_MAYGOTO:
+        /* KL'de model SUSTU ama araligi hic karsilastirmadi: precision kisa-devresi
+           (prec=0 && exact=NOT_EXACT) skalerleri atladi. may_goto, prune'u
+           exact=RANGE_WITHIN ile yaptirir (verifier.c is_may_goto_insn_at kolu),
+           yani kisa-devre kapanir ve YENIDEN HESAPLANAN icerilme gercekten kosar. */
+        p[n++] = ((struct bpf_insn){.code = BPF_JMP | 0xe0 /* BPF_JCOND */,
+                                    .dst_reg = 0, .src_reg = 0 /* BPF_MAY_GOTO */,
+                                    .off = 1, .imm = 0});
+        p[n++] = BPF_MOV64_IMM(BPF_REG_9, 1);
+        p[n++] = BPF_STX_MEM(BPF_W, BPF_REG_8, BPF_REG_6, 0);   /* r6 CANLI kalsin */
+        break;
+    case PL_KEEPLIVE:
+        /* Bos r6'yi ONARMADAN CANLI tutmak icin: bir magazanin KAYNAGI olarak okunsun.
+           check_store_reg() kaynak register'a reg_bounds_sanity_check UYGULAMIYOR
+           (yalnizca check_load_mem hedefe uyguluyor, verifier.c:6703), yani r6 bos
+           kalir. Onunde yakinsayan bir dal var ki prune denemesi dogsun; r6 o dalda
+           asagida okundugu icin live_regs_before'a girer ve KARSILASTIRILIR. */
+        p[n++] = BPF_LDX_MEM(BPF_W, BPF_REG_1, BPF_REG_8, 8);   /* taze bilinmeyen */
+        p[n++] = BPF_JMP_IMM(BPF_JGT, BPF_REG_1, 5, 1);         /* statik degil */
+        p[n++] = BPF_MOV64_IMM(BPF_REG_9, 1);
+        p[n++] = BPF_STX_MEM(BPF_W, BPF_REG_8, BPF_REG_6, 0);   /* r6 OKUNUYOR */
+        break;
+    case PL_CONVERGE:
+        /* Yuk yok -> r6 onarilmadan kaliyor. Sonra yakinsayan bir dal: ayni komut
+           iki farkli durumla ziyaret ediliyor, yani prune denemesi doguyor. */
+        p[n++] = BPF_JMP_IMM(BPF_JGT, BPF_REG_8, 0, 1);
+        p[n++] = BPF_MOV64_IMM(BPF_REG_9, 1);
+        p[n++] = BPF_MOV64_IMM(BPF_REG_9, 2);
+        break;
     }
 
     p[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
@@ -207,6 +241,33 @@ static void run(const char *name, int map_fd, enum arm arm, enum payload pl, uin
     if (fd >= 0) close(fd);
 }
 
+/* Parti 3: enstrumanli kernel PRUNEPAIR satirlarini verbose() ile LOG TAMPONUNA
+   basiyor. Bu yuzden logu oldugu gibi disari vermek gerekiyor -- subsume-check.py'nin
+   girdisi bu. TEST_STATE_FREQ her komutu checkpoint yapar, yani prune denemesi
+   maksimuma cikar; bos araligin bir prune ciftine dusme sansi da oyle. */
+static void dump(const char *name, int map_fd, enum arm arm, enum payload pl, uint32_t flags) {
+    struct bpf_insn ins[64];
+    int n = build(ins, map_fd, arm, pl);
+    union bpf_attr a;
+    memset(&a, 0, sizeof(a));
+    a.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+    a.insn_cnt = n;
+    a.insns = (uint64_t)(unsigned long)ins;
+    a.license = (uint64_t)(unsigned long)"GPL";
+    a.log_level = 2;
+    a.log_size = sizeof(g_log);
+    a.log_buf = (uint64_t)(unsigned long)g_log;
+    a.prog_flags = flags;
+    g_log[0] = '\0';
+    int fd = bpf(BPF_PROG_LOAD, &a, sizeof(a));
+    int e = errno;
+    printf("===P3PROG name=%s flags=%s verdict=%s errno=%d insns=%d ===\n",
+           name, flags ? "freq" : "0", fd >= 0 ? "accept" : "reject", fd >= 0 ? 0 : e, n);
+    printf("---LOG---\n%s\n---END---\n", g_log);
+    fflush(stdout);
+    if (fd >= 0) close(fd);
+}
+
 int main(void) {
     union bpf_attr m;
     memset(&m, 0, sizeof(m));
@@ -234,6 +295,20 @@ int main(void) {
         run(T[i].name, map_fd, T[i].arm, T[i].pl, 1u << 7 /* BPF_F_TEST_REG_INVARIANTS */);
     }
     printf("F2 END\n");
+
+    /* --- Parti 3: PRUNEPAIR yakalamasi --- */
+    printf("P3 BEGIN\n");
+    dump("P0_alu",      map_fd, ARM_FULL, PL_ALU,      0);
+    dump("P0_alu_freq", map_fd, ARM_FULL, PL_ALU,      1u << 3 /* TEST_STATE_FREQ */);
+    dump("N0_none",     map_fd, ARM_FULL, PL_NONE,     0);
+    dump("N0_none_freq",map_fd, ARM_FULL, PL_NONE,     1u << 3);
+    dump("CV_conv",     map_fd, ARM_FULL, PL_CONVERGE, 0);
+    dump("CV_conv_freq",map_fd, ARM_FULL, PL_CONVERGE, 1u << 3);
+    dump("KL_keeplive",     map_fd, ARM_FULL, PL_KEEPLIVE, 0);
+    dump("KL_keeplive_freq",map_fd, ARM_FULL, PL_KEEPLIVE, 1u << 3);
+    dump("MG_maygoto",      map_fd, ARM_FULL, PL_MAYGOTO, 0);
+    dump("MG_maygoto_freq", map_fd, ARM_FULL, PL_MAYGOTO, 1u << 3);
+    printf("P3 END\n");
     close(map_fd);
     return 0;
 }
