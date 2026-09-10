@@ -8456,3 +8456,36 @@ appendix'ler eklenince zip onlarsız üretildi ve Overleaf'te derleme kırılır
 çevrildi ve `main.tex`'teki `\input` sayısıyla doğrulayan bir kapı eklendi.
 
 Paper 9 sayfa, tanımsız atıf 0, overfull hbox 0.
+
+## 0115 — Şekil 1, Csmith'in intro'ya taşınması, ve iki dikişin kapatılması
+
+**Şekil 1 (2×2) süs değil, sentez.** Eksenler: implementation independence (oracle
+sistemin mantığını paylaşıyor mu) × evidential independence (girdisi sistemden mi
+geliyor). Altı yerleşim, ve ikisi birbirinin aynadaki görüntüsü:
+
+- **Agni** üst-sol: doğrulama koşulu kernel'in KENDİ C kaynağından çıkarılıyor (yani
+  mantığı paylaşıyor), ama girdi kaynak metni — hesaplanan her değerin yukarısı.
+- **oracle B** alt-sağ: bağımsız yazılmış, ama verifier'ın yazdığı durumu okuyor.
+
+Aynı bileşen, karşı köşeler. Eksenin ne işe yaradığı tek karede.
+**Csmith** üst-sağ, **NoREC** üst-sol, **EMI** alt-sol. Ve Barr'ın pseudo-oracle
+tanımı bir nokta değil bir **sütun** olarak çiziliyor: `f1 != f2` yatay konumu
+sabitliyor, yükseklik hakkında hiçbir şey söylemiyor.
+
+**Csmith intro'ya taşındı, ve framing düzeltildi.** Önceki hâli "bağımsızlığı yanlış
+eksende savundu" diyordu; bu haksız. Csmith'in kafası karışık değildi — ekseni
+adlandıracak kelime yoktu. Yeni hâli: *"Csmith is protected by an axis it does not
+name, and defends itself on the one it does. The axis was load-bearing before it was
+articulated."* Motive edici örnek olarak §1'de, çünkü üç katmanı aynı anda taşıyor:
+sınırı adıyla söylüyor, f-ekseninde ampirik savunma yapıyor, girdi ekseninde korunuyor.
+
+**Contribution-4 dikişi kapatıldı.** §7 Agni yüzünden daralmıştı ("araçlar kör sınıfını
+söylemiyor" → "söylüyorlar ama BİLEŞENE göre"), ama §1 hâlâ eski geniş cümleyi
+taşıyordu. §1 artık §7'nin kanıtladığıyla birebir: kapsam bileşene göre ifade ediliyor,
+o başka bir bölüntü, ve bir bileşeni kapsayan iki oracle tükettikleri şeyde tamamen
+ayrışabildiği için evidential bölüntüye çevrilemez.
+
+**Ve bir render hatası yakalandı:** iki `\ccsdesc` acmart'ta metni ikiliyordu
+("...verification.Software testing and debug-ging..."). Tek kavrama indirildi.
+
+Paper 10 sayfa, 6 kaynak, tanımsız atıf 0, overfull hbox 0.

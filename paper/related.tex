@@ -19,7 +19,7 @@ closest such work comes is a remark on oracles derived from the code itself---th
 they accept what the code currently does---which is the coarsest case of the
 phenomenon and is not developed into a dimension.
 
-\paragraph{Csmith, and an independence argument made on the wrong axis.}
+\paragraph{Csmith, and an independence it does not name.}
 Csmith generates C programs and compares the outputs of several
 compilers~\cite{yang2011csmith}. It states the shared-defect limitation plainly---%
 ``if that did happen we would not detect that problem; this is an inherent limitation
@@ -27,12 +27,14 @@ of differential testing without an oracle''---and then argues that it does not h
 empirically and over implementations: ``despite the fact that Knight and Leveson found
 a substantial number of correlated errors in an experiment on N-version programming,
 Csmith has yielded no evidence of correlated failures among unrelated C compilers.''
-The argument is about how independently the compilers were built. Read through
-Section~2, the stronger reason is one the paper does not give: the program under test
-is produced by Csmith, that is, by \emph{neither} compiler. Its evidence never passes
-through a system under test, so the technique sits on the favourable side of the input
-axis by construction---and its authors, defending independence, reach for the other
-axis to do it.
+The argument is about how independently the compilers were built, and it is a good
+argument. Read through Section~2, a second reason is available and the paper does not
+give it: the program under test is produced by Csmith, that is, by \emph{neither}
+compiler, so the evidence never passes through a system under test. The technique sits
+on the favourable side of the input axis by construction. This is not a confusion on
+its authors' part---the axis had no name to reach for---but it is the sharpest
+available demonstration that the property is real and load-bearing before it is
+articulated.
 
 \paragraph{NoREC.}
 NoREC constructs its reference by rewriting a query into a form the optimizer cannot

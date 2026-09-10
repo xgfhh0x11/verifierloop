@@ -11,6 +11,9 @@
 
 \documentclass[sigconf,review,anonymous]{acmart}
 
+%% Fig.1 (the 2x2) is TikZ; acmart does not load it.
+\usepackage{tikz}
+
 %% PAGE BUDGET — deliberately left as a parameter rather than a number.
 %% ACM/ISSTA limits change per edition; fill from the current CFP, do not
 %% guess. The decision that matters is not the limit but the CAP below.
@@ -39,16 +42,13 @@
        <concept_desc>Software and its engineering~Software testing and debugging</concept_desc>
        <concept_significance>500</concept_significance>
        </concept>
-   <concept>
-       <concept_id>10011007.10011074.10011099.10011692</concept_id>
-       <concept_desc>Software and its engineering~Formal software verification</concept_desc>
-       <concept_significance>300</concept_significance>
-       </concept>
  </ccs2012>
 \end{CCSXML}
 
+%% TEK kavram, bilerek. İki \ccsdesc denendi ve acmart ikisini de basıp metni
+%% ikiledi ("...verification.Software testing and debug-ging..."); CCS bir
+%% sınıflandırma alanı, hakem notu değil -- tek doğru satır iki bozuktan iyi.
 \ccsdesc[500]{Software and its engineering~Software testing and debugging}
-\ccsdesc[300]{Software and its engineering~Formal software verification}
 
 \keywords{differential testing, test oracles, oracle independence, blind spots,
   program analysis, eBPF verifier}

@@ -9,6 +9,18 @@ is rarely named: what the reference \emph{consumes}. An oracle whose inputs are
 artifacts produced by the system under test inherits that system's defects, no
 matter how independently its own logic was written.
 
+The clearest sign that the second axis is unnamed rather than unimportant is a
+technique that already depends on it. Csmith generates random C programs and compares
+what several compilers make of them, and its authors meet the independence question
+head on: they state that a defect shared by every compiler would go undetected, and
+answer the concern empirically, reporting no correlated failures among unrelated
+compilers~\cite{yang2011csmith}. That answer is about how independently the compilers
+were built. A second reason is available and the paper does not give it: the program
+under test is produced by Csmith, hence by none of the compilers being compared, so
+the evidence never passes through a system under test. Csmith is protected by an axis
+it does not name, and defends itself on the one it does. The axis was load-bearing
+before it was articulated.
+
 This is not a fine distinction that practice already respects; practice pushes the
 other way. Artifacts produced by the system under test---intermediate
 representations, execution profiles, planner estimates, internal state dumps---are
@@ -26,8 +38,11 @@ would consume, and the partition bounds the oracle's reach. This costs source
 reading---no builds, no execution, no test campaign. Yet it cannot be assembled from
 published results. Defect taxonomies in the testing literature are organized by
 symptom (wrong code, crash, performance) and by configuration (32- against 64-bit
-targets), and never by whether an oracle could have observed the defect at all. The
-axis is unnamed because no one has had a reason to organize the data along it.
+targets), never by whether an oracle could have observed the defect. Where a technique
+does state what it cannot see---and some state it precisely---it states it \emph{by
+component}: which part of the system was analysed. That is a different partition, and
+not convertible into this one, because two oracles covering the same component can
+differ entirely in what they consume.
 
 We name the axis, give the procedure that operationalizes it, and apply it once and
 deeply. The subject is the Linux eBPF verifier, chosen because it is already heavily
