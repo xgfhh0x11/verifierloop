@@ -28,7 +28,37 @@
 \title{Where a Test Oracle Reads From}
 \subtitle{Evidential independence as a design criterion for differential testing}
 
-%% \author{...}  % filled at submission; class is set anonymous for review
+%% Filled at submission; the class is set `anonymous', so acmart replaces these
+%% with "Anonymous Author(s)" for review. They exist so %% CCS: required by ACM at submission. Two concepts, both 500-level, both
+%% defensible from the paper's own content -- the contribution is a testing
+%% procedure applied to a program analyser.
+\begin{CCSXML}
+<ccs2012>
+   <concept>
+       <concept_id>10011007.10011074.10011099.10011102.10011103</concept_id>
+       <concept_desc>Software and its engineering~Software testing and debugging</concept_desc>
+       <concept_significance>500</concept_significance>
+       </concept>
+   <concept>
+       <concept_id>10011007.10011074.10011099.10011692</concept_id>
+       <concept_desc>Software and its engineering~Formal software verification</concept_desc>
+       <concept_significance>300</concept_significance>
+       </concept>
+ </ccs2012>
+\end{CCSXML}
+
+\ccsdesc[500]{Software and its engineering~Software testing and debugging}
+\ccsdesc[300]{Software and its engineering~Formal software verification}
+
+\keywords{differential testing, test oracles, oracle independence, blind spots,
+  program analysis, eBPF verifier}
+
+\maketitle has an author
+%% block to typeset at all.
+\author{Anonymous Author(s)}
+\affiliation{%
+  \institution{Anonymous Institution}
+  \country{}}
 
 \begin{abstract}
 %% Written LAST, from Sec.1's final sentence outward. Four contributions in the
@@ -66,6 +96,30 @@ pre-registered a prediction that a widely cited differential technique would sta
 the limitation its input provenance implies; the prediction was falsified. That
 failure is the measurement, and the argument for collecting defect data on this axis.
 \end{abstract}
+
+%% CCS: required by ACM at submission. Two concepts, both 500-level, both
+%% defensible from the paper's own content -- the contribution is a testing
+%% procedure applied to a program analyser.
+\begin{CCSXML}
+<ccs2012>
+   <concept>
+       <concept_id>10011007.10011074.10011099.10011102.10011103</concept_id>
+       <concept_desc>Software and its engineering~Software testing and debugging</concept_desc>
+       <concept_significance>500</concept_significance>
+       </concept>
+   <concept>
+       <concept_id>10011007.10011074.10011099.10011692</concept_id>
+       <concept_desc>Software and its engineering~Formal software verification</concept_desc>
+       <concept_significance>300</concept_significance>
+       </concept>
+ </ccs2012>
+\end{CCSXML}
+
+\ccsdesc[500]{Software and its engineering~Software testing and debugging}
+\ccsdesc[300]{Software and its engineering~Formal software verification}
+
+\keywords{differential testing, test oracles, oracle independence, blind spots,
+  program analysis, eBPF verifier}
 
 \maketitle
 
@@ -130,13 +184,15 @@ failure is the measurement, and the argument for collecting defect data on this 
 
 \appendix
 \section{The Full Blind-Spot Map}
-%% All 56 cells, each filled cell carrying the commit that anchors it, and the
-%% empty cells left visibly empty. An empty cell means UNTESTED, not blind, and
-%% the appendix must say so where a reader will see it.
+%% DRAFTED — see paper/appendixA.tex. 56 cells, 34 of them empty, and the empty
+%% cells are labelled UNTESTED where the reader sees them.
+\input{appendixA}
 
 \section{Calibration Pairs}
-%% One row per pair: defect, what it corrupts, which oracle, positive or
-%% boundary, and the mechanism when it is a boundary.
+%% DRAFTED — see paper/appendixB.tex. The `evidence' column is the honest part:
+%% nine built, four message-quoted, one source-only. It contradicts the loose
+%% wording in Sec.1/5.2, which was corrected rather than defended.
+\input{appendixB}
 
 \bibliographystyle{ACM-Reference-Format}
 \bibliography{refs}

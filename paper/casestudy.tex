@@ -34,8 +34,10 @@ survives defects that corrupt verifier state and $B$ reproduces them.
 
 Calibration here means: build the system at a real defect and at its fix, with
 configurations held byte-identical, and require the oracle to fire on one and be
-silent on the other. Sixteen such pairs anchor the map; two per oracle carry the
-argument.
+silent on the other. Fifteen pairs anchor the map, and nine were established that
+way; for the rest the defective state was already printed in the fix's own message,
+or the question was decidable by aligning source lines. Appendix~B separates the
+three. Two pairs per oracle carry the argument here.
 
 $A$, positive. A defect in control-flow graph construction dropped an edge, so a
 register that was live was recorded dead. The oracle reported a single cell---the

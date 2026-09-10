@@ -8428,3 +8428,31 @@ tekrar oynatılması.
 
 **Paper etkilenmedi.** §5.4 yalnız uçtan uca kendim doğruladığım şekli kullanıyor;
 ikinci şekil hiçbir yerde paper'a girmedi.
+
+## 0114 — Appendix A ve B yazıldı, ve ikisi de paper'da bir yanlışı ortaya çıkardı
+
+Metadata (CCS, keywords, anonim yazar bloğu) ve iki appendix eklendi. Appendix'ler
+"tabloyu doldur" işi sanılıyordu; ikisi de birer düzeltme getirdi.
+
+**Appendix B, kalibrasyon çiftleri — "her biri iki kernel'den kuruldu" iddiası yanlıştı.**
+§1 "sixteen pairs, each built from a kernel that carried the defect and one that did
+not" diyordu; §5.2 aynı tanımı verip hemen ardından *"The classification was derived
+from source and required no build"* diyen bir çift sunuyordu. Kendi içinde çelişik.
+Tabloya bir **kanıt sütunu** kondu ve sayılar ölçüldü: **on beş çift — dokuzu iki
+kernel derlemesiyle, dördü fix'in kendi mesajının bastığı hatalı durumdan, biri yalnız
+kaynak hizalamasıyla.** §1 ve §5.2 buna göre düzeltildi. Ve bu, §3.5'in söylediğinin
+örneği: en ucuz kalibrasyon commit mesajının zaten yaptığıdır.
+
+**Sıralama numaraları kayıtlarımız arasında tutarsız.** devlog `fd675184fc7a`'yı
+"Onbeşinci çift" diye anıyor, `subsumption-model-scope` notu "Pair fourteen" diyor; ve
+on birinci hiçbir yerde yok. Appendix ordinal kullanmıyor, yalnız sayıyor.
+
+**Appendix A, 56 hücre.** Otuz dördü boş, ve boşluğun "denenmedi" demek olduğu okurun
+gördüğü yerde yazılı. Pointer kolu ayrı işaretlendi: modellenmiş bir kol değil,
+ölçülmüş bir sınır da değil — **adı konmuş bir boşluk** (`1ad2f5838d34`, 2017).
+
+**Ve zip sessizce eksikti.** `make-overleaf-zip.sh` sabit dosya listesi kullanıyordu;
+appendix'ler eklenince zip onlarsız üretildi ve Overleaf'te derleme kırılırdı. Glob'a
+çevrildi ve `main.tex`'teki `\input` sayısıyla doğrulayan bir kapı eklendi.
+
+Paper 9 sayfa, tanımsız atıf 0, overfull hbox 0.
