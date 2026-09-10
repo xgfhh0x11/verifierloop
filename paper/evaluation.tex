@@ -18,12 +18,35 @@ this partition. Of the calibration performed afterwards, three pairs were
 \emph{selected using} the partition and are therefore confirmatory rather than
 independent: the partition said where to look, and looking there succeeded.
 
-Exactly one case is genuinely held out. A defect was classified as invisible by the
-procedure alone---three source lines aligned, no system built---and the
-classification was then checked against the fix and the oracle's own predicate. It
-held. One held-out case is what we have, and reporting it as one is the point: a
-procedure whose first independent test is $n=1$ should say so rather than count the
-confirmatory cases alongside it.
+Twenty-one cases are genuinely held out. One was the original: a defect classified as
+invisible by the procedure alone---three source lines aligned, no system built---and
+checked afterwards against the fix and the oracle's own predicate. Twenty more were
+added under a pre-registration discipline, in two batches, and the discipline is the
+part worth stating. The frame was fixed by a mechanical query, the sample drawn by a
+content-independent rule, and each case classified from the kernel diff alone with a
+falsifiable prediction attached. Classifications were committed \emph{before} any
+verification ran, in a separate commit from the results, so the ordering is not a
+claim about our conduct---it is visible in the artifact's history.
+
+All twenty predictions held. That number is less impressive than it looks and the
+composition says why: seventeen of the twenty were classified as lying outside the
+state-equivalence path entirely, so they test the procedure's third answer rather
+than its bound. Three tested the blind bound---the fields at issue were the
+precision flag, a register identity, and a pointer type, each of which the oracle
+reads from the system's own capture rather than recomputing---and all three were
+confirmed blind. \textbf{None tested the visible side}: not one of the twenty was
+classified as touching the predicate, so the bound's upper arm remains tested by the
+confirmatory cases only.
+
+Two further limits belong here rather than in Section~6, because they bound what
+these twenty establish. Verification was at source level---for each case, whether
+the field the fix touches enters the oracle's verdict as a consumed value or an
+independently recomputed one---and no system was built for any of them. And one
+prediction's falsification condition, as written in the first batch, conflated
+``modelled in the oracle'' with ``independently recomputed by the oracle''; the
+substantive criterion is the second, the wording said the first, and a stricter
+reading would score that case ambiguous rather than confirmed. The condition was
+corrected before the second batch, and both readings are recorded.
 
 \subsection{Can a reader check it?}
 
