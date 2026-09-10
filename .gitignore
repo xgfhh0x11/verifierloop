@@ -31,4 +31,5 @@ id_rsa*
 
 # Compiled guest-side harness (build artifact; reproducible from source)
 /harness/diffharness
+/harness/f2probe
 harness/*.o
