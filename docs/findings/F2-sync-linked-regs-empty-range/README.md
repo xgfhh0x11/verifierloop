@@ -274,12 +274,41 @@ işlem gelene kadar sessizce yaşıyor.
   erişimi yolu ölçüldü ve reddediliyor.
 - Bu bir *unsoundness* iddiası değildir.
 
-## İkinci, bağımsız şekil (tur 12)
+## İKİNCİ ŞEKİL İDDİASI GERİ ÇEKİLDİ — aynı semptom, mekanizma DOĞRULANMADI
 
-Tohum `0x5EED0012`, ayrı bir soy, 60 komut (`genes=15 hi=0:3.1.0.5.61,…`), av logunda **470**
-ihlal. Stok kernel'de aynı imza: `(alu)`, `range bounds violation`, `CNUM_EMPTY`. Altı özdeş
-turun hiç bulamayıp farklı tohumlu ilk iki turun ikisinin de bulması, şeklin ne kadar kolay
-tetiklendiğini gösteriyor. Log: `.lab/replay-r12-stock.log`.
+İlk taslak (ve onu taşıyan ilk sürümüm) tur 12'yi "aynı hata, bağımsız şekil" diye
+sunuyordu. **Bu desteklenmiyor.** İncelemede iki iddia ayrı ayrı çöktü:
+
+**1. "av logunda 470 ihlal" — yanlış isim.** `fuzz-hunt-12.log`'da `REG INVARIANTS`
+satırı **bir** tane (`BPF_WARN_ONCE`, boot başına bir kez). 470 sayısı
+`invfault=470` alanından geliyor ve harness'ta şunu sayıyor (diffharness.c:4977):
+temel yükleme kabul etti **ve** invariants bayraklı yükleme EFAULT ile reddetti.
+Yani 470 **program örneği**, tek bir mutasyon soyundan (425 farklı genom) — 470
+bağımsız bulgu değil.
+
+**2. "yine BAĞLI bir register (id ortak, smin=-1, smax=-2)" — doğrulanamadı.**
+`replay-r12-stock.log`'da `smin=-1` taşıyan id'li hiçbir register yok. Bu grep
+incelemede koşuldu, **boş döndü**, ve ben "muhtemelen farklı biçimlendirme" deyip
+geçtim. Hata eksik kontrol değil, **başarısız kontrolü mazur görmek**.
+
+**Ve tnum imzaları farklı**, yani muhtemelen aynı üretici bile değil:
+
+| tur | `var_off` | küme | mekanizma |
+|---|---|---|---|
+| 11 (F2, `P0`), 28 | `(0x0, 0x6)` | {0,2,4,6} | `sync_linked_regs` — **doğrulandı**, üç kontrol kolu |
+| 12, 17 | `(0xe, 0x1)` | {14,15} | **bilinmiyor** |
+
+Ortak olan tek şey semptom: boş bir aralığın bir ALU denetimine ulaşması. Ortak
+mekanizma **iddia edilmiyor**.
+
+Tur bazında sayılar (`invchecked` / `invfault`): 11 → 76709/76 · 12 → 71790/470 ·
+13 → 68902/0 · 17 → 66128/398 · 29 → 69538/0. Tur 28 bir av turu değil: F2'nin
+minimal genomunun enstrümanlı kernel üzerinde tekrar oynatılması
+(`verifier.c:2122`, stoktaki 2211 değil).
+
+Şekil B'yi F2'ye eklemek için gereken şey belli ve yapılmadı: küçültme, ve
+`sync_linked_regs`'in üreticisi olup olmadığının kontrol kollarıyla gösterilmesi —
+`f2probe`'un yaptığının aynısı.
 
 ## Yeniden üretme
 

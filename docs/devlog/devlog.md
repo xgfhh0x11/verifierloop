@@ -8400,3 +8400,31 @@ Ve dördüncü gözlem: `N0_no_payload` — boşalan register'a sonradan dokunul
 çıkmıyor**, program kabul ediliyor. Onarım yalnızca `reg_bounds_sanity_check`'in çağrıldığı beş
 yerde koşuyor ve hiçbiri bellek erişimi değil. Budama yönü hâlâ açık: boş durum sessizce
 yaşayabiliyor.
+
+## 0113d — Tur 12 "bağımsız ikinci şekil" iddiası geri çekildi
+
+0113 tur 12'yi "aynı hata, bağımsız şekil, 470 ihlal" diye kaydetti; ben de o cümleyi
+inceleyip F2'nin README'sine taşıdım. İkisi de yanlıştı ve ikincisi benim.
+
+**470 yanlış isimdi.** `fuzz-hunt-12.log`'da `REG INVARIANTS` satırı bir tane —
+`BPF_WARN_ONCE` boot başına bir kez basıyor. 470, `invfault` alanı: temel yüklemenin
+kabul edip invariants bayraklı yüklemenin EFAULT ile reddettiği **program** sayısı
+(diffharness.c:4977), tek bir mutasyon soyundan 425 farklı genom. Bulgu sayısı değil,
+soy sayısı bile değil.
+
+**"Yine bağlı bir register" doğrulanmadı.** İncelemede o grep'i koştum, boş döndü, ve
+"muhtemelen farklı biçimlendirme" deyip geçtim. Hata eksik kontrol değil; başarısız bir
+kontrolü mazur görmek. Bu, 0111'in sekiz atıf hatasının aynı ailesinden: artefakt doğru
+görünüyordu ve başka bir şey hakkındaydı.
+
+**Ve tnum'lar farklı.** Tur 11/28 `var_off=(0x0,0x6)` = {0,2,4,6}; tur 12/17
+`var_off=(0xe,0x1)` = {14,15}. Ortak olan semptom (boş aralığın bir ALU denetimine
+ulaşması), mekanizma değil. F2'nin `sync_linked_regs` atfı yalnız birinci şekil için
+doğrulandı — üç kontrol koluyla, hem stokta hem tip'te.
+
+Tur bazında: 11 → invchecked=76709 invfault=76 · 12 → 71790/470 · 13 → 68902/0 ·
+17 → 66128/398 · 29 → 69538/0. Tur 28 av turu değil, F2 genomunun enstrümanlı kernel'de
+tekrar oynatılması.
+
+**Paper etkilenmedi.** §5.4 yalnız uçtan uca kendim doğruladığım şekli kullanıyor;
+ikinci şekil hiçbir yerde paper'a girmedi.
