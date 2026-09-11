@@ -8618,3 +8618,22 @@ script raporu değil. Kapılar içeriğin değiştiğini garanti etmiyor.
 
 Paper 10 sayfa, 6 kaynak, 16 çift (10 built), held-out 29, κ 0,71.
 Açık: `bpfsubs.h` 2023 kolunu bilmiyor.
+
+## 0119 — Şekil 1 yoğunlaştırıldı (B geri bildirimi), ve genişlik kapısı ilk kez gerçekten iş gördü
+
+Kullanıcı: şekil sütuna göre boş — kadranlar büyük, etiketler küçük. Yerleşim yeniden:
+genişlik 68→72 mm (sütunu dolduruyor), yükseklik 60→44 mm, yazı `\scriptsize`→
+`\footnotesize`, üst yarı iki giriş taşıdığı için alttan yüksek (26/18).
+
+İlk deneme **genişlik kapısına takıldı**: 258,9 pt > 241,1 pt, derleme durdu. Sebep,
+açıklamaları tek satıra almam. Kapı 0117'de "bir daha lazım olmaz" diye eklenmişti;
+iki bacak sonra ilk gerçek yakalamasını yaptı.
+
+İkinci deneme 1345 pt'lik bir overfull bıraktı, içeriği `[][]`, yeri `\sbox0{…}`
+satırı: TikZ `align=left` düğümünde **süslü grup içindeki `\\`** (`{\scriptsize\color
+{gray} a\\ b}`) ile iç kutu üretiyor. Gerçek kutu kapıdan geçiyordu (sayfaya taşma
+yok) ama gürültü. Ad ve açıklama ayrı düğümlere alındı, `\\` yalnız düğümün üst
+seviyesinde; overfull 0.
+
+§5.1 imza bloğu da önleyici olarak sağlamlaştırıldı (inconsolata yoksa cmtt ile
+4,5 pt taşıyordu): quote → footnotesize kırılabilir tabular.
