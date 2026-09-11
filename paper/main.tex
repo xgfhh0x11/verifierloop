@@ -32,9 +32,16 @@
 \subtitle{Evidential independence as a design criterion for differential testing}
 
 %% Filled at submission; the class is set `anonymous', so acmart replaces these
-%% with "Anonymous Author(s)" for review. They exist so %% CCS: required by ACM at submission. Two concepts, both 500-level, both
-%% defensible from the paper's own content -- the contribution is a testing
-%% procedure applied to a program analyser.
+%% with "Anonymous Author(s)" for review. They exist so the title block has an
+%% author to typeset at all.
+\author{Anonymous Author(s)}
+\affiliation{%
+  \institution{Anonymous Institution}
+  \country{}}
+
+%% CCS: required by ACM at submission. ONE concept, deliberately: two \ccsdesc
+%% lines were tried and acmart printed both, doubling the text
+%% ("...verification.Software testing and debug-ging...").
 \begin{CCSXML}
 <ccs2012>
    <concept>
@@ -45,20 +52,10 @@
  </ccs2012>
 \end{CCSXML}
 
-%% TEK kavram, bilerek. İki \ccsdesc denendi ve acmart ikisini de basıp metni
-%% ikiledi ("...verification.Software testing and debug-ging..."); CCS bir
-%% sınıflandırma alanı, hakem notu değil -- tek doğru satır iki bozuktan iyi.
 \ccsdesc[500]{Software and its engineering~Software testing and debugging}
 
 \keywords{differential testing, test oracles, oracle independence, blind spots,
   program analysis, eBPF verifier}
-
-\maketitle has an author
-%% block to typeset at all.
-\author{Anonymous Author(s)}
-\affiliation{%
-  \institution{Anonymous Institution}
-  \country{}}
 
 \begin{abstract}
 %% Written LAST, from Sec.1's final sentence outward. Four contributions in the
@@ -98,30 +95,6 @@ in what they consume. A prediction we pre-registered, that a widely cited techni
 would state the limitation its input provenance implies, was falsified. That failure
 is the measurement, and the argument for collecting defect data on this axis.
 \end{abstract}
-
-%% CCS: required by ACM at submission. Two concepts, both 500-level, both
-%% defensible from the paper's own content -- the contribution is a testing
-%% procedure applied to a program analyser.
-\begin{CCSXML}
-<ccs2012>
-   <concept>
-       <concept_id>10011007.10011074.10011099.10011102.10011103</concept_id>
-       <concept_desc>Software and its engineering~Software testing and debugging</concept_desc>
-       <concept_significance>500</concept_significance>
-       </concept>
-   <concept>
-       <concept_id>10011007.10011074.10011099.10011692</concept_id>
-       <concept_desc>Software and its engineering~Formal software verification</concept_desc>
-       <concept_significance>300</concept_significance>
-       </concept>
- </ccs2012>
-\end{CCSXML}
-
-\ccsdesc[500]{Software and its engineering~Software testing and debugging}
-\ccsdesc[300]{Software and its engineering~Formal software verification}
-
-\keywords{differential testing, test oracles, oracle independence, blind spots,
-  program analysis, eBPF verifier}
 
 \maketitle
 

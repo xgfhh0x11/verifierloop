@@ -8489,3 +8489,41 @@ ayrışabildiği için evidential bölüntüye çevrilemez.
 ("...verification.Software testing and debug-ging..."). Tek kavrama indirildi.
 
 Paper 10 sayfa, 6 kaynak, tanımsız atıf 0, overfull hbox 0.
+
+## 0116 — Birinci sayfa bozuktu, ve benim hiç bakmadığım tek sayfaydı
+
+Kullanıcı Overleaf'ten aldığı `paper.png`'yi gösterdi: 1. sayfada **abstract yok**,
+ortada başıboş `has an author` metni, ve belge **iki başlık bloğu** basıyor.
+
+### Sebep: kendi yorumuma çarpan bir str.replace
+
+CCS bloğunu eklerken `s.replace("\maketitle", CCS + "\maketitle")` yazdım. Python'un
+`replace`'i TÜM eşleşmeleri değiştirir, ve `\maketitle` benim kendi yorum satırımda
+da geçiyordu:
+
+```
+%% ... They exist so \maketitle has an author
+%% block to typeset at all.
+```
+
+Sonuç: CCS bloğu yorumun ortasına girdi (`%%` yalnız kendi satırını kapatır), blok
+gövdeye sızdı, `\maketitle` **yazar ve abstract tanımlanmadan önce** çalıştı, ve
+sonraki gerçek `\maketitle` başlık bloğunu ikinci kez bastı. Üstüne eski iki-kavramlı
+CCS bloğu da silinmeden kalmıştı — `\keywords` iki kez.
+
+### Ve denetimlerimin hiçbiri görmedi
+
+Sayfa sayısı, tanımsız atıf, overfull hbox, kırık referans, etiket denetimi — hepsi
+temiz döndü. Çünkü **okurun ilk gördüğü sayfaya hiç bakmamıştım**: şekli görmek için
+sayfa 3'ü, başlık bloğunu görmek için sayfa 2'yi render etmiştim, 1'i hiç.
+
+### İki kapı eklendi, ve ikisi de test edildi
+
+- **Kapı 1:** `main.tex`'te etkin (yorum olmayan) `\maketitle` sayısı 1 olmalı.
+- **Kapı 2:** basılan PDF'in **1. sayfası** `ABSTRACT` içermeli.
+
+Kapı 2'nin ilk hâli iyi derlemede de ateşliyordu: `pdftotext ... | grep -q`
+eşleşince boruyu erken kapatıyor, `pdftotext` SIGPIPE alıyor, ve `set -o pipefail`
+bunu hata sayıyor. Boru kaldırıldı. Her iki kapı bilerek bozularak doğrulandı.
+
+Paper 9 sayfa (fantom birinci sayfa gitti), tanımsız atıf 0, overfull 0.
