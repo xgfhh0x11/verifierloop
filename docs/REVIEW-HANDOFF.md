@@ -1,7 +1,7 @@
 # verifierloop — Review / Handoff Context Raporu
 
 > **Bu belgenin amacı.** Projenin **şu ana kadar nereye geldiğini** bağımsız bir
-> gözden geçiren (başka bir Claude ya da bir insan) için **iddia değil,
+> gözden geçiren (bir sonraki oturum ya da bir insan) için **iddia değil,
 > doğrulanabilir kanıt** biçiminde toplar. Her önemli iddianın yanında **(a)
 > nerede bakılır, (b) hangi komut çalıştırılır, (c) "geçti" ne demek** verilir.
 > Reviewer'ın görevi: bu iddiaları kendi eliyle koşup teyit etmek ve

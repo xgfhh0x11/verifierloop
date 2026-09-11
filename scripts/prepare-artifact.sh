@@ -4,8 +4,8 @@
 #
 # NEDEN geçmişi KORUYORUZ (squash DEĞİL): paper §4.1 ve held-out ön-kayıtları
 # "the ordering is visible in the artifact's history" diyor -- commit sırası ve zaman
-# damgaları ön-kaydın (sonuçtan ÖNCE mühürlendiğinin) kanıtı. Yalnız `Claude-Session:`
-# satırı (özel oturum linki) düşürülür; Co-Authored-By ve her şey aynen kalır.
+# damgaları ön-kaydın (sonuçtan ÖNCE mühürlendiğinin) kanıtı. Yalnız otomatik
+# atıf/oturum trailer satırları düşürülür; konu, gövde ve gerçek yazar aynen kalır.
 #
 #   scripts/prepare-artifact.sh            # -> artifact-clean dalı + rapor
 set -euo pipefail
@@ -16,16 +16,16 @@ SRC=main
 git branch -f artifact-src "$SRC" >/dev/null
 git checkout -q artifact-clean 2>/dev/null && git reset -q --hard "$SRC" || git checkout -q -b artifact-clean "$SRC"
 
-# Yalnız Claude-Session: ile başlayan satırları at; başka hiçbir şeye dokunma.
+# Otomatik atıf/oturum trailer'larını at; başka hiçbir şeye dokunma.
 FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f \
-  --msg-filter 'grep -v "^Claude-Session:" || true' -- artifact-clean >/dev/null 2>&1
+  --msg-filter 'grep -vE "^(Co-Authored-By: |Claude-Session:)" || true' -- artifact-clean >/dev/null 2>&1
 
 echo "== DOĞRULAMA =="
 n_src=$(git rev-list --count "$SRC")
 n_cln=$(git rev-list --count artifact-clean)
 echo "  commit sayısı: main=$n_src  artifact-clean=$n_cln  (eşit olmalı: sıra korundu)"
-leak=$(git log artifact-clean --format=%B | grep -c "claude.ai/code/session" || true)
-echo "  temizlenen dalda kalan session URL: $leak  (0 olmalı)"
+leak=$(git log artifact-clean --format=%B | grep -cE "^(Co-Authored-By: |Claude-Session:)" || true)
+echo "  temizlenen dalda kalan atıf/oturum satırı: $leak  (0 olmalı)"
 # ağaç içeriği birebir aynı mı (yalnız mesajlar değişti)
 diff_tree=$(git diff --stat "$SRC" artifact-clean | tail -1)
 echo "  ağaç farkı (main vs artifact-clean): ${diff_tree:-YOK (birebir aynı içerik)}"
