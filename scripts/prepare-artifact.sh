@@ -18,13 +18,13 @@ git checkout -q artifact-clean 2>/dev/null && git reset -q --hard "$SRC" || git 
 
 # Otomatik atıf/oturum trailer'larını at; başka hiçbir şeye dokunma.
 FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f \
-  --msg-filter 'grep -vE "^(Co-Authored-By: |Claude-Session:)" || true' -- artifact-clean >/dev/null 2>&1
+  --msg-filter 'grep -vE "^(Co-Authored-By: |[A-Za-z][A-Za-z-]*-Session:)" || true' -- artifact-clean >/dev/null 2>&1
 
 echo "== DOĞRULAMA =="
 n_src=$(git rev-list --count "$SRC")
 n_cln=$(git rev-list --count artifact-clean)
 echo "  commit sayısı: main=$n_src  artifact-clean=$n_cln  (eşit olmalı: sıra korundu)"
-leak=$(git log artifact-clean --format=%B | grep -cE "^(Co-Authored-By: |Claude-Session:)" || true)
+leak=$(git log artifact-clean --format=%B | grep -cE "^(Co-Authored-By: |[A-Za-z][A-Za-z-]*-Session:)" || true)
 echo "  temizlenen dalda kalan atıf/oturum satırı: $leak  (0 olmalı)"
 # ağaç içeriği birebir aynı mı (yalnız mesajlar değişti)
 diff_tree=$(git diff --stat "$SRC" artifact-clean | tail -1)
