@@ -27,11 +27,13 @@ same protocol.
 The difference is the consumption set, and it is visible without reading either
 implementation:
 
-\begin{quote}
-\ttfamily\small
+\begin{center}
+\ttfamily\footnotesize\raggedright
+\begin{tabular}{@{}l@{}}
 A: run(const insn *ins, int n, result *out)\\
 B: compare(const char *log, cmp *out)
-\end{quote}
+\end{tabular}
+\end{center}
 
 \noindent$A$'s premises are the instruction stream---upstream of the component it
 judges, and untouched by it. $B$'s premises are the abstract state the verifier
