@@ -1,5 +1,12 @@
 # verifierloop
 
+## Paper artifact
+
+This repository is the artifact for *Where a Test Oracle Reads From* (ISSTA submission). Start with [ARTIFACT.md](ARTIFACT.md) for the reproduction guide — most claims run offline in minutes (`python3 scripts/subsume-check.py --self-test`, `cargo test`, `scripts/build-paper.sh`).
+
+Licensed GPL-2.0-only ([LICENSE](LICENSE)).
+
+
 An **operational vulnerability-research lab loop** targeting the Linux **eBPF
 verifier** on the `bpf-next` kernel tree. It hunts for verifier **logic bugs**,
 **temporal-logic bugs**, and **corruption-to-primitive** research leads by
