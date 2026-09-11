@@ -52,8 +52,17 @@ bu vakayı adlandıramıyor. Doğru cevap dördüncü kategori: **yolda, ama hi�
 oracle'ın modellemediği bir parçada.** Appendix A bunu pointer kolu için zaten `u`
 işaretiyle taşıyor; §3.3 taşımıyordu.
 
-**Sonuç: §3.3'ün "ALAKASIZ = durum-eşdeğerliği yolunun dışında" tanımı yanlış;
-doğrusu "oracle'ın TÜKETTİĞİNİN dışında", ve dördüncü cevap ayrıca adlandırılmalı.**
+**Ve burada ÖN KAYDIMIN BU KISMI YANLIŞLANDI.** Ön kayıt "§3.3'ün üçlemesi
+düzeltilmeli" diyordu. Kaynağa bakınca §3.3 zaten doğru: sorduğu soru
+*"Does $d$ corrupt an artifact in $O$'s consumption set?"* — yani **tüketim
+kümesi** üzerinden tanımlı, "yol" üzerinden değil. H23 o soruya temiz bir **Hayır**
+veriyor, ve §3.3'ün "Hayır" maddesi zaten *"subject to its predicate covering the
+class"* diyor; §3.4 de gerekli-koşul/yeterli-koşul farkını ayrıca yazıyor.
+
+Gevşek olan §3.3 değil, **§5.3'ün kova adı**: *"15 of 40 lie outside the
+state-equivalence path entirely."* O kova iki farklı şeyi karıştırıyor — yolun
+gerçekten dışındakiler ve **yolda olup hiçbir oracle'ın modellemediği** parçalar.
+H23 ikincisinin held-out bir örneği. Düzeltilecek yer orası.
 
 ## 4. Kalan beş öngörü
 

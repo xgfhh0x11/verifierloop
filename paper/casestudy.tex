@@ -77,7 +77,13 @@ diff:
 \begin{itemize}
 \item \textbf{23 of 40} corrupt an artifact $B$ consumes. Structurally blind.
 \item \textbf{2 of 40} change the predicate itself. Potentially visible.
-\item \textbf{15 of 40} lie outside the state-equivalence path entirely.
+\item \textbf{15 of 40} corrupt nothing $B$ consumes. The convenient reading of
+this bucket---``outside the state-equivalence path''---is wrong, and the held-out
+work of Section~4.1 supplied the counterexample: a fix that adds a guard
+\emph{in front of} the call to the comparison, changing neither the comparison nor
+any field $B$ reads, yet sitting in the middle of the path. The bucket is defined by
+the consumption set, exactly as Section~3.3 asks, and it mixes defects that are off
+the path with defects that are on it in a part no oracle here models.
 \end{itemize}
 
 The bound is therefore $\mathrm{reach}(B) \le 2/40$. The realized reach is $1/40$:

@@ -18,25 +18,39 @@ this partition. Of the calibration performed afterwards, three pairs were
 \emph{selected using} the partition and are therefore confirmatory rather than
 independent: the partition said where to look, and looking there succeeded.
 
-Twenty-one cases are genuinely held out. One was the original: a defect classified as
+Twenty-nine cases are genuinely held out. One was the original: a defect classified as
 invisible by the procedure alone---three source lines aligned, no system built---and
-checked afterwards against the fix and the oracle's own predicate. Twenty more were
-added under a pre-registration discipline, in two batches, and the discipline is the
+checked afterwards against the fix and the oracle's own predicate. Twenty-eight more were
+added under a pre-registration discipline, in three batches, and the discipline is the
 part worth stating. The frame was fixed by a mechanical query, the sample drawn by a
 content-independent rule, and each case classified from the kernel diff alone with a
 falsifiable prediction attached. Classifications were committed \emph{before} any
 verification ran, in a separate commit from the results, so the ordering is not a
 claim about our conduct---it is visible in the artifact's history.
 
-All twenty predictions held. That number is less impressive than it looks and the
-composition says why: seventeen of the twenty were classified as lying outside the
-state-equivalence path entirely, so they test the procedure's third answer rather
-than its bound. Three tested the blind bound---the fields at issue were the
-precision flag, a register identity, and a pointer type, each of which the oracle
-reads from the system's own capture rather than recomputing---and all three were
-confirmed blind. \textbf{None tested the visible side}: not one of the twenty was
-classified as touching the predicate, so the bound's upper arm remains tested by the
-confirmatory cases only.
+All twenty-eight predictions held, and the composition matters more than the count.
+Twenty-one corrupt nothing the oracle consumes, so they answer the step's second
+case rather than testing the bound; eighteen of those lie off the
+state-equivalence path altogether. Seven tested the blind bound---the fields at issue
+were a precision flag, register identities, a pointer type, and stack-slot
+metadata, each read from the system's own capture rather than recomputed---and all
+seven were confirmed blind.
+
+The first two batches drew from an unfiltered frame and produced no case touching
+the predicate at all, leaving the bound's upper arm untested. A third batch was
+drawn from a declared stratum---the same frame restricted to fixes whose
+\emph{message} mentions pruning or state equivalence---and the stratification is
+defensible for a measured reason: in an earlier population, four fixes in forty
+carried titles naming a component the diff did not touch, so the message does not
+determine the classification the source must still make. That batch supplied the
+missing case. A fix replacing the scalar arm's equality test with an
+identity-mapping check was classified visible, and the oracle implements exactly
+that arm---indeed it is the arm on which the oracle's own calibrated positive
+fires. One further case is sharper than either arm: a fix to a second comparison
+function, correctly classified as touching the predicate, which the oracle
+nonetheless cannot see because it does not model that function. Predicate does not
+imply visible, and the held-out set now contains an instance rather than an
+assertion.
 
 Two further limits belong here rather than in Section~6, because they bound what
 these twenty establish. Verification was at source level---for each case, whether
