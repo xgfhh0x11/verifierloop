@@ -8,7 +8,7 @@
 > **abartılmış/yanlış** olanları işaretlemek.
 >
 > - **Rapor tarihi:** 2026-09-01 (0025 sonrası; önceki sürümler: 2026-08-30, 2026-08-27)
-> - **Repo kökü:** `/home/tylersec/verifierloop` — **git deposu** (branch `main`,
+> - **Repo kökü:** `<repo-root>` — **git deposu** (branch `main`,
 >   **25 commit**, HEAD `d34ca66`)
 > - **Kernel rev (hedef):** `5e289c5a4a526e870efac0ca658635c47138593a` (`.lab/kernel.rev`)
 > - **Son devlog entry'si:** `0026` — `docs/devlog/devlog.md`

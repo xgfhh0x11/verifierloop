@@ -2,7 +2,7 @@
 # run-harness-vm.sh'in f2probe için birebir eşleniği. Paylaşımlı rootfs'e AYRI bir isimle
 # kuruyor (/root/f2probe), böylece eşzamanlı av turunun diffharness'ına dokunmuyor.
 set -euo pipefail
-REPO_ROOT=/home/tylersec/verifierloop
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAB=$REPO_ROOT/.lab
 ROOTFS=$LAB/images/rootfs.img
 OUT="${1:?outfile}"

@@ -3,7 +3,7 @@
 > **Amaç:** "neyi, nereden, hangi sırayla çalıştırırım" — kopyala-çalıştır.
 > Karmaşa yok. Bir şeyi hatırlamıyorsan **§2 (sağlık + demo)** ile başla.
 >
-> - Repo kökü: `/home/tylersec/verifierloop` — **tüm komutlar buradan çalışır.**
+> - Repo kökü: `<repo-root>` — **tüm komutlar buradan çalışır.**
 > - Son güncelleme: 2026-08-28 (bu makinede probe edilerek doğrulandı).
 
 ---
