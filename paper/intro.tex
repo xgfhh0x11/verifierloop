@@ -56,9 +56,11 @@ blind-spot classes separate exactly as the axis predicts, and each side is ancho
 by calibration against real defects: fifteen pairs, most built from a kernel that
 carried the defect and one that did not, the rest settled from the defective state the
 fix's own message prints. Applying the procedure ahead of time to
-forty historical fixes shows that the more sophisticated of the two oracles targets
-5\% of the historical defect population and is structurally blind to 58\% of
-it---a result that was available before the oracle was written.
+forty historical fixes---those whose messages quote internal state, a frame we later
+measure to be enriched about fourfold for the oracle's own path---shows that the more
+sophisticated of the two oracles targets 5\% of that population and is structurally
+blind to 58\% of it; on the unfiltered complement both shares fall. Either way the
+result was available before the oracle was written.
 
 A differential oracle's blind-spot class follows from where its reference reads, not
 from how independently it was written; and because it follows, it can be measured

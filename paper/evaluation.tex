@@ -87,8 +87,21 @@ not ``trust the partition'' but ``check any row of it''.
 
 \subsection{Did it change what was done?}
 
-A bound that changes no decision has no value regardless of its correctness. One
-instance is recorded. Before the partition, the next calibration target had been
+A bound that changes no decision has no value regardless of its correctness, and
+the strongest evidence that this one does is that two oracles in this project were
+built \emph{without} it and paid for that. Oracle $B$ was designed as an independent
+reimplementation of the state-equivalence predicate---independent in the only sense
+then in use---and its evidential entanglement was discovered afterwards, by reading
+forty fixes, at which point 58\% of the population it had been built to catch turned
+out to have been unreachable from the day it was written. A store-location channel in
+the same project judged runtime writes against the verifier's own printed claim of
+where each store would land; nine successive false findings were traced, one by one,
+to that consumed claim rather than to any predicate, and the verdict had to be moved
+to an input the verifier did not produce. With the axis in hand neither design would
+have been chosen as it was. Both are recorded in the engineering log as discoveries,
+which is the point: they were not obvious at the time.
+
+A smaller instance is recorded as well. Before the partition, the next calibration target had been
 chosen by reading fix summaries. The partition classified that target as
 structurally invisible to the oracle in question and redirected the choice to a
 different defect. The redirected target produced a positive calibration; the

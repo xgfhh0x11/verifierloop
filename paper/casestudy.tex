@@ -3,6 +3,14 @@ memory safety of untrusted programs before the kernel will run them. Two oracles
 were built for it, judging different components of the analysis, and everything
 about them was held constant except the one thing this paper is about.
 
+Two things happen in this section and they carry different weight. Sections~5.1
+and~5.2 \emph{illustrate}: that an oracle reading corrupted state is blind to the
+corruption is close to analytic, and no reader should take the calibration pairs as
+tests of the axis. The tests are elsewhere---in the partition of Section~5.3, whose
+composition is an empirical fact about this population and could have come out
+otherwise; in the held-out predictions of Section~4.1; and in Section~5.4, whose
+mechanism was not derivable from the definition and had to be run to be found.
+
 \subsection{Two oracles, one difference}
 
 Oracle~$A$ judges the verifier's \emph{liveness analysis}---the analysis deciding
@@ -91,10 +99,13 @@ the second predicate defect lies in an arm of the predicate that $B$ does not
 implement, which is exactly the gap between a necessary condition and a sufficient
 one that Section~3.4 insists on.
 
-Read the other way: the more sophisticated of the two oracles is structurally blind
-to \textbf{58\%} of its subject's documented defect history, and targets
-\textbf{5\%}. Both numbers were obtainable before the oracle existed, from material
-the project already had, at the cost of opening forty commits.
+Read the other way: within this frame the more sophisticated of the two oracles is
+structurally blind to \textbf{58\%} of the defects and targets \textbf{5\%}. Both
+numbers are properties of the frame as much as of the oracle---Section~6 measures the
+frame's enrichment for the oracle's own path at about fourfold, and on the unfiltered
+complement the on-path share is 3 of 20 with no predicate defect among them---and both
+were obtainable before the oracle existed, from material the project already had, at
+the cost of opening forty commits.
 
 \subsection{What the campaign could not have told us}
 
@@ -139,7 +150,11 @@ governs the model's independent arithmetic as a switch rather than as an operand
 a register's range had been emptied by an upstream defect, the oracle's range
 comparison never executed: every scalar register was short-circuited out and the
 oracle agreed without looking. The switch is therefore what makes that pair a boundary, and the
-measurement says so rather than inferring it. A defect above
+measurement says so rather than inferring it. This cuts slightly against the
+paper's own economy: the bound came from reading, but the mechanism behind one of its
+boundaries came from running, and we do not think the mechanism was recoverable
+without the run. The procedure bounds; calibration explains. The two are not the same
+act and the paper should not be read as claiming the first replaces the second. A defect above
 such a switch is not mis-decided; it is never examined---which is a stronger and
 narrower statement than blindness by shared value, and the one the axis should be
 read to make.

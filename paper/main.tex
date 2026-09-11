@@ -98,10 +98,13 @@ We apply the procedure once and deeply, to two oracles for the Linux eBPF verifi
 built under identical discipline and differing in one respect visible in their type
 signatures, each side anchored by calibration against real defects. Their blind-spot
 classes separate as the axis predicts. Ahead of construction, the procedure showed
-that the more sophisticated oracle targets 5\% of the component's documented defect
-history and is structurally blind to 58\% of it; at volume, the region where that
-oracle agreed with the kernel most completely proved to be a region where it agreed
-for the wrong reason.
+that, of forty documented fixes whose messages quote the verifier's internal state,
+the more sophisticated oracle targets 5\% and is structurally blind to 58\%. That
+frame is enriched for the oracle's own operating region---we measure the enrichment
+at roughly fourfold---so on an unfiltered frame both shares fall; what does not change
+is that the partition was available before the oracle was written. At volume, the
+region where that oracle agreed with the kernel most completely proved to be a region
+where it agreed for the wrong reason.
 
 Finally, we report that the procedure cannot today be applied to a second system from
 the published record. Defect taxonomies are organized by symptom and by
