@@ -1,6 +1,9 @@
 \begin{figure}[t]
 \centering
-\begin{tikzpicture}[x=1mm,y=1mm,font=\scriptsize]
+%% KAPI: TikZ kutusu sutun genisligini asarsa LaTeX overfull hbox UYARMAZ -- kutu
+%% sessizce komsu sutunun ustune tasar. Olcup derlemeyi durduruyoruz.
+%% Olculen (2026-09-11): kutu 210.7pt, \columnwidth 241.1pt.
+\sbox0{\begin{tikzpicture}[x=1mm,y=1mm,font=\scriptsize]
   \definecolor{gridgrey}{gray}{0.72}
   \definecolor{bandgrey}{gray}{0.93}
 
@@ -17,8 +20,8 @@
   \node[rotate=90,anchor=south,align=center] at (-1,30)
     {evidential independence $\rightarrow$};
 
-  \node[anchor=north west,gray] at (1,-6.5) {\itshape shares the system's logic};
-  \node[anchor=north east,gray] at (68,-6.5) {\itshape written independently};
+  \node[anchor=north west,gray] at (0,-10) {\itshape shares the system's logic};
+  \node[anchor=north east,gray] at (68,-10) {\itshape written independently};
 
   %% --- üst-sol: mantığı paylaşıyor, kanıtı paylaşmıyor
   \node[anchor=west,align=left] at (2,54)
@@ -44,7 +47,11 @@
 
   \node[anchor=south,align=center] at (49.5,64)
     {\itshape the canonical definition\\[-2pt]\itshape constrains this half only};
-\end{tikzpicture}
+\end{tikzpicture}}%
+\ifdim\wd0>\columnwidth
+  \typeout{FIGWIDTH-ERROR box=\the\wd0 column=\the\columnwidth}%
+\fi
+\usebox0
 \caption{The two axes, with the techniques of Section~7 placed on both. Height is
 what an oracle reads: low means it reads what the system produced, high means it reads
 something upstream of that. The shaded

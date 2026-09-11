@@ -8527,3 +8527,29 @@ eşleşince boruyu erken kapatıyor, `pdftotext` SIGPIPE alıyor, ve `set -o pip
 bunu hata sayıyor. Boru kaldırıldı. Her iki kapı bilerek bozularak doğrulandı.
 
 Paper 9 sayfa (fantom birinci sayfa gitti), tanımsız atıf 0, overfull 0.
+
+## 0117 — Şekil 1'in eksen etiketi çakışıyordu, ve üçüncü kapı
+
+Kullanıcı şeklin ekran görüntüsünü gösterdi. İlk okumam yanlıştı: kenardaki harf
+parçalarına bakıp "şekil sütunu taşıp sol sütunu eziyor" sandım. Ölçtüm — TikZ
+kutusu **210,7pt**, `\columnwidth` **241,1pt**, yani sığıyor. Parçalar kullanıcının
+kırpmasının sol sütunun sağ kenarını kesmesiydi (satır sonlarındaki tireler ele
+veriyordu).
+
+**Ama tam sayfada gerçek bir kusur vardı:** alt eksende `shares the system's logic`
+ile `implementation independence →` üst üste biniyordu. Başlık y=−5'ten aşağı,
+griler y=−6,5'ten aşağı uzanıyor; x'te de 10–26 aralığında kesişiyorlardı. Griler
+y=−10'a alındı.
+
+**Ve bu, hiçbir otomatik denetimimin göremeyeceği türdü.** Sayfa sayısı, tanımsız
+atıf, overfull hbox, etiket denetimi, 1. sayfa kapısı — hepsi temizdi. Çakışma
+görsel; göz ister, ve gözü kullanıcı verdi.
+
+**Üçüncü kapı yine de eklendi**, çünkü ilk şüphem (taşma) gerçek bir sınıf ve
+sinsi: bir TikZ kutusu sütundan genişse LaTeX **overfull hbox uyarmaz**, kutu
+sessizce komşu sütunun üstüne taşar. `fig-axes.tex` artık kendi genişliğini
+ölçüyor (`\sbox0` + `\ifdim\wd0>\columnwidth`), `build-paper.sh` da logdan
+yüzeye çıkarıp derlemeyi durduruyor. Bilerek genişletilerek test edildi:
+`FIGWIDTH-ERROR box=469.8pt column=241.1pt`.
+
+Üç kapı artık: tek `\maketitle`, 1. sayfada ABSTRACT, şekil ≤ sütun.

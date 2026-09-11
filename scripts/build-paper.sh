@@ -35,6 +35,12 @@ if command -v pdftotext >/dev/null 2>&1; then
     *) echo "[paper] HATA: 1. sayfada ABSTRACT yok -- baslik blogu bozuk" >&2; exit 1 ;;
   esac
 fi
+# KAPI 3: TikZ kutusu sutundan genisse LaTeX overfull hbox UYARMAZ; kutu sessizce
+# komsu sutunun ustune tasar. fig-axes.tex olcuyor, burada yuzeye cikariyoruz.
+fw=$(grep -c "FIGWIDTH-ERROR" main.log 2>/dev/null || true); fw=${fw:-0}
+[ "$fw" = "0" ] || { grep -m1 "FIGWIDTH-ERROR" main.log >&2; \
+  echo "[paper] HATA: sekil sutundan genis -- daralt ya da figure* yap" >&2; exit 1; }
+
 echo "[paper] $(pdfinfo main.pdf 2>/dev/null | awk '/^Pages/{print $2}') sayfa -> $OUT/main.pdf"
 # NOT: bu ortamda `grep` ugrep ve `-c` sifir sayimda hicbir sey basmiyor -- sayimi
 # kabukta yapiyoruz ki "0" ile "grep sustu" ayni goze gelmesin.
