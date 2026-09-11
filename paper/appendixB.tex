@@ -32,14 +32,15 @@ fix & oracle & & evidence & what the pair established \\
 \texttt{fd675184fc7a} & B & P & \textsc{built} & min/max containment---a second, older arm \\
 \texttt{cd5b460ed1ec} & B & P & \textsc{built} & arc containment; the input, not the oracle, was the blocker \\
 \texttt{f54c7898ed1c} & B & B & \textsc{source} & the precision short-circuit (Section~5.4) \\
+\texttt{1ffc85d9298e} & B & P & \textsc{built} & the visible held-out case; silent until the oracle learned the era (\S4.1) \\
 \bottomrule
 \end{tabular}
 \end{table*}
 
-\noindent Fifteen pairs are listed. Nine were built; five were established from the
+\noindent Sixteen pairs are listed. Ten were built; five were established from the
 state the commit message itself prints; one from source alone. Section~5.2's summary
 should be read against Table~\ref{tab:pairs}'s evidence column: the design calls for
-two builds per pair, and six of the fifteen did not need them because the defective
+two builds per pair, and six of the sixteen did not need them because the defective
 state was already on the
 record or the alignment was decidable without running anything. Reporting that is
 cheaper than pretending otherwise, and it is also the point of Section~3.5---the

@@ -8553,3 +8553,68 @@ yüzeye çıkarıp derlemeyi durduruyor. Bilerek genişletilerek test edildi:
 `FIGWIDTH-ERROR box=469.8pt column=241.1pt`.
 
 Üç kapı artık: tek `\maketitle`, 1. sayfada ABSTRACT, şekil ≤ sütun.
+
+## 0118 — Sekiz itiraz, üç deney: sayılar çerçeveye bağlandı, görünür kol kuruldu, reproducibility ölçüldü
+
+Hakem sekiz itiraz ve üç sıralı hamle verdi: (a) abstract'ı çerçeveye bağla, (b) görünür
+kolu bir build'le kanıtla, (c) inter-rater'ı koş. Üçü de yapıldı; ikisi beklenmedik şey
+buldu.
+
+### (a) 58%/5% dört yerde koşulsuz satılıyordu
+Yalnız §6 koşul koyuyordu. Abstract, §1, §5.3, §8 artık çerçeveye bağlı ("of forty
+documented fixes whose messages quote the verifier's internal state"), dört-kat
+zenginleştirme yanında, filtresiz tümleyenin kendi sayısı (3/20 yolda, yüklem sıfır)
+§5.3'te. İtiraz 5 de işlendi: kırılan gereklilik şişiren yönde kırılmıştı — basılı
+verifier durumuna göre seçilmiş çerçeve, oracle'ın girdilerine göre seçilmiş çerçevedir.
+
+### (b) H21 kuruldu — ve ilk koşumda model SUSTU
+Bir tur önce "marjinal, pahalı" diye karşı çıkmıştım; hakem "9 pair build ettin, tek
+görünür vakayı etmedin — denedik-tutmadı kokuyor" dedi ve haklıydı: mesele bilgi
+değil güvenilirlikti. `1ffc85d9298e~1`/`1ffc85d9298e` derlendi (config byte-özdeş),
+üç dönem yaması uymadı → dördüncüsü yazıldı (2021 bloğunun `hit:` etiketine portu),
+tetikleyici commit mesajının kendi örneği.
+
+Kernel kanalı kalibre: buggy STATE_FREQ ile accept, fixed reject. **Model kanalı: ilk
+koşum sessiz** — kritik çift yakalanmış ve commit örneğiyle birebir (old r6/r7 id=3;
+cur r6 id=2, r7 id=3), ama `id_checks=0`. Sebep: `live=` taşıyan her satır 2021
+koluna gidiyor ve o kolda `check_scalar_ids` tasarım gereği yok. 2023-06 iki dönemin
+arasında; **aynı basım biçimi iki yüklem taşıyor, biçim dönemi belirleyemiyor.**
+Kaynak-düzeyi "kol uygulanmış" okuması cnum yolu için doğru, bu yakalamanın yolu için
+yanlıştı. Koşum bunu buldu, okuma bulamazdı — eksenin oracle'ın içinde gözlenmesi.
+
+Düzeltme açık `--era 2023` bayrağı (çıkarım değil). İkinci koşum: buggy `candidate
+insn=14 arm=check_scalar_ids` disagree=1; fixed disagree=0 ve prune olayı yok oluyor;
+`--era 2021` kontrolü sessiz. `2f2ec8e7730e`'nin birebir imzası. Model koşumdan SONRA
+değiştiği için H21 held-out onay değil **kurulmuş onaltıncı çift**; §4.1 sırayı
+olduğu gibi anlatıyor ve ilk sessizliği çalışmanın en keskin sonucu sayıyor.
+
+### (c) κ = 0,71, ve üç uyumsuzluğun üçü aynı dikişte
+Rater 2 = taze bağlamlı model örneği, etiketlere erişimsiz, yalnız paket + B'nin kaynağı.
+28 vakada ham uyum 25/28, **κ = 0,714** (substantial; ön kayıttaki 0,6 yanlışlanma
+eşiği aşılmadı, 0,8 tutulmadı). Rater 2 **iki kez Undecided** dedi; ben 68
+sınıflandırmada sıfır — hakemin "isteksizlik" şüphesi artık ölçülü.
+
+Üç uyumsuzluk da **stack slotuna yazan** fix'ler: B stack slotlarını hiç tüketmiyor.
+Ben "iki kez kör, Yes" demiştim; Rater 2 "tüketilmiyor, No/Undecided". Körlükte
+hemfikir, kovada değil — ve haklı olan soru değil: §3.3'ün "No"su hem "oracle'ın
+bakabildiği ama bu hatada bozulmamış" hem "oracle'ın hiç okumadığı" şeyi kapsıyordu,
+yalnız ilki potansiyel olarak görünür. H23 aynı seamı diğer taraftan açmıştı. §3.3
+düzeltildi: "No" ikiye ayrıldı.
+
+Amiral 40 yeniden puanlanamadı — liste saklanmamıştı; §4.2 "check any row" iddiasını
+buna göre daralttı. Rater 2 insan değil; deneyin ölçtüğü şey paper'da o sınırla.
+
+### Diğer itirazlar
+(1) §4.3'e eksen olmadan yapılmış iki gerçek tasarım hatası: B "bağımsız" diye kurulup
+dolanıklığı 40 fix okununca anlaşıldı; store-location kanalı verifier'ın kendi iddiasını
+tüketip dokuz yanlış bulgu verdi. (2) §5 açılışı hangi kısmın resmettiğini, hangisinin
+test ettiğini söylüyor. (7) §3.4 bound'un gevşekliğine ad koydu (yüklem kapsamı) ve
+oracle kaynağından sıkılaştırılabilir dedi. (Not 1) §5.4 okuma/koşum gerilimini
+sahipleniyor. (Not 2) §7 EMI negatifinin kaydı ölçtüğünü, ekseni değil, açıkça yazıyor.
+
+Bir de kendi hatam: ilk düzenleme scripti §4.5'in anchor'ında düştü ve HİÇBİR düzenleme
+yazılmadan derleme "başarılı" dedi — 10 sayfa, kapılar yeşil. Sonucu görüp anladım,
+script raporu değil. Kapılar içeriğin değiştiğini garanti etmiyor.
+
+Paper 10 sayfa, 6 kaynak, 16 çift (10 built), held-out 29, κ 0,71.
+Açık: `bpfsubs.h` 2023 kolunu bilmiyor.

@@ -61,8 +61,13 @@ Does $d$ corrupt an artifact in $O$'s consumption set?
 \begin{itemize}
 \item \textbf{Yes} --- $O$ consumes the corruption and reproduces it. $d$ is in
       $O$'s blind class, structurally and regardless of $O$'s predicate.
-\item \textbf{No} --- $O$ may observe $d$, subject to its predicate covering the
-      class. This is a necessary condition, not a sufficient one.
+\item \textbf{No} --- $d$ corrupts nothing $O$ consumes. This answer covers two
+      situations that must be kept apart. If $d$ lies in an artifact $O$ never reads
+      at all, $O$ is blind to it as surely as in the first case, for a different
+      reason. If $d$ lies in something $O$ does examine, $O$ \emph{may} observe it,
+      subject to its predicate covering the class---a necessary condition, not a
+      sufficient one. The reproducibility measurement of Section~4.5 found that
+      independent readers split exactly on this seam, which is why it is named here.
 \item \textbf{Undecided} --- the fix does not settle the question from source.
 \end{itemize}
 

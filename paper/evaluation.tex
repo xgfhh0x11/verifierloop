@@ -59,12 +59,24 @@ defect from its fix, without building anything, is not a shortcut---it is the
 procedure, and doing it any other way would not be testing the procedure at all.
 Checking afterwards whether the field that defect touches enters the oracle's
 verdict as a consumed value or an independently recomputed one is a different act,
-and there a build would be stronger evidence than a reading. No system was built for
-any of the twenty-eight. The case where this costs most is the visible one: the
-prediction that the oracle can observe a defect in the arm it models rests on that
-arm being implemented and on its firing having been demonstrated
-elsewhere---compiling the kernel at that defect and running the oracle on it would
-settle in one measurement what is currently settled by two readings joined together.
+and there a build is stronger evidence than a reading. For twenty-seven of the
+twenty-eight, no system was built. For the visible case we built both kernels,
+because a reading-only confirmation of the one prediction on the visible side would
+have been the weakest link in the study, and what the build returned is more useful
+than a confirmation. On the first run the oracle was \emph{silent} on the defective
+kernel, although the capture contained exactly the pair the fix's own commit message
+describes. The cause was not the predicate: the oracle routes captures to an
+era-specific implementation of the comparison by their print format, the 2023 format
+is shared with a 2021 era whose comparison legitimately had no identity check, and
+the oracle had no arm for the year in between. The source-level reading ``the arm is
+implemented'' had been true of one path through the oracle and false of the path this
+input took. With the era stated explicitly the oracle fired on the defective kernel
+with the predicted arm and was silent on the fixed one, where the pruning event
+itself no longer occurs; the same capture under the old routing stays silent. We
+count this as a built calibration pair, not as a held-out confirmation, because the
+oracle was changed after the first run; and we count the first run as the study's
+sharpest result, because it is the axis observed inside the oracle: what the oracle
+did was decided by what it read.
 
 The second limit is a wording error of ours. One prediction's falsification
 condition, as written in the first batch, conflated ``modelled in the oracle'' with
@@ -127,13 +139,26 @@ own; and the scope statements techniques do publish are component-scoped rather 
 input-scoped, which Section~7 shows is not the same partition. Section~7 names the study that would supply the missing data and the design
 it must have.
 
-\subsection{What is not evaluated}
+\subsection{Reproducibility, measured once}
 
-Reproducibility. Two analysts applying Section~3 to the same population should
-produce the same partition, and we have not measured whether they do. Our own
-partition was produced with assistance and only the decision-changing case was
-audited by hand; the absence of undecided cases in a forty-defect population is
-suspicious rather than reassuring, since the procedure explicitly permits that
-answer and something should have used it. An inter-rater study over a fixed
-population is the smallest experiment that would settle this, and it needs no system
-at all---which is the same property that makes the procedure cheap.
+Two analysts applying Section~3 to the same population should produce the same
+partition. We measured this on the twenty-eight held-out cases with a second rater
+that had no access to the first rater's labels: an independent model instance given
+only the question of Section~3.3, a factual description of the oracle's consumption
+set, and the diffs. It is not a human rater, and what the experiment measures is
+correspondingly narrower---whether an independent reader of the same source, asked
+the same question, gives the same answer.
+
+Raw agreement was 25 of 28; Cohen's $\kappa = 0.71$, substantial but not
+near-perfect, and above the threshold we pre-registered as falsifying the
+auditability claim. Two details matter more than the coefficient. The second rater
+answered \emph{Undecided} twice; the first rater answered it zero times in
+sixty-eight classifications, which Section~6 had already flagged as suspicious, and
+the flag now has a measurement behind it. And the three disagreements are not
+scattered: all three are fixes that write a \emph{stack slot}, which this oracle does
+not consume at all. The first rater called them blind-by-corruption (Yes); the second
+called them not-consumed (No) or Undecided. Both readers agree the oracle is blind to
+them; they disagree on which of the step's answers that blindness belongs to, and the
+step's wording is what is at fault: its ``No'' covers both a defect the oracle could
+in principle observe and a defect in an artifact the oracle never reads, and only the
+first is potentially visible. Section~3.3 is corrected accordingly.
