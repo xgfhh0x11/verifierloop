@@ -8637,3 +8637,37 @@ seviyesinde; overfull 0.
 
 §5.1 imza bloğu da önleyici olarak sağlamlaştırıldı (inconsolata yoksa cmtt ile
 4,5 pt taşıyordu): quote → footnotesize kırılabilir tabular.
+
+## 0120 — Amiral bölüntü yeniden üretildi: manşet 58 → 42, κ = 0,86, ve liste artık artefakt
+
+Hakem A: 40'lık listenin tutulmamış olması "yeni ve ters yönde bir yara" — manşet,
+denetlenebilirliğin satamadığı bölüntüden geliyordu. Soru: kurtarılabilir mi?
+
+**Hayır.** 0102'nin ölçütü ("gövdesinde verifier durumu alıntılayan") bir yargıydı; en
+yakın mekanik proxy 68 veriyor, 50 değil. Eski oturum scratchpad'lerinde ve `.lab`'da
+fan-out artefaktı yok; devlog'da 9 SHA. Wording ile yönetmek yerine **yeniden üretildi**:
+
+- **Çerçeve mekanik ve dosyada:** `Fixes:` + altı dosya + gövde regex'i → 68; eksi 16
+  kalibrasyon, eksi 28 held-out → **57**.
+- **İki rater, eşzamanlı, birbirini görmeden:** Rater 1 (bu oturum) 57 diff'i yalnız
+  kaynaktan sınıflandırıp Rater 2 dosyasını okumadan commit etti (`04905f0`); Rater 2
+  (kör model örneği) aynı paketi etiketlere erişimsiz puanladı.
+
+**Bileşim:** R1 **24 Yes / 31 No-unconsumed / 1 No-examined / 1 Undecided**; R2 27 / 29
+/ 1. Kör pay **%42** (R2: %47), yüklem tarafı **1/57** (`1ad2f5838d34`, pointer kolu —
+B modellemiyor), gerçekleşen erişim **0/57**. Eski 23/2/15 (58/5) yeniden üretilemedi;
+ön kayıt gereği manşet yeni sayıya çekildi: abstract, §1, §5.3, §8, §3.4'ün örneği
+(2/40→1 idi, şimdi 1/57→0), §6'nın Fisher'ı (25/57 vs 3/20, p=0,030, ~3 kat).
+
+**κ = 0,864** (53/57, almost perfect); held-out 28'de 0,714 idi. Dört uyumsuzluk, ve
+**ikisinde haklı olan Rater 2**: Rater 1 diff'leri 16–28 satırlık kesitlerle okudu
+(57'yi tek oturumda geçmek için), Rater 2 9000 karakter gördü; `bb7f0f989ca7` ve
+`fce366a9dd0d`'de R1'in kesitinde olmayan hunk'lar sınır/type yazıyor. Protokol
+asimetrisi kayıtta; altın ön kayıt gereği değiştirilmedi; gerçek pay %42–47 arası.
+
+§4.2'nin "check any row" iddiası amiral bölüntü için **artık gerçekten doğru**, ve
+paper bunun nasıl kaybedilip geri kazanıldığını anlatıyor: "the cost of not keeping
+[the list] was a headline number that had to be withdrawn."
+
+B ve C de kapandı (görünür-kol asimetrisi §4.1'de açık; conclusion "from source alone"
+kalibre). Paper 11 sayfa, tanımsız atıf 0, overfull 0, üç kapı yeşil.

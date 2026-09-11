@@ -98,11 +98,12 @@ We apply the procedure once and deeply, to two oracles for the Linux eBPF verifi
 built under identical discipline and differing in one respect visible in their type
 signatures, each side anchored by calibration against real defects. Their blind-spot
 classes separate as the axis predicts. Ahead of construction, the procedure showed
-that, of forty documented fixes whose messages quote the verifier's internal state,
-the more sophisticated oracle targets 5\% and is structurally blind to 58\%. That
-frame is enriched for the oracle's own operating region---we measure the enrichment
-at roughly fourfold---so on an unfiltered frame both shares fall; what does not change
-is that the partition was available before the oracle was written. At volume, the
+that, of fifty-seven documented fixes whose messages quote the verifier's internal
+state, the more sophisticated oracle is structurally blind to 42\% and can target
+2\%. That frame is enriched for the oracle's own operating region---we measure the
+enrichment at roughly threefold---so on an unfiltered frame both shares fall; what
+does not change is that the partition was available before the oracle was written,
+and that an independent blind rater reproduces it ($\kappa = 0.86$). At volume, the
 region where that oracle agreed with the kernel most completely proved to be a region
 where it agreed for the wrong reason.
 
@@ -152,7 +153,7 @@ is the measurement, and the argument for collecting defect data on this axis.
 %% DRAFTED — see paper/casestudy.tex. Contract honoured:
 %%   5.1 the two oracles contrasted at their INPUT (signatures carry it)
 %%   5.2 calibration, two anchors per oracle, one of them a required SILENCE
-%%   5.3 the procedure applied ahead of the oracle; bound 2/40, realized 1/40
+%%   5.3 the procedure applied ahead of the oracle; bound 1/57, realized 0/57 (rebuilt partition; the original 40 was unrecoverable)
 %%   5.4 the verification of 2.4 — agreement at volume, for the wrong reason
 %% No chronology: nothing here is justified by the order in which it happened.
 \input{casestudy}

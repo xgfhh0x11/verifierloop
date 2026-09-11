@@ -75,39 +75,51 @@ $B$ is not less careful than $A$. It is blind for a reason legible in its signat
 
 \subsection{The procedure, applied ahead of the oracle}
 
-The population is forty fixes to the component's history. It satisfies Section~3.2's
+The population is fifty-seven fixes to the component's history, and how it was
+assembled matters. A first partition of forty fixes was made early in the project and
+its per-commit list was not retained; its aggregate---23 blind, 2 predicate, 15
+outside---was the paper's headline until the list was found unrecoverable, at which
+point the partition was rebuilt under a pre-registered protocol with a mechanical
+frame: every fix with a \texttt{Fixes:} trailer touching the state-equivalence files
+whose message matches a fixed pattern for printed verifier state, minus the sixteen
+calibration pairs and the twenty-eight held-out cases already classified. The frame,
+both raters' files, and every anchor are artifacts; Section~4.2's claim now holds for
+this partition without qualification. The population satisfies Section~3.2's
 precondition: it is not drawn from what any oracle here reported. It does
-\emph{not} satisfy the weaker second requirement---the frame selected fixes whose
-messages quote internal state, a property that may correlate with how a defect was
-found---and that bias is carried into Section~6 rather than left here.
+\emph{not} satisfy the weaker second requirement---the frame selects on printed
+internal state, a property that may correlate with how a defect was found---and that
+bias is carried into Section~6 rather than left here.
 
 Each fix was classified by the single question of Section~3.3, decided from the
-diff:
+diff, by two raters who did not see each other's labels:
 
 \begin{itemize}
-\item \textbf{23 of 40} corrupt an artifact $B$ consumes. Structurally blind.
-\item \textbf{2 of 40} change the predicate itself. Potentially visible.
-\item \textbf{15 of 40} corrupt nothing $B$ consumes. The convenient reading of
+\item \textbf{24 of 57} corrupt an artifact $B$ consumes. Structurally blind.
+\item \textbf{1 of 57} changes the predicate itself, in the pointer arm.
+\item \textbf{31 of 57} corrupt nothing $B$ consumes. The convenient reading of
 this bucket---``outside the state-equivalence path''---is wrong, and the held-out
 work of Section~4.1 supplied the counterexample: a fix that adds a guard
 \emph{in front of} the call to the comparison, changing neither the comparison nor
 any field $B$ reads, yet sitting in the middle of the path. The bucket is defined by
 the consumption set, exactly as Section~3.3 asks, and it mixes defects that are off
 the path with defects that are on it in a part no oracle here models.
+\item \textbf{1 of 57} undecided from source.
 \end{itemize}
 
-The bound is therefore $\mathrm{reach}(B) \le 2/40$. The realized reach is $1/40$:
-the second predicate defect lies in an arm of the predicate that $B$ does not
-implement, which is exactly the gap between a necessary condition and a sufficient
-one that Section~3.4 insists on.
+The bound is therefore $\mathrm{reach}(B) \le 1/57$. The realized reach is $0/57$:
+the one predicate defect lies in the pointer arm, which $B$ does not implement---the
+gap between a necessary condition and a sufficient one that Section~3.4 insists on.
+The second rater's partition differs in four rows and puts the blind share at 47\%
+rather than 42\%; two of the four are cases where the first rater read a truncated
+excerpt and the second read the full diff, so the truth is likely between them.
 
 Read the other way: within this frame the more sophisticated of the two oracles is
-structurally blind to \textbf{58\%} of the defects and targets \textbf{5\%}. Both
+structurally blind to \textbf{42\%} of the defects and can target \textbf{2\%}. Both
 numbers are properties of the frame as much as of the oracle---Section~6 measures the
-frame's enrichment for the oracle's own path at about fourfold, and on the unfiltered
-complement the on-path share is 3 of 20 with no predicate defect among them---and both
-were obtainable before the oracle existed, from material the project already had, at
-the cost of opening forty commits.
+frame's enrichment for the oracle's own path at about threefold, and on the
+unfiltered complement the on-path share is 3 of 20 with no predicate defect among
+them---and both were obtainable before the oracle existed, from material the project
+already had, at the cost of opening fifty-seven commits.
 
 \subsection{What the campaign could not have told us}
 

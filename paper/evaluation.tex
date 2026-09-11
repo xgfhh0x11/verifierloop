@@ -98,15 +98,14 @@ open it and re-derive the decision in minutes, without the system, the corpus, o
 any part of our infrastructure.
 
 This is what a classification procedure can offer in place of a score. The claim is
-not ``trust the partition'' but ``check any row of it''---and for the flagship
-partition of Section~5.3 we must qualify it. The forty fixes were classified with
-their anchors recorded in an engineering log, but the per-commit list itself was not
-retained as a single artifact; what survives is the aggregate and a handful of named
-cases. A reader can check the rows that are named and cannot enumerate the rest. The
-twenty-eight held-out cases of Section~4.1 were recorded row by row from the start,
-and the reproducibility measurement of Section~4.5 is therefore run on them rather
-than on the forty. The lesson is procedural and we state it as one: a partition's
-value as evidence depends on keeping the list.
+not ``trust the partition'' but ``check any row of it''---and it now holds for every partition
+in the paper. It did not always. The first flagship partition, of forty fixes, was
+classified with anchors recorded in an engineering log but without retaining the
+per-commit list as one artifact; when a reviewer asked whether its rows could be
+checked, they could not be enumerated, and the partition was rebuilt from a
+mechanical frame with both raters' files kept (Section~5.3). The lesson is procedural
+and we state it as one: a partition's value as evidence depends on keeping the list,
+and the cost of not keeping it was a headline number that had to be withdrawn.
 
 \subsection{Did it change what was done?}
 
@@ -115,8 +114,8 @@ the strongest evidence that this one does is that two oracles in this project we
 built \emph{without} it and paid for that. Oracle $B$ was designed as an independent
 reimplementation of the state-equivalence predicate---independent in the only sense
 then in use---and its evidential entanglement was discovered afterwards, by reading
-forty fixes, at which point 58\% of the population it had been built to catch turned
-out to have been unreachable from the day it was written. A store-location channel in
+the first partition, at which point close to half of the population it had been built
+to catch turned out to have been unreachable from the day it was written. A store-location channel in
 the same project judged runtime writes against the verifier's own printed claim of
 where each store would land; nine successive false findings were traced, one by one,
 to that consumed claim rather than to any predicate, and the verdict had to be moved
@@ -152,12 +151,17 @@ set, and the diffs. It is not a human rater, and what the experiment measures is
 correspondingly narrower---whether an independent reader of the same source, asked
 the same question, gives the same answer.
 
-Raw agreement was 25 of 28; Cohen's $\kappa = 0.71$, substantial but not
-near-perfect, and above the threshold we pre-registered as falsifying the
-auditability claim. Two details matter more than the coefficient. The second rater
-answered \emph{Undecided} twice; the first rater answered it zero times in
-sixty-eight classifications, which Section~6 had already flagged as suspicious, and
-the flag now has a measurement behind it. And the three disagreements are not
+On the held-out cases, raw agreement was 25 of 28 and Cohen's $\kappa = 0.71$,
+substantial but not near-perfect. On the rebuilt flagship partition of fifty-seven,
+agreement was 53 of 57 and $\kappa = 0.86$. Both are above the threshold we
+pre-registered as falsifying the auditability claim. The second measurement carries a
+caveat the first does not: the first rater read the fifty-seven diffs as truncated
+excerpts and the second read them in full, and two of the four disagreements are
+plainly the first rater's under-reading. Two details matter more than the coefficient. On the held-out cases the second rater
+answered \emph{Undecided} twice; the first rater answered it zero times in the
+sixty-eight classifications up to that point, which Section~6 had already flagged as
+suspicious, and the flag now has a measurement behind it. On the rebuilt flagship
+partition each rater answered it once, on different cases. And the three disagreements are not
 scattered: all three are fixes that write a \emph{stack slot}, which this oracle does
 not consume at all. The first rater called them blind-by-corruption (Yes); the second
 called them not-consumed (No) or Undecided. Both readers agree the oracle is blind to
