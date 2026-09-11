@@ -8671,3 +8671,19 @@ paper bunun nasıl kaybedilip geri kazanıldığını anlatıyor: "the cost of n
 
 B ve C de kapandı (görünür-kol asimetrisi §4.1'de açık; conclusion "from source alone"
 kalibre). Paper 11 sayfa, tanımsız atıf 0, overfull 0, üç kapı yeşil.
+
+## 0121 — Üç küçük dikiş: §4.5'in çerçevesi, Appendix B köprüsü, ve boş son sayfa
+
+- **§4.5:** model-rater'ın ne teslim ettiği tek cümlede: katsayı denetlenebilirliği
+  kurtarmıyor, ölçülebilir kılıyor; asıl ürün dikiş, ve o rater'ın insan olmasına bağlı
+  değil çünkü kusur adımın ifadesinde. İnsan çalışması düzeltilmiş adım için effect
+  size verir, düzeltmeyi değil — o zaten elde.
+- **Appendix B, `1ffc85d9298e` satırı:** format-çarpışması detayı (2023 biçimi 2021 ile
+  ortak, aradaki yıl için kol yok — routing boşluğu, yüklem değil) ve §4.1 köprüsü.
+  Hakem haklıydı: paper'ın en iyi anında okuru appendix'ten §4.1'e döndürmemek gerekir.
+- **Boş son sayfa.** `table*[t]` çift sütunda yalnız sayfa üstüne gidebiliyor; son
+  öğe olunca 11. sayfaya tek başına düşüyordu. `\clearpage` ters tepti (12 sayfa,
+  REFERENCES yalnız); `dbltopfraction` işe yaramadı (float sayfa ortasında karşılaşınca
+  ancak SONRAKİ sayfa üstüne gidebiliyor). Çözüm: Tablo 3 tek sütunlu `table[h]`,
+  açıklama sütunu `p{0.46\columnwidth}`. **10 sayfa**, son sayfada iki tablo + appendix
+  metni + kaynakça; gözle doğrulandı.

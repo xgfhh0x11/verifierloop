@@ -30,6 +30,13 @@
 
 %% Fig.1 (the 2x2) is TikZ; acmart does not load it.
 \usepackage{tikz}
+%% Float fractions loosened so a top float is not stranded alone on a final page.
+%% (Appendix B's table was also made single-column for the same reason: a table*
+%% met mid-page can only go to the NEXT page top.)
+\renewcommand{\dbltopfraction}{0.92}
+\renewcommand{\dblfloatpagefraction}{0.85}
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\textfraction}{0.07}
 
 %% PAGE BUDGET — deliberately left as a parameter rather than a number.
 %% ACM/ISSTA limits change per edition; fill from the current CFP, do not

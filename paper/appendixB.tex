@@ -6,14 +6,14 @@ alone, and the oracle run on both; \textsc{quoted}---the defective state read fr
 commit message's own printed state, no build; \textsc{source}---a determination made
 by aligning source lines, no build and no run.
 
-\begin{table*}[t]
+\begin{table}[h]
 \caption{Calibration pairs. P~=~positive (the oracle fired on the defect and was
 silent on the fix); B~=~boundary (the oracle was \emph{required} to stay silent, and
 did).}
 \label{tab:pairs}
 \scriptsize
-\setlength{\tabcolsep}{3.5pt}
-\begin{tabular}{llcc p{0.52\textwidth}}
+\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}l@{\hspace{4pt}}c@{\hspace{4pt}}c@{\hspace{4pt}}l@{\hspace{4pt}}p{0.46\columnwidth}@{}}
 \toprule
 fix & oracle & & evidence & what the pair established \\
 \midrule
@@ -32,10 +32,10 @@ fix & oracle & & evidence & what the pair established \\
 \texttt{fd675184fc7a} & B & P & \textsc{built} & min/max containment---a second, older arm \\
 \texttt{cd5b460ed1ec} & B & P & \textsc{built} & arc containment; the input, not the oracle, was the blocker \\
 \texttt{f54c7898ed1c} & B & B & \textsc{source} & the precision short-circuit (Section~5.4) \\
-\texttt{1ffc85d9298e} & B & P & \textsc{built} & the visible held-out case; silent until the oracle learned the era (\S4.1) \\
+\texttt{1ffc85d9298e} & B & P & \textsc{built} & the visible held-out case. Silent on the first run: the oracle selects its era-specific comparison by print format, the 2023 format is shared with a 2021 era whose comparison legitimately had no identity check, and no arm existed for the year between---a routing gap, not a predicate one. Fires with the predicted arm once the era is stated (\S4.1) \\
 \bottomrule
 \end{tabular}
-\end{table*}
+\end{table}
 
 \noindent Sixteen pairs are listed. Ten were built; five were established from the
 state the commit message itself prints; one from source alone. Section~5.2's summary
