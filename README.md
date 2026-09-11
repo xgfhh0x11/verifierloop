@@ -1,291 +1,96 @@
 # verifierloop
 
-## Paper artifact
+A differential-testing lab for the **Linux eBPF verifier**, and the artifact for the
+paper ***Where a Test Oracle Reads From: Evidential independence as a design criterion
+for differential testing*** (ISSTA submission).
 
-This repository is the artifact for *Where a Test Oracle Reads From* (ISSTA submission). Start with [ARTIFACT.md](ARTIFACT.md) for the reproduction guide — most claims run offline in minutes (`python3 scripts/subsume-check.py --self-test`, `cargo test`, `scripts/build-paper.sh`).
+The lab builds self-built `bpf-next` kernels, runs BPF programs under disposable VMs,
+and compares what the verifier does against independent oracles. The paper's thesis
+grew out of it: a differential oracle's blind-spot class is fixed not by how
+independently its reference was *written* but by what its reference *reads*, and that
+class can be measured before the oracle exists.
 
-Licensed GPL-2.0-only ([LICENSE](LICENSE)).
+**License:** GPL-2.0-only ([LICENSE](LICENSE)) — matches the Linux kernel; `patches/`
+is kernel-derived. **Reproduction guide:** [ARTIFACT.md](ARTIFACT.md).
 
+## Quick start (no kernel, no VM)
 
-An **operational vulnerability-research lab loop** targeting the Linux **eBPF
-verifier** on the `bpf-next` kernel tree. It hunts for verifier **logic bugs**,
-**temporal-logic bugs**, and **corruption-to-primitive** research leads by
-running self-built kernels under disposable VMs, observing verifier behavior, and
-diffing what it observes against documented/expected behavior.
+Most of the paper's evidence reproduces offline in minutes:
 
-> **Status: FIRST REAL PERIOD RUNS LIVE.** The five-stage pipeline and the loop
-> run **end to end on real verifier data** from a self-built `bpf-next` kernel: a
-> guest-side differential/verifier-log harness loads BPF programs with
-> `log_level=2` in a disposable VM, a real parser shapes that into the CORE
-> schema, and the loop harvests one real period (see devlog 0013,
-> `cargo run -p orchestrator --example real_period`).
-> **Still `TODO` (marked in-code):** syzkaller-driven execs + coverage/crash
-> parser, external ground-truth loaders (verifier.c/rst/patch), statistical
-> scoring, JIT↔interpreter cross-kernel diff, and a Rust `vmctl` wrapper. KVM is
-> blocked host-side (WSL2 nested virt); everything runs on TCG.
-
----
-
-## What this is — and what it is NOT
-
-- It **is** a self-contained hunting loop: fuzz → observe → normalize → score →
-  diff-against-ground-truth → hand a triaged batch to a human → repeat.
-- It is **NOT a formal proof system.** There is no theorem prover, no formal
-  verification, and no attempt to prove the loop's own soundness or consistency.
-  The loop's **"ground truth" is not a formal model** — it is documentation +
-  patch diffs + classic logical analysis (see [Ground truth](#ground-truth-4-sources)).
-- **The loop closes on itself.** There is no external engine to integrate.
-
-## Target & environment
-
-- **Research target:** the eBPF verifier in the `bpf-next` kernel tree.
-- **Host / orchestration layer:** WSL2 Ubuntu 22.04 on Windows 11 (KVM enabled,
-  nested virtualization on). This layer is **only** host/orchestration.
-- **Execution:** QEMU/KVM **disposable VMs** running **self-built `bpf-next`
-  kernels**. The actual hunt runs **inside** those VMs, not on the Ubuntu layer.
-- **TCG fallback:** a KVM-less pure-software path exists (slower) for **manual
-  PoC / differential** only — never the main hunting throughput.
-  See `config/wsl/wslconfig.note.md` for enabling `/dev/kvm`.
-
-## Architecture
-
-Two languages with a **clean, documented boundary**:
-
-- **Rust** — architecture, orchestration, services, the loop runtime, VM control.
-- **Python** — statistics, data processing, metric analysis, anomaly scoring.
-
-They meet at a **typed, file-based JSON artifact contract**: the Rust
-orchestrator writes normalized-metric artifacts into a period directory, invokes
-the Python analyzer, and reads scores back — no shared process memory. The
-contract is defined in the `contract` crate and mirrored in
-`python/.../contract.py`; keep the two in lockstep. *(The envelope is
-**implemented** — serde (de)serialization, schema-version check, atomic writes,
-unit tests, and a Rust↔Python round-trip. The payload stays generic
-(`Artifact<T>` / untyped JSON on the Python side) until the metric types are
-finalized.)*
-
-### Repo layout
-
-```
-verifierloop/
-├── Cargo.toml                       # Rust workspace (fine-grained crates)
-├── crates/
-│   ├── metrics/                     # the 4 metric-schema groups
-│   ├── contract/                    # Rust<->Python JSON artifact contract (the boundary)
-│   ├── pipeline/                    # period pipeline stages (modules) + ground-truth adapters
-│   ├── vmctl/                       # disposable QEMU VM control (KVM primary / TCG fallback)
-│   └── orchestrator/                # loop runtime (binary); hosts the confirmation-bias guardrail
-├── python/                          # verifierloop-analysis package (stats / scoring)
-├── config/
-│   ├── kernel/bpf-verifier-lab.config    # .config fragment (KCOV/KASAN/KCSAN/UBSAN/BPF_JIT/BTF...)
-│   ├── qemu/launch-kvm.sh                # QEMU launch (KVM)
-│   ├── qemu/launch-tcg.sh                # QEMU launch (TCG fallback)
-│   ├── syzkaller/syzkaller.cfg.placeholder
-│   └── wsl/wslconfig.note.md             # nested-virt note for the WSL2 host
-├── data/                            # per-period harvest artifacts (runtime; gitignored)
-└── justfile                         # build-kernel, boot-vm (kvm/tcg), run-fuzzers, ...
+```bash
+python3 scripts/subsume-check.py --self-test   # oracle B, 72 golden vectors -> failed=0
+cargo test                                     # 392 tests, 0 failures
+scripts/build-paper.sh                         # the paper PDF (needs TeX Live)
 ```
 
-## The loop (pipeline)
+The classification study is committed text: `docs/heldout/` holds every
+pre-registration and its results, and `git log --oneline -- docs/heldout` shows each
+`ÖN KAYIT` (pre-registration) landing **before** its `SONUÇLAR` (results) — the
+ordering is the evidence.
+
+## The two oracles
+
+The paper contrasts two oracles for the same verifier, differing in what they read —
+visible in their type signatures:
+
+| | reads | file |
+|---|---|---|
+| **A** — liveness gate | the emitted instruction stream (upstream of the verifier) | `harness/bpflive.h` |
+| **B** — subsumption model | the abstract state the verifier itself wrote (downstream) | `scripts/subsume-check.py`, `harness/bpfsubs.h` |
+
+B is an independent reimplementation of `states_equal`'s scalar arm, calibrated against
+real defects and run at fuzz volume in-VM. It is *algorithmically* independent of the
+verifier and *evidentially* entangled with it — the paper's central example.
+
+## Findings
+
+- **F1** (`docs/findings/F1-print_bpf_insn-oob/`) — a verbose-path OOB read in the
+  disassembler; root-caused, upstream patch prepared.
+- **F2** (`docs/findings/F2-sync-linked-regs-empty-range/`) — `sync_linked_regs()`
+  drives a register to an empty range that no check covers; reproduces on the current
+  tip, real but security-inert (measured, not assumed).
+
+## Layout
 
 ```
-fuzzer/recon output
-  → metric normalization
-  → anomaly scoring            (Python, over the JSON artifact contract)
-  → documented-vs-observed diff (against the 4 ground-truth sources)
-  → period report              → feeds back into the next period
+crates/    Rust pipeline: parsers, invariants (Ω), 392 tests, calibration fixtures
+harness/   guest-side C: diffharness, bpflive.h (A), bpfsubs.h + subsume-check.py (B), f2probe.c
+scripts/   build/run drivers, subsume-check.py, prepare-artifact.sh
+patches/   print-only kernel instrumentation, four kernel-era variants
+docs/      findings/, heldout/ (the classification study), devlog/ (legs 0025-0121), RUNBOOK
+paper/     LaTeX (acmart/sigconf), build-paper.sh, OVERLEAF.md
 ```
 
-Each stage is a separate module in the `pipeline` crate
-(`ingest → normalize → score → diff → report`) with a typed input/output
-interface. `ingest` and `normalize` are **implemented**: `ingest` collects native
-output unchanged into the period's `raw/` dir and writes `RAW_INDEX`
-(`cargo run -p pipeline --example ingest_demo`); `normalize` interprets those raw
-blobs into the frozen metric schema and writes `NORMALIZED`
-(`cargo run -p pipeline --example normalize_demo`) — via an injectable
-`RecordParser`, though the real per-tool parsers (native formats) are still
-`TODO`. `score` is **implemented** too: Rust delegates to the Python analyzer over
-the contract (`python -m verifierloop_analysis`), which writes `ANOMALY_SCORES`
-(`cargo run -p pipeline --example score_demo`) — a transparent baseline
-hard-signal scorer (`baseline-hard-signals-v0`), with statistical scoring `TODO`.
-`diff` is **implemented**: it compares the NORMALIZED observation against ground
-truth and writes `DIFF_FINDINGS` (`cargo run -p pipeline --example diff_demo`).
-Two check kinds — **intrinsic logical invariants** computed straight from CORE
-(tnum well-formedness, bound ordering, tnum/bounds consistency, JIT/interpreter
-equivalence — the "classic logical analysis" pillar) and **source-backed** checks
-via an injectable [`GroundTruth`] oracle (helper `arg_type` today; verifier.c /
-verifier.rst / patch-diff loaders `TODO`, they need a bpf-next tree). Findings
-carry **no severity** — `diff` states, `score` ranks — and `diff` never reads
-`ANOMALY_SCORES` (guardrail). `report` is **implemented** too: it JOINS the two
-judgment artifacts (`ANOMALY_SCORES` + `DIFF_FINDINGS`) into a per-record triage
-batch ordered by the **existing** anomaly score, and writes `PERIOD_REPORT`
-(`cargo run -p pipeline --example report_demo`) — the human-in-the-loop handoff.
-It invents no new ranking or severity (score ranks; diff states; report
-assembles), and any timestamp in it is a label only. **All five pipeline stages
-now run end to end** (`ingest → normalize → score → diff → report`); what remains
-is real integration — native-format parsers, a real fuzz driver / VM, and the
-external ground-truth loaders.
+## The lab loop
 
-**Tool-output principle:** every tool's **DEFAULT-mode native output** is
-collected **unchanged** in `ingest`; **normalization is a separate later stage**,
-never done at the source.
+The hunt is a closed loop: **fuzz → observe → normalize → score → diff against ground
+truth → hand a triaged batch to a human → repeat**. Two languages meet at a typed,
+file-based JSON contract — Rust for orchestration and the loop runtime, Python for
+scoring — with no shared process memory. Ground truth is not a formal model: it is
+documentation, patch diffs, and classic logical invariants over the parsed verifier
+state (tnum well-formedness, bound ordering, tnum/bounds consistency,
+JIT↔interpreter equivalence).
 
-## Ground truth (4 sources)
+A **confirmation-bias guardrail** is a first-class design constraint, not an
+afterthought: the loop must not become a counterfactual-optimizing fuzzer that
+generates input to confirm its own expectation. The guards — CORE metrics kept
+independent of the counterfactual layer, an explicit "did the loop expect this?" flag
+so bias is measured rather than hidden, and a human at every period boundary — are
+stated in `crates/orchestrator/src/loop_runtime.rs` and must survive every change to
+the scoring path.
 
-The documented-vs-observed diff engine compares observed kernel behavior against
-four external sources (loaders under `pipeline::groundtruth`) **plus** the
-intrinsic logical-invariant pillar:
+## Full environment (kernels + VMs)
 
-1. **`verifier.c`** state-transition logic (accept/reject + register-state evolution) — loader `TODO`
-2. **`Documentation/bpf/verifier.rst`** (documented behavior) — loader `TODO`
-3. helper **`bpf_func_proto` / `arg_type`** contracts — usable now via the `GroundTruth` oracle
-4. **version patch diffs** (git log between kernel versions) — loader `TODO`
-5. **classic logical analysis** (`logical_invariant`) — intrinsic invariants over CORE, no external file
+Tier-2 reproduction (calibration builds, the hunt, F2's control arms) needs an
+`x86_64` host with QEMU/KVM, a `bpf-next` checkout under `.lab/bpf-next`, `gcc`, and
+`pahole`. See [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for the step-by-step. All heavy
+artifacts live under `.lab/` (gitignored); `scripts/build-kernel.sh` takes
+`SRC`/`OUT` so a second kernel at a fix's parent builds with the **same config**,
+which is what makes a calibration pair meaningful.
 
-Sources 1/2/4 need a bpf-next checkout, so their loaders are `TODO`; the oracle is
-injectable so the `diff` logic runs and is tested today against 3 and 5.
+## Scope
 
-## Period model — period N = exec count, NOT time
-
-- A **period** = the loop runs, grows, then hands a human a **triaged data
-  batch** (periodic harvest; **human-in-the-loop at the period boundary**).
-- **Period N is measured by the total fuzzing exec count (a counter). It is NOT
-  a fixed duration.** Wall-clock **time is only a timestamp stamped onto the
-  data — never a stopping criterion.**
-- A secondary **efficiency observation** (new coverage / new state per exec) is
-  recorded **for the report only** — it is **not** a decision criterion.
-
-## Metric groups
-
-Four groups, defined as separate schema modules in the `metrics` crate (and
-mirrored in `python/.../schemas/`). The schema is now **frozen** (serde types):
-**CORE** uses the full + register-state-evolution shape; DERIVED / COUNTERFACTUAL /
-EXPECTATION carry concrete-but-minimal shapes with `TODO`s for later enrichment.
-
-1. **CORE** — fixed, pure operational observation, tied to ground truth, always
-   on, **independent of the counterfactual layer**, meaningful on its own.
-   Includes: verifier decision (accept/reject + reason); register-state evolution
-   (tnum mask, umin/umax/smin/smax, reg type); `insn_processed` / processed
-   states; JIT↔interpreter retval + `data_out` diff; coverage delta (KCOV, new BB
-   per exec) + exec counter N; helper `arg_type` contract-violation signal.
-2. **DERIVED** — schema fixed now; values fill as the loop grows.
-3. **COUNTERFACTUAL** — extra / opt-in; sits **on top of** core, never modifies
-   it. Deliberately kept **outside** core so the engine reads raw observation,
-   not the loop's own generated alternatives.
-4. **"Did the loop expect this?" flag** — a separate field to **measure
-   confirmation bias**.
-
-## Confirmation-bias guardrail (HARD)
-
-The loop's obligation to produce counterfactual output **must not** turn it into a
-counterfactual-**optimizing** process that generates input to confirm its own
-expectation — i.e. a **confirmation-biased fuzzer**. **This is not a solved
-problem; it is a live stress point** that every change to the scoring /
-counterfactual / input-selection path must be checked against.
-
-The guards are: **CORE metrics kept independent of the counterfactual layer**;
-the **"expected?" flag** (so bias is measured, not hidden); and
-**human-in-the-loop at every period boundary**. The full statement is embedded as
-a comment in `crates/orchestrator/src/loop_runtime.rs` — keep it there.
-
-## Fuzzing stack
-
-- Multiple **concurrent fuzzers** under QEMU. **Primary: syzkaller** (requires
-  Go). Plus a **differential harness** (verifier-accepts vs interpreter-vs-JIT
-  retval). Optional: **Trinity**.
-- syzkaller is **set up and running** (`scripts/setup-syzkaller.sh` builds it;
-  `scripts/gen-syz-config.sh` writes a real manager config; `just run-fuzzers`
-  drives it). It runs its own QEMU VMs on **TCG** (no KVM here), focused on the
-  verifier via `enable_syscalls: ["bpf*"]` (44/8300 syscalls). Verified end to
-  end: executor deploys over ssh, **KCOV coverage feedback works** (0→5177 BB in
-  ~30s), corpus grows. Throughput on TCG is ~40 execs/s aggregate (4 VMs) after a
-  ~90s warm-up — slower than KVM but functional; since a period is an **exec
-  count**, only wall-clock is affected, not the loop's logic.
-  > The VM image uses **name-agnostic** DHCP (`systemd-networkd` wildcard) so
-  > syzkaller's `e1000` NIC (which renames to `enp0s4`) gets an address — see
-  > devlog 0009.
-- Kernel config enables: **KCOV, KASAN, KCSAN, UBSAN, BPF_JIT,
-  BPF_JIT_ALWAYS_ON, DEBUG_INFO_BTF** + BTF/pahole prerequisites — see
-  `config/kernel/bpf-verifier-lab.config`.
-  > **Note (KASAN vs KCSAN):** these two sanitizers are **mutually exclusive** in
-  > one build — `olddefconfig` keeps KASAN and drops KCSAN. The primary hunt kernel
-  > runs KASAN (memory safety); **KCSAN is a separate build** for data-race hunting.
-
-## Lab bring-up (real kernel + VM)
-
-The `config/` placeholders are now **runnable scripts** under `scripts/`, driven by
-`just`. They build a self-built bpf-next kernel and boot it in a disposable QEMU VM:
-
-```
-just fetch-kernel     # blobless partial clone of bpf-next -> .lab/bpf-next
-just build-kernel     # defconfig + kvm_guest.config + lab fragment -> .lab/build/bzImage (with BTF)
-just create-rootfs    # debootstrap Debian minimal -> .lab/images/rootfs.img (disposable)
-just verify-vm        # boot, assert BTF + bpffs + kcov in-VM, power off
-just boot-vm-kvm      # interactive disposable VM (KVM primary)  |  just boot-vm-tcg (fallback)
-```
-
-All heavy artifacts live under `.lab/` (gitignored). Bring-up has been run
-end-to-end: the kernel boots and BTF (`/sys/kernel/btf/vmlinux`), bpffs, and kcov
-are all confirmed **inside** the VM.
-
-> **KVM requires working nested virtualization.** On this WSL2 host `-enable-kvm`
-> currently fails (`Hyper-V: Nested features: 0x0`) despite `nestedVirtualization=true`
-> in `.wslconfig`, so `verify-vm` fell back to **TCG** (software emulation, slower —
-> per policy, manual PoC / differential only). To unlock the primary KVM path, run
-> `wsl --shutdown` from Windows and restart WSL; if the Windows host is itself a VM,
-> expose VT-x/EPT to it. See `config/wsl/wslconfig.note.md`.
-
-## Tasks (`just`)
-
-| Recipe | Purpose |
-| --- | --- |
-| `just fetch-kernel` | Blobless partial clone of bpf-next into `.lab/bpf-next` |
-| `just build-kernel` | Build the self-built bpf-next `bzImage` (defconfig + lab fragment, BTF) |
-| `just create-rootfs` | Create the disposable Debian rootfs image (debootstrap) |
-| `just verify-vm` | Boot the VM, assert BTF + bpffs + kcov, power off |
-| `just boot-vm-kvm` | Boot a disposable KVM VM (primary) |
-| `just boot-vm-tcg` | Boot a disposable TCG VM (fallback; slower) |
-| `just run-fuzzers` | Start syzkaller + differential harness (+ Trinity) |
-| `just collect-metrics` | Ingest → normalize → hand to Python scoring |
-| `just run-period` | Run one period (boundary = exec count N) |
-| `just period-report` | Emit the triaged period report |
-
-The hunt recipes above are **placeholders** that print intent and exit non-zero.
-Two self-checks actually run against the skeleton:
-
-- `just build-rust` — compile the Rust workspace.
-- `just check-python` — confirm the Python package imports.
-
-## Operator manual
-
-Step-by-step "what to run, from where, in what order" lives in
-[`docs/RUNBOOK.md`](docs/RUNBOOK.md) — health checks, the end-to-end demo, the
-fuzzer, lab bring-up, and the KVM-vs-TCG situation. (`just` is optional and not
-required; the runbook gives the direct `./scripts/...` commands.)
-
-## Development log
-
-Implementation steps taken *after* the initial scaffold — what was built, why,
-and which design decisions were made — are recorded (per work item, all in one
-file) in [`docs/devlog/devlog.md`](docs/devlog/devlog.md). So far: `contract`
-serde (0001), the `ingest`
-stage (0002), the orchestrator loop spine (0003 — period = exec-count N, `ingest`
-wired; real fuzz driver still a stub), the `normalize` stage + frozen CORE metric
-schema (0004 — real per-tool parsers still a stub), the `score` stage (0005 —
-Rust↔Python anomaly scoring over the contract; baseline scorer, statistical
-method still a stub), the `diff` stage (0006 — documented-vs-observed with
-intrinsic logical invariants + an injectable ground-truth oracle; the frozen
-`DIFF_FINDINGS` schema; external source loaders still a stub), and the `report`
-stage (0007 — joins `ANOMALY_SCORES` + `DIFF_FINDINGS` into the triaged
-`PERIOD_REPORT` batch; completes the pipeline end to end), and the real
-kernel/VM bring-up (0008 — `scripts/` build a self-built bpf-next kernel + a
-disposable QEMU VM; booted end to end with BTF/bpffs/kcov confirmed in-VM; KVM
-blocked on host-side nested virt, TCG working), and syzkaller integration (0009 —
-the primary fuzzer builds and runs against the self-built kernel on TCG; fixed a
-VM networking mismatch so syzkaller can ssh in; KCOV-guided fuzzing confirmed).
-
-## Scope boundaries
-
-No external engine is integrated. There is no formal-proof / theorem-proving
-component. Anything not specified for this scaffolding pass is left as a `TODO`
-rather than decided ad hoc.
+No external engine is integrated, and there is no theorem prover — the loop's ground
+truth is documentation plus logical analysis, not a formal model. The development log
+(`docs/devlog/devlog.md`) records every step and every retraction; where the project
+was wrong, the log says so.
