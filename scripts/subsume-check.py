@@ -157,6 +157,13 @@ ROW_MM = re.compile(
 # karşılaştırma. `vo` kısa kesimin nerede bittiğini söylüyor.
 PFX = re.compile(r'^PRUNEPAIR_PFX vo=(\d+) ([0-9a-f]+)$')
 
+# DONEM ZORLAMASI (parti 5, H21). `live=` tasiyan satirlar varsayilan olarak 2021
+# koluna gider ve o kolda scalar id kontrolu YOKTUR -- 2021 kernel'inde de yoktu.
+# 2023-06 iki donemin arasinda: live= var, ve 1ffc85d9298e'den sonra check_scalar_ids
+# de var. Ayni basim biciminden iki farkli yuklem cikiyor; bicim donemi belirleyemiyor,
+# o yuzden ACIKCA soyleniyor (--era 2023), cikarilmiyor.
+FORCE_ERA = None
+
 ROW_21 = re.compile(
     r'^PRUNEPAIR insn=(\d+) exact=(\d+) side=(old|cur) fr=(\d+) r(\d+) '
     r'type=(\d+) delta=(-?\d+) var=([0-9a-f]+)/([0-9a-f]+) '
@@ -194,7 +201,7 @@ def parse_lines(lines):
             pend_pfx = (int(mp[1]), mp[2])
             continue
         m = ROW_21.match(line)
-        era = '2021'
+        era = FORCE_ERA if (m and FORCE_ERA) else '2021'
         if not m:
             m = ROW.match(line)
             era = 'cnum'
@@ -217,7 +224,7 @@ def parse_lines(lines):
                        u32min=int(m[14], 16), u32max=int(m[15], 16),
                        s32min=s32(int(m[16], 16)), s32max=s32(int(m[17], 16)),
                        id=int(m[18], 16), prec=int(m[20]))
-            if era == '2021':
+            if era in ('2021', '2023'):
                 rec['live'] = int(m[21])
         if side == 'old' and (cur is None or cur['done']):
             cur = {'insn': insn, 'exact': exact, 'old': {}, 'cur': {}, 'done': False,
@@ -305,7 +312,7 @@ def evaluate(p, st):
 
         if o['t'] != c['t']:
             p['arm'] = 'type'; verdict = 'break'; break
-        if o['era'] == '2021' and not o['live']:
+        if o['era'] in ('2021', '2023') and not o['live']:
             # 2021 regsafe'in İLK satırı: `if (!(rold->live & REG_LIVE_READ)) return true;`
             # Bu, bugünkü live_regs_before kapısının atası ve register bazında basılıyor —
             # yani o çağda kapı MODELLENEBİLİR, tahmin gerekmiyor.
@@ -693,6 +700,9 @@ def self_test():
 if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
         sys.exit(self_test())
-    if len(sys.argv) != 2:
+    args = sys.argv[1:]
+    if len(args) == 3 and args[0] == "--era":
+        FORCE_ERA = args[1]; args = args[2:]
+    if len(args) != 1:
         print(__doc__); sys.exit(2)
-    sys.exit(main(sys.argv[1]))
+    sys.exit(main(args[0]))
