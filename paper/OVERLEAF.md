@@ -15,13 +15,28 @@ zaten var ve dizine bir kopya koymak sürüm çakışması üretir.
 ## Beklenen çıktı
 
 - **~7 sayfa**, iki sütun, `sigconf`.
-- Sol kenarda **satır numaraları** — `review` seçeneğinin işi, kaldırmak için
-  `main.tex`'in ilk satırındaki `review`'ı sil.
+- Kenarlardaki sayılar **satır numarasıdır, kelime sayımı değil.** `review`
+  seçeneğinin işi (`acmart.cls:2516`), hakemin satıra atıf verebilmesi için. Ölçüldü:
+  `review` açıkken de kapalıyken de **9 sayfa** — sayfalamayı değiştirmiyor.
+  Kaldırmak için `\documentclass` satırından `review`'ı sil.
 - Başlık bloğunda yazar yerine boşluk ve *"Conference acronym 'XX, June 03–05, 2018,
   Woodstock, NY"* — ikisi de acmart'ın **yer tutucusu**, hata değil. Gönderimde
   `\author{...}` ve `\acmConference{...}` doldurulunca gider.
 - Kaynakça üç kaynak. `bibtex` otomatik koşar; ilk derlemede `[?]` görürsen
   **Recompile**'a bir kez daha bas.
+
+## Gönderim / camera-ready anahtarları
+
+| aşama | `\documentclass` | ayrıca |
+|---|---|---|
+| çift-kör gönderim | `[sigconf,review,anonymous]` | `\acmConference{...}` doldurulmalı |
+| camera-ready | `[sigconf]` | `\author`/`\affiliation` gerçek, `\acmDOI`, `\acmISBN`, `\copyrightyear` |
+
+Sayfa altındaki *"Conference'17, July 2017, Washington, DC, USA"* acmart'ın
+`\acmConference` yokluğunda bastığı yer tutucudur — hata değil, ama doldurulmamış
+görünür.
+
+Ölçülen yapı: gövde s.1–7, Appendix A s.8, REFERENCES s.9.
 
 ## Yerelde aynısını derlemek
 

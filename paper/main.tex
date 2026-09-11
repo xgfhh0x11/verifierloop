@@ -9,6 +9,23 @@
 %% BUILD: needs acmart.cls (texlive-publishers, or Overleaf). Not installed in
 %% the development container; compile on Overleaf or a TeX Live host.
 
+%% ---------------------------------------------------------------------------
+%% GÖNDERİM ANAHTARLARI — kenardaki sayılar KELİME SAYIMI DEĞİL, satır numarası.
+%% Kaynağı: acmart.cls:2516, `\if@ACM@review` -> `\ACM@mk@linecount`. Yani ACM'in
+%% kendi sınıfının review modunda BİLEREK bastığı şey, hakem satıra atıf verebilsin
+%% diye. Ölçüldü: review açık 9 sayfa, kapalı 9 sayfa -- sayfalamayı değiştirmiyor.
+%%
+%%   review     -> satır numaraları + folyo. Çift-kör gönderimde istenir; CFP'ye bak.
+%%   anonymous  -> yazarları "Anonymous Author(s)" yapar. Çift-kör için gerekli.
+%%
+%% CAMERA-READY'de ikisi de KALKAR ve şunlar eklenir:
+%%   \acmConference[ACRONYM '27]{...}{tarih}{yer}
+%%   \acmBooktitle{...}  \acmDOI{...}  \acmISBN{...}  \copyrightyear{...}
+%% Sayfa altındaki "Conference'17, July 2017, Washington, DC, USA" acmart'ın
+%% \acmConference yokluğunda bastığı YER TUTUCUDUR; gönderimde de doldurulmalı.
+%%
+%% Ölçülen yapı: gövde s.1-7, Appendix A s.8'de başlıyor, REFERENCES s.9'da.
+%% ---------------------------------------------------------------------------
 \documentclass[sigconf,review,anonymous]{acmart}
 
 %% Fig.1 (the 2x2) is TikZ; acmart does not load it.
