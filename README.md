@@ -10,6 +10,8 @@ grew out of it: a differential oracle's blind-spot class is fixed not by how
 independently its reference was *written* but by what its reference *reads*, and that
 class can be measured before the oracle exists.
 
+**Author:** Utku Erol, Independent Researcher — utkuerol71@gmail.com
+
 **License:** GPL-2.0-only ([LICENSE](LICENSE)) — matches the Linux kernel; `patches/`
 is kernel-derived. **Reproduction guide:** [ARTIFACT.md](ARTIFACT.md).
 
@@ -25,7 +27,7 @@ scripts/build-paper.sh                         # the paper PDF (needs TeX Live)
 
 The classification study is committed text: `docs/heldout/` holds every
 pre-registration and its results, and `git log --oneline -- docs/heldout` shows each
-`ÖN KAYIT` (pre-registration) landing **before** its `SONUÇLAR` (results) — the
+each `PRE-REGISTRATION` landing **before** its `RESULTS` — the
 ordering is the evidence.
 
 ## The two oracles
