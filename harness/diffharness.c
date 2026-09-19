@@ -3331,6 +3331,71 @@ static int emit_iter_loop(struct bpf_insn *ins, int n, const struct iter_ids *id
     return n;
 }
 
+// ---- kfunc-surface probe: which COMMON kfuncs load from SOCKET_FILTER (--probe-kfunc) ----
+// The iterator gene (GI_ITER) put bpf_iter_num_* into the grammar and shrank the unreached
+// kfunc/BTF theme from 1318 to 211 verification-pass points. The remaining 211 are OTHER
+// kfuncs. This probe MEASURES which zero-argument COMMON kfuncs actually load and verify
+// from the fuzz loop's own program type (SOCKET_FILTER) on THIS kernel, before a gene is
+// written for any of them -- the iterator was a probe first, and a kfunc whose id resolves
+// but whose call the verifier refuses would be a decoration gene (health metric 2).
+//
+// Each arm resolves the kfunc by name from the running kernel's BTF (a wrong id is a call to
+// a DIFFERENT function, not a load error). The balanced arms should accept; the unbalanced
+// arms should reject with a specific message -- and that rejection text is itself the signal
+// that the region-tracking code (active_rcu_lock / active_preempt_lock) was reached, which
+// is exactly the state pruning and states_equal compare, where our oracles already have teeth.
+static void run_probe_kfunc(void) {
+    int rcu_lock   = btf_find_func_id("bpf_rcu_read_lock");
+    int rcu_unlock = btf_find_func_id("bpf_rcu_read_unlock");
+    int pre_dis    = btf_find_func_id("bpf_preempt_disable");
+    int pre_en     = btf_find_func_id("bpf_preempt_enable");
+    printf("===IDS rcu_lock=%d rcu_unlock=%d preempt_disable=%d preempt_enable=%d ===\n",
+           rcu_lock, rcu_unlock, pre_dis, pre_en);
+
+    struct kf_arm { const char *name; int a, b; const char *expect; };
+    /* Emit: call a; r0 = 0; [call b if b > 0]; exit. */
+    struct kf_arm arms[] = {
+        {"rcu_balanced",     rcu_lock, rcu_unlock, "accept"},
+        {"rcu_lock_only",    rcu_lock, -1,         "reject"},
+        {"rcu_double_lock",  rcu_lock, rcu_lock,   "reject"},
+        {"preempt_balanced", pre_dis,  pre_en,     "accept"},
+        {"preempt_dis_only", pre_dis,  -1,         "reject"},
+    };
+    for (unsigned i = 0; i < sizeof(arms) / sizeof(arms[0]); i++) {
+        struct kf_arm *A = &arms[i];
+        printf("===PROG kfunc#%s type=socket_filter expect=%s ===\n", A->name, A->expect);
+        if (A->a <= 0) {
+            printf("RESULT decision=skip fd=-1 errno=0 load_ns=0 reason=unresolved\n");
+            printf("---LOG---\n\n---END---\n");
+            continue;
+        }
+        struct bpf_insn ins[8];
+        int n = 0;
+        ins[n++] = BPF_KFUNC_CALL(A->a);
+        ins[n++] = BPF_MOV64_IMM(BPF_REG_0, 0);
+        if (A->b > 0) ins[n++] = BPF_KFUNC_CALL(A->b);
+        ins[n++] = BPF_EXIT_INSN();
+
+        g_log[0] = '\0';
+        union bpf_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.prog_type = BPF_PROG_TYPE_SOCKET_FILTER;
+        attr.insn_cnt = n;
+        attr.insns = (uint64_t)(unsigned long)ins;
+        attr.license = (uint64_t)(unsigned long)"GPL";
+        attr.log_level = 2;
+        attr.log_size = sizeof(g_log);
+        attr.log_buf = (uint64_t)(unsigned long)g_log;
+        int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+        int err = errno;
+        if (fd >= 0) close(fd);
+
+        printf("RESULT decision=%s fd=%d errno=%d load_ns=0\n",
+               fd >= 0 ? "accept" : "reject", fd >= 0 ? 1 : -1, fd >= 0 ? 0 : err);
+        printf("---LOG---\n%s\n---END---\n", g_log);
+    }
+}
+
 /* Not in the distro uapi header. The value is read off the kernel's own helper mapper,
    `FN(dynptr_from_mem, 197, ##ctx)` in include/uapi/linux/bpf.h — verified rather than
    guessed, because a wrong helper id is not a load error, it calls a DIFFERENT helper. */
@@ -3819,6 +3884,8 @@ enum gi_step {
     GI_SDIV,      /* signed div/mod — the interpreter-level UB shape                   */
     GI_ITER,      /* an open-coded iterator loop — the grammar's FIRST kfunc calls,      */
                   /* and with them 13% of the verification pass it had never entered     */
+    GI_KFUNC,     /* a BALANCED region kfunc pair (rcu_read_lock/unlock or preempt_*):      */
+                  /* NEW verifier surface the pruning/states_equal paths also compare       */
     GI_STEP_N
 };
 
@@ -3838,6 +3905,7 @@ static const char *gi_step_name(enum gi_step s) {
     case GI_LOOP: return "loop";
     case GI_SDIV: return "sdiv";
     case GI_ITER: return "iter";
+    case GI_KFUNC: return "kfunc";
     default: return "?";
     }
 }
@@ -3885,6 +3953,25 @@ static struct iter_ids g_fz_iter;
 static int g_fz_iter_ok = 0;
 static unsigned long g_fz_iter_emitted = 0, g_fz_iter_skipped = 0;
 
+/* Region kfuncs (bpf_rcu_read_lock/unlock, bpf_preempt_disable/enable). --probe-kfunc
+   measured that all four resolve and load from SOCKET_FILTER on this kernel, and that a
+   balanced region verifies while an open one hits the exit-inside-region check -- so this
+   is NEW verifier surface (check_kfunc_call for these ids, KF_RCU handling, active_rcu_lock/
+   active_preempt_lock accounting) that the pruning and states_equal paths ALSO compare,
+   i.e. surface where the existing oracles have teeth. Resolve-or-skip, like the iterator. */
+struct kf_ids { int rcu_lock, rcu_unlock, preempt_dis, preempt_en; };
+static struct kf_ids g_fz_kf;
+static int g_fz_kf_ok = 0;
+static unsigned long g_fz_kf_emitted = 0, g_fz_kf_skipped = 0;
+static int kf_resolve(struct kf_ids *out) {
+    out->rcu_lock    = btf_find_func_id("bpf_rcu_read_lock");
+    out->rcu_unlock  = btf_find_func_id("bpf_rcu_read_unlock");
+    out->preempt_dis = btf_find_func_id("bpf_preempt_disable");
+    out->preempt_en  = btf_find_func_id("bpf_preempt_enable");
+    /* RCU is the required pair; preempt is optional (it landed later than RCU). */
+    return (out->rcu_lock > 0 && out->rcu_unlock > 0) ? 0 : -1;
+}
+
 #define GI_MAXGENES 24
 struct gi_gene { uint8_t st, a, b, k, opt; };
 struct gi_genome { uint8_t n, hi; struct gi_gene g[GI_MAXGENES]; };
@@ -3926,6 +4013,7 @@ static int gi_emit_body(const struct gi_genome *G, struct bpf_insn *ins, int n,
     int stack_next = -8;
     int loops_emitted = 0;
     int iters_emitted = 0;
+    int kfuncs_emitted = 0;
     for (int s = 0; s < G->n && s < GI_MAXGENES; s++) {
         const struct gi_gene *g = &G->g[s];
         const enum gi_step st = (enum gi_step)(g->st % GI_STEP_N);
@@ -4048,6 +4136,29 @@ static int gi_emit_body(const struct gi_genome *G, struct bpf_insn *ins, int n,
             ins[n++] = BPF_MOV64_REG(BPF_REG_1, BPF_REG_10);
             ins[n++] = BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, -GI_ITER_SLOT);
             ins[n++] = BPF_KFUNC_CALL(g_fz_iter.destroy_id);
+            break;
+        }
+        case GI_KFUNC: {
+            /* A BALANCED region kfunc pair around a tiny scalar body. --probe-kfunc proved
+               all four ids resolve and load from SOCKET_FILTER; its balanced arms rejected
+               only on insn ordering (the closing call invalidates r0, which the program
+               epilogue re-sets AFTER this gene). A is r6/r7/r9 -- callee-saved, so it
+               survives the region's calls (r1-r5/r0 are clobbered). The body is a masked
+               add: RCU/preempt-safe (pure scalar) and bounded, so a checkpoint landing
+               inside the region converges. ONE PER PROGRAM; a second would need a nesting
+               discipline, so it skips. opt bit 3 picks preempt over rcu when preempt resolved. */
+            if (!g_fz_kf_ok || kfuncs_emitted) { g_fz_kf_skipped++; break; }
+            if (n + 6 > 300) { g_fz_kf_skipped++; break; }
+            const int use_preempt = ((o >> 3) & 1) && g_fz_kf.preempt_dis > 0
+                                                   && g_fz_kf.preempt_en > 0;
+            const int lock_id   = use_preempt ? g_fz_kf.preempt_dis : g_fz_kf.rcu_lock;
+            const int unlock_id = use_preempt ? g_fz_kf.preempt_en  : g_fz_kf.rcu_unlock;
+            kfuncs_emitted++;
+            g_fz_kf_emitted++;
+            ins[n++] = BPF_KFUNC_CALL(lock_id);
+            ins[n++] = BPF_ALU64_IMM(BPF_ADD, A, K);
+            ins[n++] = BPF_ALU64_IMM(BPF_AND, A, 7);
+            ins[n++] = BPF_KFUNC_CALL(unlock_id);
             break;
         }
         case GI_PIN:
@@ -4553,6 +4664,7 @@ static void run_fuzz_replay(const char *spec) {
     }
 
     g_fz_iter_ok = (iter_resolve(&g_fz_iter) == 0);
+    g_fz_kf_ok = (kf_resolve(&g_fz_kf) == 0);
     if (g_fz_iter_ok) {
         bpflive_register_kfunc(g_fz_iter.new_id, 3);
         bpflive_register_kfunc(g_fz_iter.next_id, 1);
@@ -4651,6 +4763,7 @@ static void run_fuzz(int seconds, unsigned seed) {
        the gate reports — and `liveunsup` would climb instead of `livecells`. The arities are
        the kfuncs' published signatures, not anything read out of the kernel's analysis. */
     g_fz_iter_ok = (iter_resolve(&g_fz_iter) == 0);
+    g_fz_kf_ok = (kf_resolve(&g_fz_kf) == 0);
     if (g_fz_iter_ok) {
         bpflive_register_kfunc(g_fz_iter.new_id, 3);      /* (it, start, end) */
         bpflive_register_kfunc(g_fz_iter.next_id, 1);     /* (it)             */
@@ -5154,14 +5267,14 @@ static void run_fuzz(int seconds, unsigned seed) {
 
         if ((iters % 2000) == 0)
             printf("STATUS iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu storeprogs=%lu storebytes=%lu storenone=%lu storereadfail=%lu storesampled=%lu storeunamb=%lu storestale=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
+                   " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu storeprogs=%lu storebytes=%lu storenone=%lu storereadfail=%lu storesampled=%lu storeunamb=%lu storestale=%lu iteremitted=%lu iterskipped=%lu kfemitted=%lu kfskipped=%lu elapsed=%lds\n",
                    iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
                    truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
                    max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup,
            subs_rows, subs_pairs, subs_nontrivial, subs_disagree, subs_unsup,
            subsf_pairs, subsf_nontrivial, subsf_disagree, subsf_unsup,
            store_progs, store_bytes, store_none, store_readfail,
-           store_sampled, store_unamb, store_stale, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
+           store_sampled, store_unamb, store_stale, g_fz_iter_emitted, g_fz_iter_skipped, g_fz_kf_emitted, g_fz_kf_skipped, (long)(time(NULL) - t0));
     }
     /* THE PC SET ITSELF, so the coverage number can become a FRACTION. 5406 distinct PCs
        is uninterpretable on its own: CONFIG_KCOV_INSTRUMENT_ALL means the list includes the
@@ -5181,14 +5294,14 @@ static void run_fuzz(int seconds, unsigned seed) {
         printf("PCSET total=%u\n", printed);
     }
     printf("FUZZ done iters=%lu accept=%lu reject=%lu corpus=%d seen_pcs=%u"
-           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu storeprogs=%lu storebytes=%lu storenone=%lu storereadfail=%lu storesampled=%lu storeunamb=%lu storestale=%lu iteremitted=%lu iterskipped=%lu elapsed=%lds\n",
+           " compared=%lu findings=%lu trunc=%lu prunepairs=%lu pruneflip=%lu pruneartifact=%lu maxstates=%lu/%lu avgstates=%lu invchecked=%lu invfault=%lu livecells=%lu liverows=%lu livemiss=%lu liveunsup=%lu subsrows=%lu subspairs=%lu subsnontrivial=%lu subsdisagree=%lu subsunsup=%lu subsfpairs=%lu subsfnontrivial=%lu subsfdisagree=%lu subsfunsup=%lu storeprogs=%lu storebytes=%lu storenone=%lu storereadfail=%lu storesampled=%lu storeunamb=%lu storestale=%lu iteremitted=%lu iterskipped=%lu kfemitted=%lu kfskipped=%lu elapsed=%lds\n",
            iters, accepted, rejected, corpus_n, g_kseen_count, compared, findings,
            truncated, prune_pairs, prune_flips, prune_artifacts, max_base_states,
            max_freq_states, prune_pairs ? sum_base_states / prune_pairs : 0, inv_checked, inv_faults, live_cells, live_rows, live_miss, live_unsup,
            subs_rows, subs_pairs, subs_nontrivial, subs_disagree, subs_unsup,
            subsf_pairs, subsf_nontrivial, subsf_disagree, subsf_unsup,
            store_progs, store_bytes, store_none, store_readfail,
-           store_sampled, store_unamb, store_stale, g_fz_iter_emitted, g_fz_iter_skipped, (long)(time(NULL) - t0));
+           store_sampled, store_unamb, store_stale, g_fz_iter_emitted, g_fz_iter_skipped, g_fz_kf_emitted, g_fz_kf_skipped, (long)(time(NULL) - t0));
     free(corpus);
     free(g_kseen);
     close(map_in);
@@ -10422,6 +10535,10 @@ int main(int argc, char **argv) {
     }
     if (argc > 1 && strcmp(argv[1], "--probe-iter") == 0) {
         run_probe_iter();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--probe-kfunc") == 0) {
+        run_probe_kfunc();
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "--gen-iter") == 0) {

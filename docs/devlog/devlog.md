@@ -8687,3 +8687,52 @@ kalibre). Paper 11 sayfa, tanımsız atıf 0, overfull 0, üç kapı yeşil.
   ancak SONRAKİ sayfa üstüne gidebiliyor). Çözüm: Tablo 3 tek sütunlu `table[h]`,
   açıklama sütunu `p{0.46\columnwidth}`. **10 sayfa**, son sayfada iki tablo + appendix
   metni + kaynakça; gözle doğrulandı.
+
+## 0122 — İlk yeni gramer geni builder modunda: RCU/preempt bölge kfunc'ları
+
+Paper donduğu için gramer-geni kaldıracı açıldı, ve kullanıcı reviewer/salt-okunur sınırını
+kaldırıp builder modunu seçti ("paper bitti yani nasıl çalışmak istiyorsan öyle
+çalışabilirsin"). 0106-0108 erişimin gramere bağlı ve doygun olduğunu, tek paranın gramer
+olduğunu ölçmüştü; coverage-fraction ulaşılmayan en büyük temayı adlandırmıştı: kfunc/BTF.
+Bu bacak oraya iterator'dan sonra ikinci kfunc genini koydu.
+
+### 1. Önce probe (iterator gibi)
+
+`--probe-kfunc`: bpf_rcu_read_lock/unlock ve bpf_preempt_disable/enable, dördü de BTF'den
+çözülüyor (id 83995/83996/83832/83833) ve SOCKET_FILTER — fuzz'un kendi prog tipi — altında
+verifier bölge kodunu koşuyor. Dengeli kollar yalnız insn sıralamasından reddedildi (kapanış
+çağrısı r0'ı geçersiz kılıyor, program epilog'u sonradan set ediyor), kfunc yasağından değil.
+Dengesiz kol tam bölge-çıkış denetimini vurdu: "BPF_EXIT ... cannot be used inside
+bpf_rcu_read_lock-ed region (depth 1)". Yani zemin, yazmadan önce ölçüldü.
+
+### 2. Gen: GI_KFUNC, dengeli bölge
+
+A (r6/r7/r9, callee-saved) üzerindeki maskeli skaler gövdeyi dengeli bir RCU (opt biti 3 ile
+preempt) bölgesiyle sarıyor. r1-r5/r0 çağrılarla clobber olur, A callee-saved olduğundan
+sağ kalır. Resolve-or-skip iterator geniyle aynı disiplinde, program başına bir tane, enum
+SONUNA eklendi ki eski genom indeksleri kaymasın. Smoke 120s: 0 bulgu, OOM yok,
+kfemitted=30365, accept %69,5 — yapısal ret patlaması yok.
+
+### 3. Ölçüm, aynı enstrümanlı vmlinux (.lab/bpf-instr), coverage-fraction.py
+
+Gen öncesi (hunt-210, 1800s) vs gen sonrası (300s):
+verification_pass hit 3667 -> 3681 (+14), verifier.o 2117 -> 2132 (+15). Tema sayıları
+kıpırdamadı (kfunc/BTF 211 -> 210, reference/lock 241 -> 241) çünkü kazanç ZATEN girilen
+fonksiyonların içinde yeni blok, yeni fonksiyon değil — blok-düzeyi metrik hassas olan.
+
+### 4. Atıf, gürültüden ayrılmış
+
+PC-farkı: gen-sonrası tur, ALTI gen-öncesi turun (6 x 1800s) birleşiminin hiç görmediği 35
+PC gördü, ve kümelenme tam hedefte: in_rcu_cs.isra.0 (6 — RCU bölge durumu, yani
+active_rcu_lock takibi), check_kfunc_call (6 — RCU/preempt dalları), bpf_jit_find_kfunc_model
++ kfunc_desc_cmp_by_imm_off (kfunc model çözümü), do_jit (11 — JIT'in bölge çağrılarını
+derlemesi). Yani +14 gürültü değil: 3 saatlik gen-öncesi maruziyetin dokunmadığı bölge kodu
+yalnız genle ulaşılıyor.
+
+### 5. Dürüst sınır
+
+reference/lock teması (241) kıpırdamadı: gövdesi rbtree/list/spin_lock, hepsi SOCKET_FILTER +
+özel-alanı-olmayan map'in ulaşamadığı BTF struct'ları istiyor — bir sonraki genin işi.
+active_rcu_lock artık durumun parçası olduğundan bölge içi bir checkpoint states_equal'ı onu
+karşılaştırmaya zorlar (P(see) mekanizması mevcut, bu turda izole edilmedi; subspairs=24708).
+cargo test -p pipeline yeşil, enstrüman bozulmadı.
