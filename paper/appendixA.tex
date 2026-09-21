@@ -35,22 +35,24 @@ dead-code rewrite (accept $\to$ hang/crash) & \Bld & & \Bnd & \Bnd & & & \\
 at least one historical defect lives in it (\texttt{1ad2f5838d34}, 2017). It is a
 named gap, not a measured boundary.
 
-\paragraph{Anchors, by cell.} Rows are numbered as in Table~\ref{tab:fullmap}.
+\paragraph{Anchors, by cell.} Rows are numbered top to bottom in the order of Table~\ref{tab:fullmap}; row~6 is the named gap above.
 
 \begin{itemize}\setlength{\itemsep}{1pt}\sloppy\emergencystretch=2em
 \item[1.] $\Omega$: \texttt{3844d153a41a}, \texttt{049c4e13714e},
   \texttt{ae67b9fb8c4e}, \texttt{3cf2b61eb067} --- four positives.
-\item[2.] \texttt{3878ae04e9fc} anchors all five filled cells: positive on S;
+\item[2.] \texttt{3878ae04e9fc} anchors all six filled cells: positive on S;
   boundary on V (the corrupted registers are never printed), on R (the two kernels
-  agree on the returned value), and on P (both sides accept).
+  agree on the returned value), and on P (both sides accept); structurally blind on
+  $\Omega$ and B, which both read the corrupted state as printed.
 \item[3.] \texttt{af9e89d8dd39} on $\Omega$ and V --- the state is consistent and the
   width is real, so both are required to stay silent.
 \item[4.] \texttt{f54c7898ed1c} on B: the precision short-circuit of Section~5.4. On
   R the consequence is a hang, and a hang is observable by no oracle here, because
   the VM runner wraps boot in a timeout that cannot tell a hang from a slow round.
-\item[5.] B: \texttt{2f2ec8e7730e}, \texttt{fd675184fc7a}, \texttt{cd5b460ed1ec} ---
-  three positives on three different arms (identity matching, min/max containment,
-  arc containment). P: \texttt{2f2ec8e7730e} is a structural boundary there, because
+\item[5.] B: \texttt{2f2ec8e7730e}, \texttt{fd675184fc7a}, \texttt{cd5b460ed1ec},
+  \texttt{1ffc85d9298e} --- four positives on three different arms (identity matching
+  twice, once as the held-out case of Section~4.1; min/max containment; arc
+  containment). P: \texttt{2f2ec8e7730e} is a structural boundary there, because
   the default checkpointing already takes the prune.
 \item[7.] \texttt{3157f7e29996} positive, \texttt{871ef8d50e7c} boundary.
 \item[8.] \texttt{811c363645b3} on R --- the oracle's own ground truth had been

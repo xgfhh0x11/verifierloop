@@ -10,6 +10,10 @@
 %% the development container; compile on Overleaf or a TeX Live host.
 
 %% ---------------------------------------------------------------------------
+%% ŞU ANKİ MOD: [sigconf,nonacm] = PREPRINT (Zenodo). `nonacm` ACM telif bloğunu,
+%% "Conference'17" yer tutucusunu, sahte DOI/ISBN'i ve ACM Reference Format'ı kaldırır.
+%% Bir konferansa gönderirken aşağıdaki anahtarlara dön.
+%%
 %% GÖNDERİM ANAHTARLARI — kenardaki sayılar KELİME SAYIMI DEĞİL, satır numarası.
 %% Kaynağı: acmart.cls:2516, `\if@ACM@review` -> `\ACM@mk@linecount`. Yani ACM'in
 %% kendi sınıfının review modunda BİLEREK bastığı şey, hakem satıra atıf verebilsin
@@ -26,7 +30,7 @@
 %%
 %% Ölçülen yapı: gövde s.1-7, Appendix A s.8'de başlıyor, REFERENCES s.9'da.
 %% ---------------------------------------------------------------------------
-\documentclass[sigconf,review,anonymous]{acmart}
+\documentclass[sigconf,nonacm]{acmart}
 
 %% Fig.1 (the 2x2) is TikZ; acmart does not load it.
 \usepackage{tikz}
@@ -55,13 +59,13 @@
 \title{Where a Test Oracle Reads From}
 \subtitle{Evidential independence as a design criterion for differential testing}
 
-%% Filled at submission; the class is set `anonymous', so acmart replaces these
-%% with "Anonymous Author(s)" for review. They exist so the title block has an
-%% author to typeset at all.
-\author{Anonymous Author(s)}
+%% PREPRINT (Zenodo): real author block. For a double-blind submission switch
+%% the class back to [sigconf,review,anonymous] -- see the note above.
+\author{Utku Erol}
 \affiliation{%
-  \institution{Anonymous Institution}
-  \country{}}
+  \institution{Independent Researcher}
+  \country{T\"urkiye}}
+\email{utkuerol71@gmail.com}
 
 %% CCS: required by ACM at submission. ONE concept, deliberately: two \ccsdesc
 %% lines were tried and acmart printed both, doubling the text
@@ -187,13 +191,13 @@ is the measurement, and the argument for collecting defect data on this axis.
 
 \appendix
 \section{The Full Blind-Spot Map}
-%% DRAFTED — see paper/appendixA.tex. 56 cells, 34 of them empty, and the empty
+%% DRAFTED — see paper/appendixA.tex. 56 cells, 35 of them empty, and the empty
 %% cells are labelled UNTESTED where the reader sees them.
 \input{appendixA}
 
 \section{Calibration Pairs}
 %% DRAFTED — see paper/appendixB.tex. The `evidence' column is the honest part:
-%% nine built, five message-quoted, one source-only. It contradicts the loose
+%% ten built, five message-quoted, one source-only. It contradicts the loose
 %% wording in Sec.1/5.2, which was corrected rather than defended.
 \input{appendixB}
 

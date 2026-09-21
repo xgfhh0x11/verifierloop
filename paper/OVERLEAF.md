@@ -27,8 +27,13 @@ zaten var ve dizine bir kopya koymak sürüm çakışması üretir.
 
 ## Gönderim / camera-ready anahtarları
 
+**Şu anki mod (2026-09-21): `[sigconf,nonacm]` = Zenodo preprint.** Yazar bloğu gerçek,
+ACM telif bloğu / "Conference'17" / sahte DOI-ISBN basılmıyor; yukarıdaki yer tutucu
+notları yalnız `review`/`anonymous` modunda geçerli. Kaynakça altı kaynak.
+
 | aşama | `\documentclass` | ayrıca |
 |---|---|---|
+| Zenodo preprint | `[sigconf,nonacm]` | `\author`/`\affiliation`/`\email` gerçek |
 | çift-kör gönderim | `[sigconf,review,anonymous]` | `\acmConference{...}` doldurulmalı |
 | camera-ready | `[sigconf]` | `\author`/`\affiliation` gerçek, `\acmDOI`, `\acmISBN`, `\copyrightyear` |
 
