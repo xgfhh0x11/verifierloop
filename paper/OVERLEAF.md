@@ -14,16 +14,11 @@ zaten var ve dizine bir kopya koymak sürüm çakışması üretir.
 
 ## Beklenen çıktı
 
-- **~7 sayfa**, iki sütun, `sigconf`.
-- Kenarlardaki sayılar **satır numarasıdır, kelime sayımı değil.** `review`
-  seçeneğinin işi (`acmart.cls:2516`), hakemin satıra atıf verebilmesi için. Ölçüldü:
-  `review` açıkken de kapalıyken de **9 sayfa** — sayfalamayı değiştirmiyor.
-  Kaldırmak için `\documentclass` satırından `review`'ı sil.
-- Başlık bloğunda yazar yerine boşluk ve *"Conference acronym 'XX, June 03–05, 2018,
-  Woodstock, NY"* — ikisi de acmart'ın **yer tutucusu**, hata değil. Gönderimde
-  `\author{...}` ve `\acmConference{...}` doldurulunca gider.
-- Kaynakça üç kaynak. `bibtex` otomatik koşar; ilk derlemede `[?]` görürsen
+- **10 sayfa**, iki sütun, `sigconf`: gövde s.1–8, Ek A / Ek B / kaynakça s.9–10.
+- Kaynakça altı kaynak. `bibtex` otomatik koşar; ilk derlemede `[?]` görürsen
   **Recompile**'a bir kez daha bas.
+- `review` modunda kenardaki sayılar **satır numarasıdır, kelime sayımı değil**
+  (`acmart.cls:2516`); sayfalamayı değiştirmez. Preprint modunda basılmaz.
 
 ## Gönderim / camera-ready anahtarları
 

@@ -16,7 +16,9 @@ kpsewhich libertine.sty >/dev/null || echo "[paper] UYARI: libertine yok -> micr
 mt=$(grep -c "^[^%]*\\\\maketitle" "$SRC/main.tex" || true)
 [ "$mt" = "1" ] || { echo "[paper] HATA: etkin \\maketitle sayısı $mt (1 olmalı)" >&2; exit 1; }
 
-rm -rf "$OUT"; mkdir -p "$OUT"
+# build/ icinde yalniz teslim edilecek iki dosya yasar: main.pdf ve Overleaf zip'i.
+# Kaynak kopyalari ve TeX ara dosyalari derleme SONUNDA silinir (asagida).
+mkdir -p "$OUT"; rm -f "$OUT"/*.tex "$OUT"/*.bib "$OUT"/main.*
 cp "$SRC"/*.tex "$SRC"/*.bib "$OUT/"
 cd "$OUT"
 pdflatex -interaction=nonstopmode main.tex >/dev/null || true
@@ -50,3 +52,6 @@ echo "[paper] $(pdfinfo main.pdf 2>/dev/null | awk '/^Pages/{print $2}') sayfa -
 u=$(grep -c "Warning: \(Citation\|Reference\) .* undefined" main.log 2>/dev/null || true); u=${u:-0}
 echo "[paper] tanimsiz atif/referans: $u"
 [ "$u" = "0" ] || { echo "[paper] -> bibtex'i tekrar kosmak gerekebilir" >&2; }
+# TEMIZLIK: kaynak kopyalari + .aux/.bbl/.blg/.log/.out gider, main.pdf kalir.
+# Hata yolunda yukarida cikildigi icin log orada duruyor; burasi yalniz basarili derleme.
+rm -f "$OUT"/*.tex "$OUT"/*.bib "$OUT"/main.aux "$OUT"/main.bbl "$OUT"/main.blg "$OUT"/main.log "$OUT"/main.out
