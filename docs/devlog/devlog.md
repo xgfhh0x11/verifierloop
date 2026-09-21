@@ -8736,3 +8736,43 @@ reference/lock teması (241) kıpırdamadı: gövdesi rbtree/list/spin_lock, hep
 active_rcu_lock artık durumun parçası olduğundan bölge içi bir checkpoint states_equal'ı onu
 karşılaştırmaya zorlar (P(see) mekanizması mevcut, bu turda izole edilmedi; subspairs=24708).
 cargo test -p pipeline yeşil, enstrüman bozulmadı.
+
+## 0123 — Av loop'u yeniden kuruldu ve ilk uyanma: sdiv üzerinden reg-invariants (F2 sınıfı, yeni giriş noktası)
+
+Kullanıcı "gerekli turları koşturabilmek için gerekeni yap, sonra logic bug aramaya devam"
+dedi. Reboot'ta scratchpad'le giden conductor'ı `.lab/hunt-loop.sh`'ye (kalıcı, gitignore'lu)
+yeniden kurdum: kalibre -> ara -> analiz -> karşılaştır, tur başına ayrı seed, enstrümanlı
+stock-upstream kernelde. Uçtan uca doğrulandı (round 211), passmax coverage-fraction ölçeğine
+(3681) sabitlendi, sonsuz loop 212'den başlatıldı.
+
+### 1. Turlar koştu, ilk uyanma round 215'te
+
+212-214 temiz (findings=0). Round 215 (seed 0x5EED0215) uyandı. İlk sınıflandırma YANLIŞTI:
+"olası panik" dedi. Sebep: conductor'ın çökme-grep'i `-i` bayrağıyla ve `RIP:` desenleriyle
+WARN splat'ine takıldı — "verifier **bug:**" ve "RIP: reg_bounds_sanity_check". Bu bir çökme
+değil, WARN_ONCE. Grep sert-çökme belirteçlerine (büyük/küçük harf duyarlı) daraltıldı.
+
+### 2. Gerçek olay: REG INVARIANTS VIOLATION (alu)
+
+verifier.c:2211'de WARN, call trace `check_alu_op -> do_check_common -> bpf_check`. Tetikleyen
+insn `28: (3c) w7 s/= w9` — işaretli 32-bit bölme. Bu F2 SINIFI (reg invariants) ama FARKLI
+giriş noktası: F2 sync_linked_regs'ti, bu ALU/işaretli-bölme. Aynı turda harness'ın kendi
+reg-inv oracle'ı 81 `FINDING kind=reg_invariants_violation` bastı (findings=0 sayacında;
+bilgi amaçlı). Yani 215'in seed'i işaretli-bölme reg-invariants damarına girdi.
+
+### 3. Negatif kontrol daraltıyor
+
+`harness/sdivprobe.c` (standalone, 5 kol): TAZE tam-u32 operandlarla sdiv32/smod32/sdiv64/
+smod64 + kontrol udiv32 — hepsi KABUL, hiç WARN yok. Yani "iki tam-aralık skalerin işaretli
+bölünmesi" değil; bölenin spesifik aralığı (r9=r6, `s< 12` dalı + xor-döngüsü sonrası)
+gerekiyor. Tüm sdiv32 bozuk değil. Minimal şeklin hangi aralık-yapısını istediği açık iş
+(tam program kaydedildi: `.lab/reginv-alu-r215.txt`).
+
+### 4. Hüküm ve conductor
+
+F2 ile aynı hüküm: bilinen sınıf (Vishwanathan RFC), WARN yolu sound (∅ -> ⊤). "Bilinen
+sınıf, yeni giriş noktası" — kaydedildi, tek başına bug raporu değil. Conductor artık reg-inv
+WARN'ını imzasıyla tanıyor: kaydet + logla + DEVAM (uyanma yok), yeni giriş noktasını ledger'a
+yüksek sesle işaretle (`.lab/known-reginv-sigs.txt`, `alu` ile tohumlandı). UYANMA yalnız sert
+çökme ya da reg_invariants-DIŞI bir harness bulgusu (bpfref differential, subsumption/liveness/
+pruning) için — asıl aradığımız yeni sinyaller. Loop 216'dan devam ediyor.
