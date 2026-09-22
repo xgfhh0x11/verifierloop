@@ -8776,3 +8776,40 @@ WARN'ını imzasıyla tanıyor: kaydet + logla + DEVAM (uyanma yok), yeni giriş
 yüksek sesle işaretle (`.lab/known-reginv-sigs.txt`, `alu` ile tohumlandı). UYANMA yalnız sert
 çökme ya da reg_invariants-DIŞI bir harness bulgusu (bpfref differential, subsumption/liveness/
 pruning) için — asıl aradığımız yeni sinyaller. Loop 216'dan devam ediyor.
+
+## 0124 — "sdiv reg-invariants" damıtıldı: minimal 3 gen, ve isim yanlıştı
+
+0123'te round-215 WARN'ını "işaretli-bölme reg-invariants" diye adlandırmıştım — çünkü WARN
+tam `w7 s/= w9`'un yanında ateşledi. Kullanıcı minimal şekli istedi; damıtma ismi çürüttü.
+
+### 1. Alet: tek boot'ta çoklu replay + gen delta-debug
+
+Harness'ın reg-inv FINDING satırları genomu taşıyor (`genes=N hi=...`), ve `--fuzz-replay`
+her genom için `base_verdict` (bayraksız) ile `inv_verdict` (BPF_F_TEST_REG_INVARIANTS)
+basıyor. Oracle: base=accept & inv=reject errno=14. Bu EFAULT yolu WARN_ONCE'a bağlı DEĞİL,
+yani tek boot'ta çok sayıda aday güvenilir değerlendirilir. `.lab/run-replaybatch-vm.sh` bir
+dosyadaki tüm spec'leri tek boot'ta koşuyor; `ddmin.py` tur başına tüm tek-gen-çıkarmalarını
+tek boot'ta deneyip ihlali koruyanı seçiyor. Loop bu iş için durduruldu (paylaşılan rootfs).
+
+### 2. Sonuç: 8 gen -> 3 gen, VE sdiv geni ATILDI
+
+En kısa sdiv-içeren genom (8 gen) 1-minimal'e indirildi: **3 gen**, ve delta-debug **SDIV
+genini attı** — ihlal onsuz da sürdü. Minimal:
+`--fuzz-replay 'genes=3 hi=0:15.2.2.4.10,4.1.1.11.51,10.0.0.3.39'` =
+GI_DIAMOND + GI_NARROW + GI_PAIR. Aynı WARN imzası (REG INVARIANTS VIOLATION (alu),
+check_alu_op, var_off=(0xd,0x2)). Yani round-215'teki işaretli-bölme TESADÜFTÜ — WARN'ın
+yanında duruyordu, sebebi değildi.
+
+### 3. Gerçek çekirdek: bağlı-register, F2 ailesi
+
+Minimal disasm: `20: r7=r6` (link), `21: r7+=4` (ADD_CONST bağ), `23: if r7>0xc` (bağlı ÜYE
+üzerinde dal → sync_linked_regs r6'yı [5,7]'ye rafine ediyor), önünde bir DIAMOND (insn 17)
+r6'ya iki birleşen durum veriyor, sonra `24: r6+=r6` ALU'sunda reg_bounds_sanity_check
+tutarsızlığı yakalıyor. Bu **F2'nin sync_linked_regs ailesi** (finding-0113), ayrı bir sdiv
+hatası değil. Üç gen de yük taşıyor (hiçbiri çıkarılamıyor). Tam kayıt: `.lab/reginv-minimal.txt`.
+
+### 4. Ders
+
+WARN'ın işaret ettiği komut sebep değildir. Splat'in yanındaki insn'e güvenip oraya (sdiv)
+oracle kurmak yanlış aileyi kovalardı; genomu delta-debug etmek doğru çekirdeği (bağlı-register)
+verdi. Hüküm değişmedi: bilinen sınıf, sound WARN yolu. Loop 253'ten devam ediyor.
