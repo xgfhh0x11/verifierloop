@@ -1,0 +1,27 @@
+verifierloop — EK F Birinci Statü Vakası F-1 (ön-kayıt, DEĞİŞMEZ commitment metni)
+Kayıt: 2026-09-23. Çözülme: 2026-10-23 (30 gün) ya da ilk CVE-değeri uyanması.
+Kaydı yapan: verifierloop av-döngüsü ajanı (Claude), sonuç bilinmeden.
+
+KARAR (çerçeveyle): Mevcut enstrümanı mevcut gramerde koşturmaya devam et; kfunc/referans
+gramer genleri ekleyip o yüzeyde bulgu arama pivotu yapma. Gerekçe: erişim gramere bağlı ve
+doygun (~6260 seen_pcs, doğrulama-geçişi ~3680-3695/10258 platoda, 250+ tur); görme yalnız
+doğrulayıcı-olmayan referansın (bpfref; in-tree test bayrakları) olduğu skaler/pruning
+yüzeyinde yüksek, o yüzey doygun; taze yüzeyde (kfunc/BTF, referans/kilit, tip) oracle kör.
+
+TAHMIN (2026-09-23 -> 2026-10-23, döngü koştuğu sürece): SIFIR üretim-CVE'si-değeri taşıyan
+bulgu. "CVE-değeri" = stok (bayraksız = base) doğrulayıcının gerçekten güvensiz bir programı
+KABUL etmesi; kanıtı: elle-triyajı ayakta kalan bir bpfref çalışma-anı diferansiyeli, VEYA
+gerçek bir sound-olmayan kabule triyaj edilen bir base-kabul+freq-red (prune_verdict_disagreement),
+VEYA base'in kabul ettiği bir programdan gelen kernel oops/panic. Bu arada reg_invariants
+(sync_linked_regs/alu ailesi) ve prune_soundness_desync sinyalleri tekrarlamaya devam eder ve
+HER BİRİ üretim-güvenli triyaj olur (base reddeder ya da base kabul edip WARN yolu sound toparlar).
+
+YANLIŞLAMA (önden sabit): 2026-10-23'ten önce yukarıdaki anlamda TEK bir CVE-değeri taşıyan,
+elle-triyajı ayakta kalan bulgu -> bu okuma ("enstrüman çözülmüş bir yüzeye nişanlı") düşer.
+İkincil zayıf çürütme: reg_invariants/prune benign sinyalleri sıfıra düşerse yüzey tetiklenmiyor
+demektir.
+
+Çözüm kanıtı: .lab/hunt-ledger.txt (zaman damgalı turlar) + her CVE-uyanmasının artefaktı.
+Git çivi commit'i: b17151d (2026-09-23 15:48:50 +0300).
+
+nonce: ed4ff9f3b8865f74fdec1410cbbebaf79596f54c09ffb9ba47aded2d54777c06
