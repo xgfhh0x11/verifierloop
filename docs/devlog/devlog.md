@@ -8813,3 +8813,40 @@ hatası değil. Üç gen de yük taşıyor (hiçbiri çıkarılamıyor). Tam kay
 WARN'ın işaret ettiği komut sebep değildir. Splat'in yanındaki insn'e güvenip oraya (sdiv)
 oracle kurmak yanlış aileyi kovalardı; genomu delta-debug etmek doğru çekirdeği (bağlı-register)
 verdi. Hüküm değişmedi: bilinen sınıf, sound WARN yolu. Loop 253'ten devam ediyor.
+
+## 0125 — Loop'un ikinci uyanması: prune_soundness_desync, triyaj = üretim-güvenli
+
+Round 269 (seed 0x5EED0269) reg_invariants-DIŞI ilk bulguyla uyandı: `prune_soundness_desync`,
+`base=reject freq=accept`. Aradığımız yeni sinyal türü — dikkatli triyaj ettim.
+
+### 1. Elle türetme
+
+Genom replay edildi (deterministik). `base_verdict=reject errno=22 reason=verdict`: insn 28
+`r1 = r10; r1 += r7` "pointer offset is not safe" — stack pointer'a sınırsız skaler eklenip
+`*(u8*)(r1-64)=54` OOB olabilir. `freq_verdict=accept` (BPF_F_TEST_STATE_FREQ). İki feasible
+yol da güvenli: yol A r7=0; yol B r7=0x200000000 olduğundan insn 26 `if r7>0x2` daima goto'yu
+alır (fallthrough infeasible). base bir state-merge'de precision kaybedip r7'yi [0,büyük]
+sanarak FAZLADAN reddediyor; freq yolları ayrı tutup doğru kabul ediyor.
+
+### 2. Hüküm: üretim-güvenli, ve sınıfın tamamı öyle
+
+`base`, oracle'da bayraksız yükleme — yani stock kernel'in ta kendisi. base REDDEDIYOR, yani
+stok upstream bu programı zaten reddediyor: **üretimde soundness açığı yok.** Tanım gereği
+`prune_soundness_desync` = freq-kabul + base-red, dolayısıyla base her zaman reddeder ve bu
+SINIFIN TAMAMI üretim-güvenli. Bu instance muhtemelen base over-rejection (completeness),
+freq doğru.
+
+### 3. Oracle yön boşluğu
+
+Harness yorumu "freq-kabul+base-red yalnız sound-olmayan regsafe'den olur" diyordu. Ama BASE
+de kendi checkpoint precision kaybıyla fazladan reddedebilir — aynı yöne düşer ama benign.
+Yani "prune_soundness_desync" ismi fazla iddialı. Asıl üretim-tehlikeli yön TERS: base KABUL +
+freq red (`prune_verdict_disagreement`) — orada stock kabul ediyor, gerçek bir base-unsoundness
+orada saklanır.
+
+### 4. Conductor
+
+`prune_soundness_desync` artık reg_invariants gibi log+kaydet+devam (üretim-güvenli, tekrarlıyor).
+Uyanma hâlâ: bpfref runtime differential (en güçlü üretim-unsoundness sinyali),
+prune_verdict_disagreement (base-kabul yönü), liveness/subsumption uyuşmazlıkları, sert çökme,
+bilinmeyen tür. Artefakt `.lab/prune-r269-triage.txt`. Loop 270'ten devam.
