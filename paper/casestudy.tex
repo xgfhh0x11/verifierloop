@@ -20,7 +20,7 @@ state is covered by another, which authorizes pruning the search.
 
 Both are independent reimplementations, written from the algorithm rather than from
 the code, sharing no source with the component they judge. Both follow the same
-rule: where the model cannot decide, it refuses and the case is counted, rather than
+rule: where the oracle cannot decide, it refuses and the case is counted, rather than
 approximated. Both were exercised on the same generated corpus and calibrated by the
 same protocol.
 
@@ -49,41 +49,42 @@ way; for the rest the defective state was already printed in the fix's own messa
 or the question was decidable by aligning source lines. Appendix~B separates the
 three. Two pairs per oracle carry the argument here.
 
-$A$, positive. A defect in control-flow graph construction dropped an edge, so a
+Oracle~$A$, positive. A defect in control-flow graph construction dropped an edge, so a
 register that was live was recorded dead. The oracle reported a single cell---the
 instruction and register the fix itself names---on the defective build, and nothing
 on the fixed one.
 
-$A$, boundary. A defect made the kernel treat a register as used when it need not
+Oracle~$A$, boundary. A defect made the kernel treat a register as used when it need not
 be. The deviation is conservative, and the oracle is \emph{required} to stay silent;
 it does. A calibration whose correct outcome is silence is what separates an oracle
 from a difference detector.
 
-$B$, positive. A defect in the identity-matching arm of the subsumption predicate.
+Oracle~$B$, positive. A defect in the identity-matching arm of the subsumption predicate.
 The oracle fires on the defective build; on the fixed build the objected-to pruning
 event does not merely become acceptable, it stops occurring, because the predicate
 now refuses the pair.
 
-$B$, boundary, and it is the axis made concrete. A defect corrupts the precision
+Oracle~$B$, boundary, and it is the axis made concrete. A defect corrupts the precision
 flag that the predicate reads to decide whether to compare at all. The defective
 kernel short-circuits on the corrupted flag; the oracle reads the same flag from the
 same state and short-circuits identically. Three lines---the kernel's, that era's
-kernel, and the model's---align on the same condition. The classification was
+kernel, and the oracle's---align on the same condition. The classification was
 derived from source and required no build.
 
-$B$ is not less careful than $A$. It is blind for a reason legible in its signature.
+Oracle~$B$ is not less careful than $A$. It is blind for a reason legible in its signature.
 
-\subsection{The procedure, applied ahead of the oracle}
+\subsection{The procedure, applied to material that predates the oracle}
 
-The population is fifty-seven fixes to the component's history, and how it was
-assembled matters. A first partition of forty fixes was made early in the project and
-its per-commit list was not retained; its aggregate---23 blind, 2 predicate, 15
-outside---was the paper's headline until the list was found unrecoverable, at which
-point the partition was rebuilt under a pre-registered protocol with a mechanical
-frame: every fix with a \texttt{Fixes:} trailer touching the state-equivalence files
-whose message matches a fixed pattern for printed verifier state, minus the sixteen
-calibration pairs and the twenty-eight held-out cases already classified. The frame,
-both raters' files, and every anchor are artifacts; Section~4.2's claim now holds for
+The population is fifty-seven fixes to the component's history, drawn under a
+pre-registered protocol by a mechanical frame (an earlier forty-fix partition, whose
+list was not retained, is reported in Section~4.2): every fix with a \texttt{Fixes:}
+trailer touching the state-equivalence files whose message matches a fixed pattern for
+printed verifier state, sixty-eight in all, minus the eleven calibration pairs that fall
+inside it. (The twenty-eight held-out cases were drawn from the complement of this
+frame and remove nothing from it.) Two of the eleven excluded pairs are predicate
+defects the oracle is calibrated to see, so the exclusion lowers the targeted share and
+raises the blind one; Section~6 gives the shares with the pairs restored. The frame,
+both raters' files, and every anchor are artifacts; Section~4.2's claim holds for
 this partition without qualification. The population satisfies Section~3.2's
 precondition: it is not drawn from what any oracle here reported. It does
 \emph{not} satisfy the weaker second requirement---the frame selects on printed
@@ -91,7 +92,7 @@ internal state, a property that may correlate with how a defect was found---and 
 bias is carried into Section~6 rather than left here.
 
 Each fix was classified by the single question of Section~3.3, decided from the
-diff, by two raters who did not see each other's labels:
+diff, by two model raters (Section~6) who did not see each other's labels:
 
 \begin{itemize}
 \item \textbf{24 of 57} corrupt an artifact $B$ consumes. Structurally blind.
@@ -116,8 +117,8 @@ excerpt and the second read the full diff, so the truth is likely between them.
 Read the other way: within this frame the more sophisticated of the two oracles is
 structurally blind to \textbf{42\%} of the defects and can target \textbf{2\%}. Both
 numbers are properties of the frame as much as of the oracle---Section~6 measures the
-frame's enrichment for the oracle's own path at about threefold, and on the
-unfiltered complement the on-path share is 3 of 20 with no predicate defect among
+frame's enrichment for the oracle's own path at roughly two- to threefold, and on the
+complement frame the on-path share is 3 of 20 with no predicate defect among
 them---and both were obtainable before the oracle existed, from material the project
 already had, at the cost of opening fifty-seven commits.
 
@@ -136,8 +137,8 @@ Table~\ref{tab:map} reduces the resulting map to the rows this section argues fr
 Appendix~A carries all 56 cells.
 
 The same dependence bounds what an entangled oracle can find when it does fire, and
-the system under test makes the mechanism legible. A third channel in this subject
-reads the verifier's own internal assertion: the kernel checks its register
+the system under test makes the mechanism legible. A third channel in this subject (V in
+Appendix~A) reads the verifier's own internal assertion: the kernel checks its register
 invariants and reports a violation as its own bug. That reference is the component's
 account of itself, and it carries the component's judgement about which states are
 worth asserting over---including the recovery attached to that judgement. Detection
@@ -164,11 +165,9 @@ governs the model's independent arithmetic as a switch rather than as an operand
 a register's range had been emptied by an upstream defect, the oracle's range
 comparison never executed: every scalar register was short-circuited out and the
 oracle agreed without looking. The switch is therefore what makes that pair a boundary, and the
-measurement says so rather than inferring it. This cuts slightly against the
-paper's own economy: the bound came from reading, but the mechanism behind one of its
-boundaries came from running, and we do not think the mechanism was recoverable
-without the run. The procedure bounds; calibration explains. The two are not the same
-act and the paper should not be read as claiming the first replaces the second. A defect above
+measurement says so rather than inferring it. The bound came from reading; the
+mechanism behind this boundary came from running. The procedure bounds, calibration
+explains, and the first does not do the second's work. A defect above
 such a switch is not mis-decided; it is never examined---which is a stronger and
 narrower statement than blindness by shared value, and the one the axis should be
 read to make.
@@ -177,7 +176,8 @@ read to make.
 \caption{Blind-spot map, reduced. \textbullet~calibrated positive;
 \textcircled{~}~measured boundary; \rule[0.5ex]{1.6ex}{0.4pt}~structurally blind.
 \textbf{An empty cell means untested, not blind}---the distinction the map exists to
-preserve. Full matrix with the fix anchoring each cell in Appendix~A.}
+preserve. \emph{u}~a named gap, modelled by no oracle here and not a measured boundary.
+Full matrix with the fix anchoring each cell in Appendix~A.}
 \label{tab:map}
 \small
 \begin{tabular}{lcc}
@@ -188,7 +188,7 @@ state, self-inconsistent      &            & \rule[0.5ex]{1.6ex}{0.4pt} \\
 state, consistent but wrong   &            & \rule[0.5ex]{1.6ex}{0.4pt} \\
 bookkeeping (precision flag)  &            & \textcircled{~} \\
 predicate, modelled arm       &            & \textbullet \\
-predicate, unmodelled arm     &            & \textcircled{~} \\
+predicate, unmodelled arm     &            & \emph{u} \\
 liveness / control flow       & \textbullet\ \textcircled{~} & \\
 \bottomrule
 \end{tabular}

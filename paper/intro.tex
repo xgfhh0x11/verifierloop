@@ -25,7 +25,7 @@ This is not a fine distinction that practice already respects; practice pushes t
 other way. Artifacts produced by the system under test---intermediate
 representations, execution profiles, planner estimates, internal state dumps---are
 the richest and cheapest signal available, and oracles are built on them
-\emph{because} they are rich. Equivalence Modulo Inputs derives its variants from a
+\emph{because} they are rich. Equivalence Modulo Inputs (EMI) derives its variants from a
 profile of the program under test~\cite{le2014emi}; NoREC evaluates its reference on
 the very engine it is testing~\cite{rigger2020norec}. Both are effective, and both
 are evidentially entangled with some component of the system they judge. The
@@ -52,14 +52,15 @@ it under identical discipline---same corpus, same author, same
 refusal-over-approximation rule, both independent reimplementations---differing in
 one respect that is visible in their type signatures: one consumes the emitted
 instruction stream, the other consumes the state the verifier itself wrote. Their
-blind-spot classes separate exactly as the axis predicts, and each side is anchored
+blind-spot classes fall as the axis says they must---this is illustration, close to
+analytic; the tests are the partition and the held-out predictions---and each side is anchored
 by calibration against real defects: sixteen pairs, most built from a kernel that
 carried the defect and one that did not, the rest settled without a build, from the
-defective state the fix's own message prints or from the source itself. Applying the procedure ahead of time to
+defective state the fix's own message prints or from the source itself. Applying the procedure, from material that predates either oracle, to
 fifty-seven historical fixes---those whose messages quote internal state, a frame we
-later measure to be enriched about threefold for the oracle's own path---shows that
+later measure to be enriched roughly two- to threefold for the oracle's own path---shows that
 the more sophisticated of the two oracles is structurally blind to 42\% of that
-population and can target 2\% of it; on the unfiltered complement both shares fall.
+population and can target 2\% of it; on the complement frame both shares fall.
 Either way the result was available before the oracle was written.
 
 A differential oracle's blind-spot class follows from where its reference reads, not

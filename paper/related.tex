@@ -59,21 +59,21 @@ which its authors name as a trusted computing base. Two oracles for one componen
 sharing a subject and almost nothing else, is what the axis is for; they are the
 opposing corners of Figure~\ref{fig:axes}.
 
-\paragraph{EMI, and a prediction we registered and lost.}
+\paragraph{EMI, and a prediction that did not hold.}
 EMI derives variants by profiling a program and pruning code the profile marks
 unexecuted~\cite{le2014emi}, so its evidence passes through the system under test for
-everything except the presence of that code. Before reading the paper we recorded a
-falsifiable prediction: that its stated limitations would include the class the axis
+everything except the presence of that code. Before reading the paper we wrote down, in
+working notes that the artifact does not contain, the expectation that its stated limitations would include the class the axis
 implies---defects affecting a program and its variant identically. They do not. The
 paper's stated limitations concern extension to other languages, floating-point
-equivalence, and undefined behaviour. By the criterion we fixed in advance, the
-prediction failed.
+equivalence, and undefined behaviour. By that criterion the expectation was not
+met.
 
 A second prediction, that the reported defects would concentrate in components
 sensitive to surrounding code, holds---``most of the bugs that Orion found in GCC are
 optimizer bugs''---but we do not count it. EMI targets optimizations by construction,
 so the observation does not separate our axis from the technique's own stated aim, and
-a weakly diagnostic confirmation does not offset a falsified prediction.
+a weakly diagnostic confirmation does not offset a prediction that did not hold.
 
 \paragraph{What the record does and does not supply.}
 Authors do sometimes state what their oracle cannot see: Csmith names the shared-defect

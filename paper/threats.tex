@@ -1,19 +1,25 @@
 Section~4 asked how a procedure can be evaluated at all. This section asks what
 could make the specific claims of Section~5 wrong, and what would settle each.
 
-\paragraph{The population's frame is biased, and the direction is now measured.}
+\paragraph{The population's frame is biased, and the direction is measured.}
 Section~3.2 states two requirements on the population. The first---independence from
 any oracle's findings---is satisfied. The second is not: the fifty-seven fixes were
 selected because their messages quote internal state, which is what makes them
 readable. That property may correlate with how a defect was found and reported, so
 the frame is not a random sample of the component's defect history.
 
-The held-out work of Section~4.1 measures the bias, because its frame was drawn from
-the complement of that filter---fixes in the same component and window whose messages
-do \emph{not} quote internal state. In the filtered frame, 25 of 57 defects lie on
-the state-equivalence path; in the unfiltered complement, 3 of 20
-($p = 0.030$, Fisher's exact, two-sided). Selecting on messages that quote verifier
-state over-represents state-equivalence-path defects roughly threefold.
+The held-out work of Section~4.1 bounds the bias, because its frame was drawn from
+the complement of that filter---fixes in the same component whose messages do
+\emph{not} quote internal state---restricted, for buildability, to fixes since 2023.
+In the filtered frame, 25 of 57 defects lie on the state-equivalence path; in the
+complement frame, 3 of 20 ($p = 0.030$, Fisher's exact, two-sided). The comparison
+confounds the filter with the window: the flagship frame carries no date cut and runs
+from 2016 to 2026. Restricted to the 22 flagship fixes since 2023, 8 lie on the path,
+against 3 of 20 in the complement; the point estimate is still about 2.4-fold, but at
+these sizes it is not significant ($p = 0.17$). Selecting on messages that quote
+verifier state over-represents state-equivalence-path defects; the size of the
+enrichment is measured on unequal windows and should be read as roughly two- to
+threefold.
 
 This does not overturn the figures in Section~5.3; it corrects what they are
 fractions of. It also exposes an asymmetry between the two requirements of
@@ -24,15 +30,29 @@ inflates exactly the quantity reported: a frame selected on printed verifier sta
 a frame selected on the oracle's own inputs. The two requirements are separable in
 principle; in this application the one that failed was the one whose failure flatters
 the number. The 42\% blind and 2\% targeted are conditional on a frame enriched
-for the very path the oracle operates on, and on an unfiltered frame both shares
+for the very path the oracle operates on, and on the complement frame both shares
 fall. What the procedure delivers unconditionally is the classification of a given
 population, not a population-independent constant---which is Section~3.4's point,
 arriving here as a measurement rather than a caution.
 
-\paragraph{The partition was produced with assistance, and its reproducibility is
-measured with a model rater, not a human one.}
-Classification was carried out with automated help, and only the decision-changing
-case of the flagship partition was re-derived by hand. Section~4.5 now supplies
+\paragraph{The frame excludes the calibration pairs, in the direction that flatters the
+number.}
+The sixty-eight fixes matching the frame's pattern include eleven of the sixteen
+calibration pairs, and the pairs were removed before classification because they had
+already been used to calibrate the oracles. Two of the eleven are predicate defects the
+oracle is calibrated to see. The exclusion therefore lowers the targeted share and
+raises the blind one: with the pairs restored the oracle can target 3 of 68 rather than
+1 of 57, and its realized reach is 2 of 68 rather than 0 of 57. The blind share on the
+restored frame was not re-rated; the eleven pairs are classified in Appendix~B by the
+oracle each anchors, not by the step of Section~3.3.
+
+\paragraph{Both partitions were produced with model assistance, and reproducibility is
+measured between two model raters, not humans.}
+Classification was carried out with automated help: the first rater is the author's own
+model-assisted session, the second an independent model instance given only the
+question, the consumption set and the diffs. The coefficients therefore measure
+agreement between two model readers of the same diffs. Only the decision-changing
+case of the flagship partition was re-derived by hand. Section~4.5 supplies
 inter-rater measurements on both the held-out cases and the rebuilt flagship
 partition; the original forty could not be re-rated because its list was not
 retained (Section~4.2). Its result cuts both
@@ -43,6 +63,25 @@ used \emph{Undecided} where the first never did, and the disagreements clustered
 seam in the step's own wording.
 A human inter-rater study over the full population remains the experiment that would
 settle it.
+
+\paragraph{One oracle was modified after a failed run.}
+The visible held-out case fired only after the oracle's era routing was corrected
+(Section~4.1). The modification was to routing, not to the predicate, and the case is
+counted as a calibration pair rather than a held-out confirmation; still, the one case
+on the visible side was reached by changing the oracle, and a reader may weigh it
+accordingly.
+
+\paragraph{One author built the oracles, chose the frames and classified.}
+The design holds confounds constant at the price of experimenter independence: the
+same person wrote both oracles, fixed the frames and acted as the first rater. The
+mechanical frame, the pre-registered batches and the blind second rater limit what
+that person could steer; they do not remove the dependence.
+
+\paragraph{The frame's pattern is a proxy.}
+``Quotes internal state'' is operationalized as a fixed regular expression over the
+fix message; messages that print state in another form are missed, and 437 fixes
+narrow to 68 on that proxy. Nothing in the classification depends on the proxy being
+complete, but its representativeness for the component's history is not measured.
 
 \paragraph{The contrast is two oracles in one system.}
 Confounds are held constant rather than randomized: same corpus, same discipline,

@@ -8850,3 +8850,28 @@ orada saklanır.
 Uyanma hâlâ: bpfref runtime differential (en güçlü üretim-unsoundness sinyali),
 prune_verdict_disagreement (base-kabul yönü), liveness/subsumption uyuşmazlıkları, sert çökme,
 bilinmeyen tür. Artefakt `.lab/prune-r269-triage.txt`. Loop 270'ten devam.
+
+
+## 0126 — Makalenin ilk hakem turu (2026-10-28): dört içerik düzeltmesi; kaynak WSL paper/
+
+Hakem oturumu (bağımsız Claude örneği) raporu: `Desktop/verifierloop-paper/kirma_2026-10-28_rapor.md`; puan C (weak reject), 1–5 kapanırsa B. Bu turda uygulananlar (git'te commit edilmedi; yedek `paper/yedek-pre-kirma-2026-10-28/`):
+
+1. **EMI "pre-registered" düştü.** `le2014emi` girişi (sonuç notuyla) 8bdb105 (10 Eyl 01:03), related.tex ilk sürümü 0573059 (02:17) zaten sonucu içeriyor; okuma öncesi kayıt ne repoda ne docs'ta. Özet, §7 ve main.tex yorumu: "wrote down before reading, in working notes the artifact does not contain; did not hold". "falsified / pre-registered" EMI için kalktı.
+2. **"Ahead of construction" düştü.** Sıra: 0099 B modeli → 0101/0102 pozitifler → 0102 ilk 40'lık bölüntü → 0120 57'lik. Doğru iddia: "run on material that predates the oracle". Özet, §1, §5.3 başlığı.
+3. **Çerçeve çıkarması açıkça söylendi ve ölçüldü (bu oturumda `.lab/bpf-next` üzerinde yeniden üretildi):** 437 → regex 68 → eksi 11 (çerçeve içindeki kalibrasyon çiftleri; 28 held-out regex'e uymuyor, çıkarma sıfır etkili) → 57. Çıkarılan 11'in ikisi B'nin yüklem pozitifi (`fd675184fc7a`, `cd5b460ed1ec`). 68 üzerinde hedeflenebilir 3/68, gerçekleşen 2/68 (57'de 1/57, 0/57). §5.3 cümlesi ve §6'ya yeni paragraf; kör pay 68 üzerinde yeniden sınıflandırılmadı (açık).
+4. **Pencere karışması ölçüldü:** amiral çerçeve tarih kesimsiz (2016-05-19…2026-07-14), held-out tümleyen `--since=2023`. Amiral 57'nin ≥2023 alt kümesi: 22 fix, yolda 8 (36%); 3/20'ye karşı Fisher p = 0,166 (anlamlı değil; nokta tahmini ~2,4×). Tam 57'de p = 0,030 (25/57 vs 3/20). §6 paragrafı buna göre; "unfiltered" → "complement frame" her yerde.
+5. Diğer: §4.5 üç uyuşmazlık (ikisi stack slot, H22 `collect_linked_regs`/`id`); κ eşik cümlesi ön kayıttaki "zayıflatır / destekler" diline; Tablo 1 "predicate, unmodelled arm" → *u* (Ek A ile tutarlı); Ek A satır 4-R boş (hang = altyapı sınırı), türetilmiş Bld hücreleri için kural cümlesi, boş hücre 35 → 36; dört başlık tuzağı SHA dipnotu (dördü de 57'de); §6'ya model-rater beyanı (Rater 1 = yazarın model destekli oturumu), "oracle koşumdan sonra değişti", "tek yazar", "regex proxy" paragrafları; abstract/sonuç "reproduces" → "agrees with (κ = 0,86)", "every care available" → "independent reimplementation"; §5 kronoloji kısaltmaları; "now" kalıntıları (6) silindi; sembolle başlayan run-in başlıklar "Oracle A/B"; EMI kısaltması ilk geçişte.
+6. `refs.bib` yorumundaki "@entry" sözcüğü BibTeX'i kırıyordu (satır 6, `"," immediately follows an entry type`) → "an entry".
+7. Derleme: `BIBINPUTS=paper/ BSTINPUTS=paper/ latexmk -gg -pdf -outdir=build main.tex`; 12 s., 0 overfull. PDF: `paper/main.pdf`.
+
+Açık kalan (hakem D/E): 22 kaynaklık okuma listesi (`Desktop/verifierloop-paper/okuma_listesi_2026-10-28.md`); artefakt anonimleştirme (README, SUBMISSION.md, Signed-off-by, devlog); ISSTA 2027 CFP çıkınca biçim; A-9 ikinci yarısı ("three pairs selected using the partition" hangileri, Ek B'de işaretlenecek); 68 üzerinde kör payın yeniden sınıflandırılması. Desktop'taki 11 Eylül kopyası `Desktop/verifierloop-paper/eski_2026-09-11/` altına alındı; kaynak bu dizin.
+
+Ek (aynı gün, sonra): Ek B tablosu [h] ile hiç basılmıyordu ve son sayfa boş kalıyordu (0121'in sorunu metin uzayınca geri geldi); appendixB.tex \begin{table}[H] yapıldı. Son derleme 11 s., 0 overfull, çözülmemiş referans yok; Ek A tablosu son sayfanın üstünde, kaynakça altında. PDF md5 6fd81cc2af79047d21dc8897e4bf2405; okuma kopyası Desktop/verifierloop-paper/verifierloop-paper-2026-10-28.pdf.
+
+Ek 2 (aynı gün): hakem ikinci bakışı "Zenodo v2'ye engel yok" (kirma_2026-10-28b_rapor.md). T-1 ("about threefold" → "roughly two- to threefold", intro/§5.3), T-2 ("two raters" → "two model raters (Section 6)"), isteğe bağlı üçü (calibrate, the oracle's, conclusion ifadesi) uygulandı. Son derleme 11 s., 0 overfull. YUKLE_v2 yenilendi; md5 md5.txt'de. Yükleme Utku'da.
+
+Ek 3: Zenodo v2 DOI rezerve (Utku): 10.5281/zenodo.23712012; main.tex'e \titlenote (v2 DOI + v1 DOI) eklendi; paket yeniden üretildi, md5 YUKLE_v2/md5.txt.
+
+Ek 4: Zenodo v2 yayımlandı (Utku, 2026-10-27/28): kayıt DOI 10.5281/zenodo.23712012, Preprint, Version 2, CC BY 4.0; dosyalar ve md5 YUKLE_v2/md5.txt ile birebir (PDF 3a4f9909…, zip 9d305563…). CV satırı v2 DOI ile güncellendi.
+
+Ek 5: Zenodo API: 10.5281/zenodo.22893584 KAVRAM DOI'si (her zaman son sürüme çözülür; parent 22893584), v2 kayıt DOI'si 23712012 (index 1, is_last). main.tex titlenote v1 için 22893584'ü "Version 1 ... is" diye anıyor; tam doğrusu "concept DOI, resolves to the latest version". v3/ISSTA metninde düzeltilecek; v2 için yeniden yükleme gerekmez.

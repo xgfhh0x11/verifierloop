@@ -36,7 +36,7 @@ were a precision flag, register identities, a pointer type, and stack-slot
 metadata, each read from the system's own capture rather than recomputed---and all
 seven were confirmed blind.
 
-The first two batches drew from an unfiltered frame and produced no case touching
+The first two batches drew from the complement frame and produced no case touching
 the predicate at all, leaving the bound's upper arm untested. A third batch was
 drawn from a declared stratum---the same frame restricted to fixes whose
 \emph{message} mentions pruning or state equivalence---and the stratification is
@@ -49,7 +49,7 @@ that arm---indeed it is the arm on which the oracle's own calibrated positive
 fires. One further case is sharper than either arm: a fix to a second comparison
 function, correctly classified as touching the predicate, which the oracle
 nonetheless cannot see because it does not model that function. Predicate does not
-imply visible, and the held-out set now contains an instance rather than an
+imply visible, and the held-out set contains an instance rather than an
 assertion.
 
 Two further limits belong here rather than in Section~6, because they bound what
@@ -98,7 +98,7 @@ open it and re-derive the decision in minutes, without the system, the corpus, o
 any part of our infrastructure.
 
 This is what a classification procedure can offer in place of a score. The claim is
-not ``trust the partition'' but ``check any row of it''---and it now holds for every partition
+not ``trust the partition'' but ``check any row of it''---and it holds for every partition
 in the paper. It did not always. The first flagship partition, of forty fixes, was
 classified with anchors recorded in an engineering log but without retaining the
 per-commit list as one artifact; when a reviewer asked whether its rows could be
@@ -153,18 +153,20 @@ the same question, gives the same answer.
 
 On the held-out cases, raw agreement was 25 of 28 and Cohen's $\kappa = 0.71$,
 substantial but not near-perfect. On the rebuilt flagship partition of fifty-seven,
-agreement was 53 of 57 and $\kappa = 0.86$. Both are above the threshold we
-pre-registered as falsifying the auditability claim. The second measurement carries a
+agreement was 53 of 57 and $\kappa = 0.86$. Both are above the $\kappa = 0.6$ line that the
+pre-registration named as weakening the auditability claim; the held-out figure is below
+the $0.8$ line it named as supporting it, the flagship figure above. The second measurement carries a
 caveat the first does not: the first rater read the fifty-seven diffs as truncated
 excerpts and the second read them in full, and two of the four disagreements are
 plainly the first rater's under-reading. Two details matter more than the coefficient. On the held-out cases the second rater
 answered \emph{Undecided} twice; the first rater answered it zero times in the
 sixty-eight classifications up to that point, which Section~6 had already flagged as
-suspicious, and the flag now has a measurement behind it. On the rebuilt flagship
+suspicious, and the flag has a measurement behind it. On the rebuilt flagship
 partition each rater answered it once, on different cases. And the three disagreements are not
-scattered: all three are fixes that write a \emph{stack slot}, which this oracle does
-not consume at all. The first rater called them blind-by-corruption (Yes); the second
-called them not-consumed (No) or Undecided. Both readers agree the oracle is blind to
+scattered: two are fixes that write a \emph{stack slot}, which this oracle does not
+consume at all, and the third is a fix whose diff shows the filter on linked registers but
+not the write to the \texttt{id} field the oracle consumes. The first rater called all
+three blind-by-corruption (Yes); the second called them not-consumed (No) or Undecided. Both readers agree the oracle is blind to
 them; they disagree on which of the step's answers that blindness belongs to, and the
 step's wording is what is at fault: its ``No'' covers both a defect the oracle could
 in principle observe and a defect in an artifact the oracle never reads, and only the

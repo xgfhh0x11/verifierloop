@@ -75,7 +75,9 @@ Two disciplines make the step reliable, and both were earned rather than assumed
 First, \emph{decide from the source of the fix, never from its title or summary}.
 In an earlier partition of forty fixes, four carried titles that named a
 component the diff did not touch; a classification taken from titles would have been
-wrong in one case in ten. Second, \emph{Undecided is a bucket, not a default}. A
+wrong in one case in ten.\footnote{The four are \texttt{71b547f56124}, \texttt{763aa759d3b2},
+\texttt{cc52d9140aa9} and \texttt{4cabc5b186b5}; all four reappear in the rebuilt frame of
+Section~5.3.} Second, \emph{Undecided is a bucket, not a default}. A
 procedure that silently resolves ambiguity produces a bound it cannot support, and
 a count of undecided cases is part of the result rather than an embarrassment in it.
 
@@ -84,7 +86,7 @@ a count of undecided cases is part of the result rather than an embarrassment in
 The partition yields $\mathrm{reach}(O) \le |\{d : \text{No}\}| / |P|$, an
 \emph{upper} bound, and the slack in it has a name: predicate coverage. A defect the
 oracle does not consume may still lie in an arm the oracle never implemented, and
-$|\{\text{No}\}|$ counts it anyway. In Section~5 the bound is $1/57$ and the
+The count of No answers includes it anyway. In Section~5 the bound is $1/57$ and the
 realized reach is $0/57$; the difference is one such arm. This slack is not
 irreducible before a build, because which arms an oracle implements is a property
 of the oracle's source, readable the same way the partition is. Being outside the

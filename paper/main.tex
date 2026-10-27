@@ -58,6 +58,7 @@
 
 \title{Where a Test Oracle Reads From}
 \subtitle{Evidential independence as a design criterion for differential testing}
+\titlenote{Preprint, version 2 (October 2026), archived at doi:10.5281/zenodo.23712012. Version 1 (September 2026) is doi:10.5281/zenodo.22893584; the changes are listed in the record's notes.}
 
 %% PREPRINT (Zenodo): real author block. For a double-blind submission switch
 %% the class back to [sigconf,review,anonymous] -- see the note above.
@@ -102,19 +103,19 @@ of the next, so a single grade for a whole system is the wrong unit. We then giv
 procedure that converts the property into a number before the oracle is built.
 Partition the component's historical defect population---drawn independently of any
 oracle's findings---by whether each defect corrupts an artifact the oracle consumes;
-the blind partition bounds the oracle's reach. The cost is source reading: no builds,
+the blind class bounds the oracle's reach. The cost is source reading: no builds,
 no execution, no test campaign.
 
 We apply the procedure once and deeply, to two oracles for the Linux eBPF verifier
 built under identical discipline and differing in one respect visible in their type
 signatures, each side anchored by calibration against real defects. Their blind-spot
-classes separate as the axis predicts. Ahead of construction, the procedure showed
-that, of fifty-seven documented fixes whose messages quote the verifier's internal
+classes fall as the axis says they must. Run on material that predates the oracle---the
+component's fix history---the procedure shows that, of fifty-seven documented fixes whose messages quote the verifier's internal
 state, the more sophisticated oracle is structurally blind to 42\% and can target
-2\%. That frame is enriched for the oracle's own operating region---we measure the
-enrichment at roughly threefold---so on an unfiltered frame both shares fall; what
-does not change is that the partition was available before the oracle was written,
-and that an independent blind rater reproduces it ($\kappa = 0.86$). At volume, the
+2\%. That frame is enriched for the oracle's own operating region, and on the complement
+frame both shares fall; what does not change is that the partition was available
+before the oracle was written, and that a blind model rater agrees with it
+($\kappa = 0.86$). At volume, the
 region where that oracle agreed with the kernel most completely proved to be a region
 where it agreed for the wrong reason.
 
@@ -123,9 +124,10 @@ the published record. Defect taxonomies are organized by symptom and by
 configuration, never by whether an oracle could have observed the defect. Where
 techniques do state what they cannot see, they state it by component---which part of
 the system was analysed---and two oracles covering one component can differ entirely
-in what they consume. A prediction we pre-registered, that a widely cited technique
-would state the limitation its input provenance implies, was falsified. That failure
-is the measurement, and the argument for collecting defect data on this axis.
+in what they consume. A prediction we wrote down before reading the paper---that a widely
+cited technique would state the limitation its input provenance implies---did not
+hold; the record of that prediction is in our working notes, not in the artifact. That
+failure is the measurement, and the argument for collecting defect data on this axis.
 \end{abstract}
 
 \maketitle
@@ -164,7 +166,7 @@ is the measurement, and the argument for collecting defect data on this axis.
 %% DRAFTED — see paper/casestudy.tex. Contract honoured:
 %%   5.1 the two oracles contrasted at their INPUT (signatures carry it)
 %%   5.2 calibration, two anchors per oracle, one of them a required SILENCE
-%%   5.3 the procedure applied ahead of the oracle; bound 1/57, realized 0/57 (rebuilt partition; the original 40 was unrecoverable)
+%%   5.3 the procedure applied to material that predates the oracle; bound 1/57, realized 0/57 (rebuilt partition; the original 40 was unrecoverable)
 %%   5.4 the verification of 2.4 — agreement at volume, for the wrong reason
 %% No chronology: nothing here is justified by the order in which it happened.
 \input{casestudy}
@@ -177,8 +179,8 @@ is the measurement, and the argument for collecting defect data on this axis.
 \input{threats}
 
 \section{Related Work}
-%% DRAFTED — see paper/related.tex. Contains the pre-registered prediction about
-%% EMI that was FALSIFIED, reported as such, plus the confirmed-but-weakly-
+%% DRAFTED — see paper/related.tex. Contains the prediction about EMI, written
+%% before reading but NOT in the artifact (no pre-read commit), that did not hold, plus the confirmed-but-weakly-
 %% diagnostic second prediction that is explicitly not counted. Unusual for a
 %% related-work section; it is the evidence for the fourth contribution.
 \input{related}
@@ -191,7 +193,7 @@ is the measurement, and the argument for collecting defect data on this axis.
 
 \appendix
 \section{The Full Blind-Spot Map}
-%% DRAFTED — see paper/appendixA.tex. 56 cells, 35 of them empty, and the empty
+%% DRAFTED — see paper/appendixA.tex. 56 cells, 36 of them empty, and the empty
 %% cells are labelled UNTESTED where the reader sees them.
 \input{appendixA}
 
