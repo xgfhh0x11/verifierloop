@@ -1,5 +1,7 @@
 # verifierloop
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22893584.svg)](https://doi.org/10.5281/zenodo.22893584)
+
 A differential-testing lab for the **Linux eBPF verifier**, and the artifact for the
 paper ***Where a Test Oracle Reads From: Evidential independence as a design criterion
 for differential testing*** (ISSTA submission).
