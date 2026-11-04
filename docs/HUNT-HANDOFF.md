@@ -98,7 +98,6 @@ gerçekten sıfırdan büyük olmalı · kombinasyon kapsaması ORAN olarak geri
 
 ## 3. Harita — sıfırın okunabilmesi için gereken
 
-Tam hâli: `https://claude.ai/code/artifact/881707b8-fb9b-430a-9f68-d80b6f13fcb5`
 
 **Görülen sınıflar** (kalibre pozitif, gerçek kernel commit'iyle):
 

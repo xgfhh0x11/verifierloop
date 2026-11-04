@@ -8854,7 +8854,7 @@ bilinmeyen tür. Artefakt `.lab/prune-r269-triage.txt`. Loop 270'ten devam.
 
 ## 0126 — Makalenin ilk hakem turu (2026-10-28): dört içerik düzeltmesi; kaynak WSL paper/
 
-Hakem oturumu (bağımsız Claude örneği) raporu: `Desktop/verifierloop-paper/kirma_2026-10-28_rapor.md`; puan C (weak reject), 1–5 kapanırsa B. Bu turda uygulananlar (git'te commit edilmedi; yedek `paper/yedek-pre-kirma-2026-10-28/`):
+Bağımsız hakem oturumu raporu: `Desktop/verifierloop-paper/kirma_2026-10-28_rapor.md`; puan C (weak reject), 1–5 kapanırsa B. Bu turda uygulananlar (git'te commit edilmedi; yedek `paper/yedek-pre-kirma-2026-10-28/`):
 
 1. **EMI "pre-registered" düştü.** `le2014emi` girişi (sonuç notuyla) 8bdb105 (10 Eyl 01:03), related.tex ilk sürümü 0573059 (02:17) zaten sonucu içeriyor; okuma öncesi kayıt ne repoda ne docs'ta. Özet, §7 ve main.tex yorumu: "wrote down before reading, in working notes the artifact does not contain; did not hold". "falsified / pre-registered" EMI için kalktı.
 2. **"Ahead of construction" düştü.** Sıra: 0099 B modeli → 0101/0102 pozitifler → 0102 ilk 40'lık bölüntü → 0120 57'lik. Doğru iddia: "run on material that predates the oracle". Özet, §1, §5.3 başlığı.
