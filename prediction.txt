@@ -1,6 +1,6 @@
 verifierloop — EK F Birinci Statü Vakası F-1 (ön-kayıt, DEĞİŞMEZ commitment metni)
 Kayıt: 2026-09-23. Çözülme: 2026-10-23 (30 gün) ya da ilk CVE-değeri uyanması.
-Kaydı yapan: verifierloop av-döngüsü ajanı (Claude), sonuç bilinmeden.
+Kaydı yapan: verifierloop av-döngüsü ajanı, sonuç bilinmeden.
 
 KARAR (çerçeveyle): Mevcut enstrümanı mevcut gramerde koşturmaya devam et; kfunc/referans
 gramer genleri ekleyip o yüzeyde bulgu arama pivotu yapma. Gerekçe: erişim gramere bağlı ve

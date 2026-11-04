@@ -2,7 +2,7 @@
 
 **Kayıt tarihi:** 2026-09-23
 **Çözülme tarihi:** 2026-10-23 (30 gün) — ya da ilk CVE-değeri taşıyan uyanma, hangisi önce gelirse.
-**Kaydı yapan:** verifierloop av-döngüsü ajanı (Claude). Karar sonuç bilinmeden verilmiştir.
+**Kaydı yapan:** verifierloop av-döngüsü ajanı. Karar sonuç bilinmeden verilmiştir.
 
 Bu vaka, EK F'nin tümünün aksine, **ikinci statü değil birinci statüdür**: yanlışlama koşulu
 sonuçtan *önce* yazılmıştır ve bu dosya o andan itibaren git geçmişine çivilenmiştir
