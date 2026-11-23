@@ -4,7 +4,7 @@
 
 A differential-testing lab for the **Linux eBPF verifier**, and the artifact for the
 paper ***Where a Test Oracle Reads From: Evidential independence as a design criterion
-for differential testing*** (ISSTA submission).
+for differential testing***.
 
 The lab builds self-built `bpf-next` kernels, runs BPF programs under disposable VMs,
 and compares what the verifier does against independent oracles. The paper's thesis
